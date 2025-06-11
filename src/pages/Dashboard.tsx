@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Hexagon, Circle, Coins, Sun, Moon, HelpCircle, LogOut, User } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
+import { useAuth } from '../contexts/AuthContext';
 import MetricsPanel from '../components/MetricsPanel';
 import EnhancedChart from '../components/EnhancedChart';
 import TradingPanel from '../components/TradingPanel';
@@ -20,6 +21,7 @@ function TetraLogo() {
 
 const Dashboard: React.FC = () => {
   const { theme, toggleTheme } = useTheme();
+  const { user, signOut } = useAuth();
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [isSandboxMode, setIsSandboxMode] = useState(false);
 
@@ -48,6 +50,13 @@ const Dashboard: React.FC = () => {
     localStorage.setItem('sandboxMode', newMode.toString());
   };
 
+  const handleSignOut = async () => {
+    try {
+      await signOut();
+    } catch (error) {
+      console.error('Error signing out:', error);
+    }
+  };
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 transition-colors">
       {/* Navigation */}
@@ -100,10 +109,14 @@ const Dashboard: React.FC = () => {
 
               {/* User Menu */}
               <div className="flex items-center space-x-2">
-                <div className="w-8 h-8 bg-amber-600 rounded-full flex items-center justify-center">
+                <div className="w-8 h-8 bg-amber-600 rounded-full flex items-center justify-center" title={user?.email || 'User'}>
                   <User className="h-4 w-4 text-white" />
                 </div>
-                <button className="p-2 text-gray-500 hover:text-red-600 transition-colors">
+                <button 
+                  onClick={handleSignOut}
+                  className="p-2 text-gray-500 hover:text-red-600 transition-colors"
+                  title="Sign out"
+                >
                   <LogOut className="h-5 w-5" />
                 </button>
               </div>
