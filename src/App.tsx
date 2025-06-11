@@ -29,10 +29,10 @@ function App() {
             <a href="#whitepaper" className="text-gray-700 hover:text-amber-600 transition-colors">Whitepaper</a>
             <Link to="/login" className="text-gray-700 hover:text-amber-600 transition-colors">Login</Link>
             <Link 
-              to="/signup" 
+              to="/dashboard" 
               className="bg-amber-600 text-white px-6 py-2 rounded-lg hover:bg-amber-700 transition-colors"
             >
-              Sign Up
+              Launch App
             </Link>
           </div>
         </div>
@@ -48,7 +48,13 @@ function App() {
             Tetra Gold (TGAUx) is a revolutionary token that tracks real-time gold prices through decentralized oracles, bringing the stability of gold markets to DeFi.
           </p>
           <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
-            <button className="bg-amber-600 hover:bg-amber-700 text-white px-8 py-3 rounded-lg font-medium transition-colors flex items-center justify-center">
+            <Link 
+              to="/dashboard"
+              className="bg-amber-600 hover:bg-amber-700 text-white px-8 py-3 rounded-lg font-medium transition-colors flex items-center justify-center"
+            >
+              Launch App <ArrowRight className="ml-2 h-5 w-5" />
+            </Link>
+            <button className="border border-amber-600 text-amber-600 hover:bg-amber-50 px-8 py-3 rounded-lg font-medium transition-colors flex items-center justify-center">
               Learn More <ChevronDown className="ml-2 h-5 w-5" />
             </button>
           </div>
@@ -325,9 +331,17 @@ function App() {
           <p className="text-xl mb-10 max-w-3xl mx-auto">
             Download our comprehensive whitepaper to learn more about Tetra Gold's oracle network, tokenomics, and vision.
           </p>
-          <button className="bg-white text-amber-700 hover:bg-amber-100 px-8 py-3 rounded-lg font-medium transition-colors inline-flex items-center">
-            Download Whitepaper <ArrowRight className="ml-2 h-5 w-5" />
-          </button>
+          <div className="flex flex-col sm:flex-row gap-4 justify-center">
+            <button className="bg-white text-amber-700 hover:bg-amber-100 px-8 py-3 rounded-lg font-medium transition-colors inline-flex items-center justify-center">
+              Download Whitepaper <ArrowRight className="ml-2 h-5 w-5" />
+            </button>
+            <Link 
+              to="/dashboard"
+              className="bg-amber-800 hover:bg-amber-900 text-white px-8 py-3 rounded-lg font-medium transition-colors inline-flex items-center justify-center"
+            >
+              Launch App <ArrowRight className="ml-2 h-5 w-5" />
+            </Link>
+          </div>
         </div>
       </section>
 
@@ -364,7 +378,7 @@ function App() {
                 <li><a href="#tokenomics" className="text-gray-400 hover:text-amber-500 transition-colors">Tokenomics</a></li>
                 <li><a href="#whitepaper" className="text-gray-400 hover:text-amber-500 transition-colors">Whitepaper</a></li>
                 <li><Link to="/login" className="text-gray-400 hover:text-amber-500 transition-colors">Login</Link></li>
-                <li><Link to="/signup" className="text-gray-400 hover:text-amber-500 transition-colors">Sign Up</Link></li>
+                <li><Link to="/dashboard" className="text-gray-400 hover:text-amber-500 transition-colors">Dashboard</Link></li>
               </ul>
             </div>
             
