@@ -70,50 +70,50 @@ function App() {
           
           <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
             <div className="bg-amber-50 p-8 rounded-xl">
-              <Shield className="h-12 w-12 text-amber-600 mb-6" />
-              <h3 className="text-xl font-bold text-gray-900 mb-3">Secure & Reliable</h3>
+              <Zap className="h-12 w-12 text-amber-600 mb-6" />
+              <h3 className="text-xl font-bold text-gray-900 mb-3">Instant Settlement</h3>
               <p className="text-gray-700">
-                Built on robust smart contracts with decentralized oracles and regular audits to ensure accurate price tracking and security.
-              </p>
-            </div>
-            
-            <div className="bg-amber-50 p-8 rounded-xl">
-              <BarChart3 className="h-12 w-12 text-amber-600 mb-6" />
-              <h3 className="text-xl font-bold text-gray-900 mb-3">Real-Time Gold Tracking</h3>
-              <p className="text-gray-700">
-                Advanced oracle network ensures token value accurately reflects current gold market prices.
+                Trade gold exposure 24/7 with immediate settlement. No waiting for vault operations or custody transfers.
               </p>
             </div>
             
             <div className="bg-amber-50 p-8 rounded-xl">
               <Coins className="h-12 w-12 text-amber-600 mb-6" />
-              <h3 className="text-xl font-bold text-gray-900 mb-3">Liquidity & Flexibility</h3>
+              <h3 className="text-xl font-bold text-gray-900 mb-3">Zero Storage Costs</h3>
               <p className="text-gray-700">
-                Trade gold-pegged tokens with minimal fees and quick transaction times.
+                Eliminate vault fees, insurance costs, and storage concerns. Pure price exposure without physical custody overhead.
+              </p>
+            </div>
+            
+            <div className="bg-amber-50 p-8 rounded-xl">
+              <BarChart3 className="h-12 w-12 text-amber-600 mb-6" />
+              <h3 className="text-xl font-bold text-gray-900 mb-3">Algorithmic Price Tracking</h3>
+              <p className="text-gray-700">
+                Multi-source oracle aggregation ensures accurate real-time gold price tracking without centralized custody risks.
               </p>
             </div>
 
             <div className="bg-amber-50 p-8 rounded-xl">
-              <Lock className="h-12 w-12 text-amber-600 mb-6" />
-              <h3 className="text-xl font-bold text-gray-900 mb-3">Multi-Layer Security</h3>
+              <Shield className="h-12 w-12 text-amber-600 mb-6" />
+              <h3 className="text-xl font-bold text-gray-900 mb-3">Capital Efficiency</h3>
               <p className="text-gray-700">
-                Protected by multiple security layers including time-locks and automated monitoring systems.
+                Synthetic design eliminates 1:1 physical backing requirements, enabling efficient scaling and reduced counterparty risk.
               </p>
             </div>
 
             <div className="bg-amber-50 p-8 rounded-xl">
               <Network className="h-12 w-12 text-amber-600 mb-6" />
-              <h3 className="text-xl font-bold text-gray-900 mb-3">Global Network</h3>
+              <h3 className="text-xl font-bold text-gray-900 mb-3">Complete Transparency</h3>
               <p className="text-gray-700">
-                Access Tetra Gold through our global network of trusted partners and exchanges.
+                All price feeds, transactions, and smart contract operations are fully auditable on-chain.
               </p>
             </div>
 
             <div className="bg-amber-50 p-8 rounded-xl">
-              <Zap className="h-12 w-12 text-amber-600 mb-6" />
-              <h3 className="text-xl font-bold text-gray-900 mb-3">Instant Settlement</h3>
+              <Lock className="h-12 w-12 text-amber-600 mb-6" />
+              <h3 className="text-xl font-bold text-gray-900 mb-3">Decentralized Security</h3>
               <p className="text-gray-700">
-                Experience near-instantaneous transaction finality with optimized execution.
+                Multi-layer security with circuit breakers, timelock governance, and continuous monitoring eliminates single points of failure.
               </p>
             </div>
           </div>
