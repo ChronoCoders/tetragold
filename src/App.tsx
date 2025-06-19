@@ -21,8 +21,6 @@ function App() {
   const handleGetStarted = async () => {
     if (!isConnected) {
       await connectWallet();
-    } else if (!isCorrectNetwork) {
-      await switchNetwork();
     } else {
       navigate('/kyc');
     }
@@ -109,8 +107,6 @@ function App() {
                 'Connecting...'
               ) : !isConnected ? (
                 <>Connect Wallet <Wallet className="ml-2 h-5 w-5" /></>
-              ) : !isCorrectNetwork ? (
-                <>Switch Network <ArrowRight className="ml-2 h-5 w-5" /></>
               ) : (
                 <>Get Started <ArrowRight className="ml-2 h-5 w-5" /></>
               )}

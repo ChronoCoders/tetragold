@@ -117,14 +117,6 @@ const Dashboard: React.FC = () => {
 
               {/* User Menu */}
               <div className="flex items-center space-x-2">
-                {!isCorrectNetwork && (
-                  <button
-                    onClick={handleNetworkIssue}
-                    className="px-3 py-1 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700 transition-colors"
-                  >
-                    Wrong Network
-                  </button>
-                )}
                 <div className="w-8 h-8 bg-amber-600 rounded-full flex items-center justify-center" title={account || 'User'}>
                   <User className="h-4 w-4 text-white" />
                 </div>
