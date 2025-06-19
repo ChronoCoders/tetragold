@@ -1,10 +1,10 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import { ethers } from 'ethers';
+import { ethers, BrowserProvider } from 'ethers';
 
 interface Web3ContextType {
   account: string | null;
-  provider: ethers.providers.Web3Provider | null;
-  signer: ethers.Signer | null;
+  provider: BrowserProvider | null;
+  signer: ethers.JsonRpcSigner | null;
   isConnected: boolean;
   isCorrectNetwork: boolean;
   networkId: number | null;
@@ -33,8 +33,8 @@ const REQUIRED_NETWORK_NAME = 'Sepolia';
 
 export const Web3Provider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [account, setAccount] = useState<string | null>(null);
-  const [provider, setProvider] = useState<ethers.providers.Web3Provider | null>(null);
-  const [signer, setSigner] = useState<ethers.Signer | null>(null);
+  const [provider, setProvider] = useState<BrowserProvider | null>(null);
+  const [signer, setSigner] = useState<ethers.JsonRpcSigner | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [isCorrectNetwork, setIsCorrectNetwork] = useState(false);
   const [networkId, setNetworkId] = useState<number | null>(null);
@@ -60,10 +60,10 @@ export const Web3Provider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
-  const updateBalance = useCallback(async (provider: ethers.providers.Web3Provider, address: string) => {
+  const updateBalance = useCallback(async (provider: BrowserProvider, address: string) => {
     try {
       const balance = await provider.getBalance(address);
-      setBalance(ethers.utils.formatEther(balance));
+      setBalance(ethers.formatEther(balance));
     } catch (err) {
       console.warn('Failed to fetch balance:', err);
     }
@@ -87,7 +87,7 @@ export const Web3Provider: React.FC<{ children: React.ReactNode }> = ({ children
         throw new Error('No accounts found. Please unlock MetaMask.');
       }
 
-      const provider = new ethers.providers.Web3Provider(window.ethereum);
+      const provider = new BrowserProvider(window.ethereum);
       const signer = provider.getSigner();
       const account = accounts[0];
       const network = await provider.getNetwork();

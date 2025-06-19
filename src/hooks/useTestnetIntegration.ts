@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ethers } from 'ethers';
+import { ethers, BrowserProvider } from 'ethers';
 import { TESTNET_CONFIG, TGAUX_ABI, ORACLE_AGGREGATOR_ABI, CIRCUIT_BREAKER_ABI, ERROR_MESSAGES } from '../config/testnet';
 
 interface TestnetState {
@@ -9,8 +9,8 @@ interface TestnetState {
   tgauxBalance: string;
   networkId: number | null;
   isCorrectNetwork: boolean;
-  provider: ethers.providers.Web3Provider | null;
-  signer: ethers.Signer | null;
+  provider: BrowserProvider | null;
+  signer: ethers.JsonRpcSigner | null;
 }
 
 interface ContractInstances {
@@ -53,7 +53,7 @@ export const useTestnetIntegration = () => {
       // Request account access
       await window.ethereum.request({ method: 'eth_requestAccounts' });
 
-      const provider = new ethers.providers.Web3Provider(window.ethereum);
+      const provider = new BrowserProvider(window.ethereum);
       const signer = provider.getSigner();
       const account = await signer.getAddress();
       const network = await provider.getNetwork();
@@ -85,7 +85,7 @@ export const useTestnetIntegration = () => {
           const tgauxBalance = await tgaux.balanceOf(account);
           setState(prev => ({
             ...prev,
-            tgauxBalance: ethers.utils.formatEther(tgauxBalance)
+            tgauxBalance: ethers.formatEther(tgauxBalance)
           }));
         } catch (err) {
           console.warn('Could not fetch TGAUx balance:', err);
@@ -143,8 +143,8 @@ export const useTestnetIntegration = () => {
       setLoading(true);
       setError(null);
 
-      const usdAmountWei = ethers.utils.parseEther(usdAmount);
-      const minTokensOutWei = ethers.utils.parseEther(minTokensOut);
+      const usdAmountWei = ethers.parseEther(usdAmount);
+      const minTokensOutWei = ethers.parseEther(minTokensOut);
 
       const tx = await contracts.tgaux.mint(usdAmountWei, minTokensOutWei);
       const receipt = await tx.wait();
@@ -153,7 +153,7 @@ export const useTestnetIntegration = () => {
       const newBalance = await contracts.tgaux.balanceOf(state.account);
       setState(prev => ({
         ...prev,
-        tgauxBalance: ethers.utils.formatEther(newBalance)
+        tgauxBalance: ethers.formatEther(newBalance)
       }));
 
       return receipt;
@@ -176,8 +176,8 @@ export const useTestnetIntegration = () => {
       setLoading(true);
       setError(null);
 
-      const tokenAmountWei = ethers.utils.parseEther(tokenAmount);
-      const minUsdOutWei = ethers.utils.parseEther(minUsdOut);
+      const tokenAmountWei = ethers.parseEther(tokenAmount);
+      const minUsdOutWei = ethers.parseEther(minUsdOut);
 
       const tx = await contracts.tgaux.redeem(tokenAmountWei, minUsdOutWei);
       const receipt = await tx.wait();
@@ -186,7 +186,7 @@ export const useTestnetIntegration = () => {
       const newBalance = await contracts.tgaux.balanceOf(state.account);
       setState(prev => ({
         ...prev,
-        tgauxBalance: ethers.utils.formatEther(newBalance)
+        tgauxBalance: ethers.formatEther(newBalance)
       }));
 
       return receipt;
@@ -206,7 +206,7 @@ export const useTestnetIntegration = () => {
     try {
       const [price, timestamp] = await contracts.oracleAggregator.getLatestPrice();
       return {
-        price: ethers.utils.formatEther(price),
+        price: ethers.formatEther(price),
         timestamp: timestamp.toNumber()
       };
     } catch (err) {
