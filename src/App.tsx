@@ -41,9 +41,6 @@ function App() {
             <a href="#whitepaper" className="text-gray-700 hover:text-amber-600 transition-colors">Whitepaper</a>
             {isConnected ? (
               <div className="flex items-center space-x-4">
-                <span className="text-sm text-gray-600">
-                  {account?.slice(0, 6)}...{account?.slice(-4)}
-                </span>
                 <Link 
                   to="/dashboard" 
                   className="bg-amber-600 text-white px-6 py-2 rounded-lg hover:bg-amber-700 transition-colors"
