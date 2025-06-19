@@ -15,7 +15,7 @@ function TetraLogo() {
 }
 
 function App() {
-  const { isConnected, isCorrectNetwork, account, connectWallet, switchNetwork, loading, error, clearError } = useWeb3();
+  const { isConnected, account, connectWallet, loading, error, clearError } = useWeb3();
   const navigate = useNavigate();
 
   const handleGetStarted = async () => {
@@ -44,14 +44,6 @@ function App() {
                 <span className="text-sm text-gray-600">
                   {account?.slice(0, 6)}...{account?.slice(-4)}
                 </span>
-                {!isCorrectNetwork && (
-                  <button
-                    onClick={switchNetwork}
-                    className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors text-sm"
-                  >
-                    Switch Network
-                  </button>
-                )}
                 <Link 
                   to="/dashboard" 
                   className="bg-amber-600 text-white px-6 py-2 rounded-lg hover:bg-amber-700 transition-colors"

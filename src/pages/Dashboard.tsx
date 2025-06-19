@@ -21,7 +21,7 @@ function TetraLogo() {
 
 const Dashboard: React.FC = () => {
   const { theme, toggleTheme } = useTheme();
-  const { account, disconnectWallet, isCorrectNetwork, switchNetwork } = useWeb3();
+  const { account, disconnectWallet } = useWeb3();
   const navigate = useNavigate();
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [isSandboxMode, setIsSandboxMode] = useState(false);
@@ -49,12 +49,6 @@ const Dashboard: React.FC = () => {
     const newMode = !isSandboxMode;
     setIsSandboxMode(newMode);
     localStorage.setItem('sandboxMode', newMode.toString());
-  };
-
-  const handleNetworkIssue = async () => {
-    if (!isCorrectNetwork) {
-      await switchNetwork();
-    }
   };
 
   const handleSignOut = async () => {
