@@ -15,7 +15,7 @@ function TetraLogo() {
 }
 
 function App() {
-  const { isConnected, account, connectWallet, loading, error, clearError } = useWeb3();
+  const { isConnected, isCorrectNetwork, account, connectWallet, switchNetwork, loading, error, clearError } = useWeb3();
   const navigate = useNavigate();
 
   const handleGetStarted = async () => {

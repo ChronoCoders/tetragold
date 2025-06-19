@@ -21,7 +21,7 @@ function TetraLogo() {
 
 const Dashboard: React.FC = () => {
   const { theme, toggleTheme } = useTheme();
-  const { account, disconnectWallet } = useWeb3();
+  const { account, disconnectWallet, isCorrectNetwork, switchNetwork } = useWeb3();
   const navigate = useNavigate();
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [isSandboxMode, setIsSandboxMode] = useState(false);
