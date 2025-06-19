@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Hexagon, Circle, Coins, Sun, Moon, HelpCircle, LogOut, User } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
-import { useAuth } from '../contexts/AuthContext';
+import { useWeb3 } from '../contexts/Web3Context';
 import MetricsPanel from '../components/MetricsPanel';
 import EnhancedChart from '../components/EnhancedChart';
 import TradingPanel from '../components/TradingPanel';
@@ -21,7 +21,8 @@ function TetraLogo() {
 
 const Dashboard: React.FC = () => {
   const { theme, toggleTheme } = useTheme();
-  const { user, signOut } = useAuth();
+  const { account, disconnectWallet, isCorrectNetwork, switchNetwork } = useWeb3();
+  const navigate = useNavigate();
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [isSandboxMode, setIsSandboxMode] = useState(false);
 
@@ -50,9 +51,16 @@ const Dashboard: React.FC = () => {
     localStorage.setItem('sandboxMode', newMode.toString());
   };
 
+  const handleNetworkIssue = async () => {
+    if (!isCorrectNetwork) {
+      await switchNetwork();
+    }
+  };
+
   const handleSignOut = async () => {
     try {
-      await signOut();
+      disconnectWallet();
+      navigate('/');
     } catch (error) {
       console.error('Error signing out:', error);
     }
@@ -109,9 +117,20 @@ const Dashboard: React.FC = () => {
 
               {/* User Menu */}
               <div className="flex items-center space-x-2">
-                <div className="w-8 h-8 bg-amber-600 rounded-full flex items-center justify-center" title={user?.email || 'User'}>
+                {!isCorrectNetwork && (
+                  <button
+                    onClick={handleNetworkIssue}
+                    className="px-3 py-1 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700 transition-colors"
+                  >
+                    Wrong Network
+                  </button>
+                )}
+                <div className="w-8 h-8 bg-amber-600 rounded-full flex items-center justify-center" title={account || 'User'}>
                   <User className="h-4 w-4 text-white" />
                 </div>
+                <span className="text-sm text-gray-600 dark:text-gray-400">
+                  {account?.slice(0, 6)}...{account?.slice(-4)}
+                </span>
                 <button 
                   onClick={handleSignOut}
                   className="p-2 text-gray-500 hover:text-red-600 transition-colors"
