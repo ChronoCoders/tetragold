@@ -2,48 +2,39 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { ThemeProvider } from './contexts/ThemeContext';
-import { AuthProvider } from './contexts/AuthContext';
+import { Web3Provider } from './contexts/Web3Context';
 import ProtectedRoute from './components/ProtectedRoute';
 import App from './App.tsx';
 import Dashboard from './pages/Dashboard.tsx';
-import Login from './pages/Login.tsx';
-import Signup from './pages/Signup.tsx';
+import KYC from './pages/KYC.tsx';
 import './index.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ThemeProvider>
-      <AuthProvider>
+      <Web3Provider>
         <Router>
           <Routes>
             <Route path="/" element={<App />} />
             <Route 
+              path="/kyc" 
+              element={
+                <ProtectedRoute requireWallet={true} requireKYC={false}>
+                  <KYC />
+                </ProtectedRoute>
+              } 
+            />
+            <Route 
               path="/dashboard" 
               element={
-                <ProtectedRoute requireAuth={true}>
+                <ProtectedRoute requireWallet={true} requireKYC={true}>
                   <Dashboard />
-                </ProtectedRoute>
-              } 
-            />
-            <Route 
-              path="/login" 
-              element={
-                <ProtectedRoute requireAuth={false}>
-                  <Login />
-                </ProtectedRoute>
-              } 
-            />
-            <Route 
-              path="/signup" 
-              element={
-                <ProtectedRoute requireAuth={false}>
-                  <Signup />
                 </ProtectedRoute>
               } 
             />
           </Routes>
         </Router>
-      </AuthProvider>
+      </Web3Provider>
     </ThemeProvider>
   </StrictMode>
 );

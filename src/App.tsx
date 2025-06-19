@@ -1,6 +1,7 @@
 import React from 'react';
-import { Hexagon, Circle, ArrowRight, ChevronDown, Shield, BarChart3, Coins, Globe, Github, Twitter, Lock, Zap, Network, Bell, Newspaper, ExternalLink, Building2, Wallet, Database, Boxes } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Hexagon, Circle, ArrowRight, ChevronDown, Shield, BarChart3, Coins, Globe, Github, Twitter, Lock, Zap, Network, Bell, Newspaper, ExternalLink, Building2, Wallet, Database, Boxes, AlertTriangle } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { useWeb3 } from './contexts/Web3Context';
 import GoldPriceChart from './components/GoldPriceChart';
 
 function TetraLogo() {
@@ -14,6 +15,19 @@ function TetraLogo() {
 }
 
 function App() {
+  const { isConnected, isCorrectNetwork, account, connectWallet, switchNetwork, loading, error, clearError } = useWeb3();
+  const navigate = useNavigate();
+
+  const handleGetStarted = async () => {
+    if (!isConnected) {
+      await connectWallet();
+    } else if (!isCorrectNetwork) {
+      await switchNetwork();
+    } else {
+      navigate('/kyc');
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-amber-50 to-white">
       {/* Navigation */}
@@ -27,13 +41,35 @@ function App() {
             <a href="#about" className="text-gray-700 hover:text-amber-600 transition-colors">About</a>
             <a href="#tokenomics" className="text-gray-700 hover:text-amber-600 transition-colors">Tokenomics</a>
             <a href="#whitepaper" className="text-gray-700 hover:text-amber-600 transition-colors">Whitepaper</a>
-            <Link to="/login" className="text-gray-700 hover:text-amber-600 transition-colors">Login</Link>
-            <Link 
-              to="/dashboard" 
-              className="bg-amber-600 text-white px-6 py-2 rounded-lg hover:bg-amber-700 transition-colors"
-            >
-              Launch App
-            </Link>
+            {isConnected ? (
+              <div className="flex items-center space-x-4">
+                <span className="text-sm text-gray-600">
+                  {account?.slice(0, 6)}...{account?.slice(-4)}
+                </span>
+                {!isCorrectNetwork && (
+                  <button
+                    onClick={switchNetwork}
+                    className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors text-sm"
+                  >
+                    Switch Network
+                  </button>
+                )}
+                <Link 
+                  to="/dashboard" 
+                  className="bg-amber-600 text-white px-6 py-2 rounded-lg hover:bg-amber-700 transition-colors"
+                >
+                  Dashboard
+                </Link>
+              </div>
+            ) : (
+              <button
+                onClick={connectWallet}
+                disabled={loading}
+                className="bg-amber-600 text-white px-6 py-2 rounded-lg hover:bg-amber-700 transition-colors disabled:opacity-50"
+              >
+                {loading ? 'Connecting...' : 'Connect Wallet'}
+              </button>
+            )}
           </div>
         </div>
       </nav>
@@ -41,6 +77,22 @@ function App() {
       {/* Hero Section */}
       <section className="container mx-auto px-4 py-20 flex flex-col md:flex-row items-center">
         <div className="md:w-1/2 mb-10 md:mb-0">
+          {/* Error Display */}
+          {error && (
+            <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start">
+              <AlertTriangle className="h-5 w-5 text-red-600 mr-3 mt-0.5" />
+              <div>
+                <p className="text-red-700 text-sm">{error}</p>
+                <button
+                  onClick={clearError}
+                  className="text-red-600 hover:text-red-800 text-sm underline mt-1"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+
           <h1 className="text-4xl md:text-6xl font-bold text-gray-900 leading-tight mb-6">
             The Future of <span className="text-amber-600">Gold-Indexed</span> Digital Assets
           </h1>
@@ -48,12 +100,21 @@ function App() {
             Tetra Gold (TGAUx) is a revolutionary token that tracks real-time gold prices through decentralized oracles, bringing the stability of gold markets to DeFi.
           </p>
           <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
-            <Link 
-              to="/dashboard"
-              className="bg-amber-600 hover:bg-amber-700 text-white px-8 py-3 rounded-lg font-medium transition-colors flex items-center justify-center"
+            <button
+              onClick={handleGetStarted}
+              disabled={loading}
+              className="bg-amber-600 hover:bg-amber-700 text-white px-8 py-3 rounded-lg font-medium transition-colors flex items-center justify-center disabled:opacity-50"
             >
-              Launch App <ArrowRight className="ml-2 h-5 w-5" />
-            </Link>
+              {loading ? (
+                'Connecting...'
+              ) : !isConnected ? (
+                <>Connect Wallet <Wallet className="ml-2 h-5 w-5" /></>
+              ) : !isCorrectNetwork ? (
+                <>Switch Network <ArrowRight className="ml-2 h-5 w-5" /></>
+              ) : (
+                <>Get Started <ArrowRight className="ml-2 h-5 w-5" /></>
+              )}
+            </button>
             <button className="border border-amber-600 text-amber-600 hover:bg-amber-50 px-8 py-3 rounded-lg font-medium transition-colors flex items-center justify-center">
               Learn More <ChevronDown className="ml-2 h-5 w-5" />
             </button>
@@ -335,12 +396,13 @@ function App() {
             <button className="bg-white text-amber-700 hover:bg-amber-100 px-8 py-3 rounded-lg font-medium transition-colors inline-flex items-center justify-center">
               Download Whitepaper <ArrowRight className="ml-2 h-5 w-5" />
             </button>
-            <Link 
-              to="/dashboard"
-              className="bg-amber-800 hover:bg-amber-900 text-white px-8 py-3 rounded-lg font-medium transition-colors inline-flex items-center justify-center"
+            <button
+              onClick={handleGetStarted}
+              disabled={loading}
+              className="bg-amber-800 hover:bg-amber-900 text-white px-8 py-3 rounded-lg font-medium transition-colors inline-flex items-center justify-center disabled:opacity-50"
             >
-              Launch App <ArrowRight className="ml-2 h-5 w-5" />
-            </Link>
+              {loading ? 'Connecting...' : 'Launch App'} <ArrowRight className="ml-2 h-5 w-5" />
+            </button>
           </div>
         </div>
       </section>
@@ -377,7 +439,6 @@ function App() {
                 <li><a href="#about" className="text-gray-400 hover:text-amber-500 transition-colors">About</a></li>
                 <li><a href="#tokenomics" className="text-gray-400 hover:text-amber-500 transition-colors">Tokenomics</a></li>
                 <li><a href="#whitepaper" className="text-gray-400 hover:text-amber-500 transition-colors">Whitepaper</a></li>
-                <li><Link to="/login" className="text-gray-400 hover:text-amber-500 transition-colors">Login</Link></li>
                 <li><Link to="/dashboard" className="text-gray-400 hover:text-amber-500 transition-colors">Dashboard</Link></li>
               </ul>
             </div>
