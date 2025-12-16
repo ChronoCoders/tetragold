@@ -333,40 +333,47 @@ contract TGAUXTest is Test {
 
     function test_AdminCanGrantMinterRole() public {
         address newMinter = makeAddr("newMinter");
+        bytes32 minterRole = token.MINTER_ROLE();
 
         vm.prank(admin);
-        token.grantRole(token.MINTER_ROLE(), newMinter);
+        token.grantRole(minterRole, newMinter);
 
-        assertTrue(token.hasRole(token.MINTER_ROLE(), newMinter));
+        assertTrue(token.hasRole(minterRole, newMinter));
     }
 
     function test_AdminCanRevokeMinterRole() public {
-        vm.prank(admin);
-        token.revokeRole(token.MINTER_ROLE(), minter);
+        bytes32 minterRole = token.MINTER_ROLE();
 
-        assertFalse(token.hasRole(token.MINTER_ROLE(), minter));
+        vm.prank(admin);
+        token.revokeRole(minterRole, minter);
+
+        assertFalse(token.hasRole(minterRole, minter));
     }
 
     function test_AdminCanGrantPauserRole() public {
         address newPauser = makeAddr("newPauser");
+        bytes32 pauserRole = token.PAUSER_ROLE();
 
         vm.prank(admin);
-        token.grantRole(token.PAUSER_ROLE(), newPauser);
+        token.grantRole(pauserRole, newPauser);
 
-        assertTrue(token.hasRole(token.PAUSER_ROLE(), newPauser));
+        assertTrue(token.hasRole(pauserRole, newPauser));
     }
 
     function test_NonAdminCannotGrantRoles() public {
         address newMinter = makeAddr("newMinter");
+        bytes32 minterRole = token.MINTER_ROLE();
 
         vm.prank(user1);
         vm.expectRevert();
-        token.grantRole(token.MINTER_ROLE(), newMinter);
+        token.grantRole(minterRole, newMinter);
     }
 
     function test_RevokedMinterCannotMint() public {
+        bytes32 minterRole = token.MINTER_ROLE();
+
         vm.prank(admin);
-        token.revokeRole(token.MINTER_ROLE(), minter);
+        token.revokeRole(minterRole, minter);
 
         vm.prank(minter);
         vm.expectRevert();
