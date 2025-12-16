@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "forge-std/Test.sol";
-import "../src/OracleAggregator.sol";
-import "./mocks/MockChainlinkOracle.sol";
-import "./mocks/MockBandOracle.sol";
-import "./mocks/MockAPI3Oracle.sol";
+import {Test} from "forge-std/Test.sol";
+import {OracleAggregator} from "../src/OracleAggregator.sol";
+import {MockChainlinkOracle} from "./mocks/MockChainlinkOracle.sol";
+import {MockBandOracle} from "./mocks/MockBandOracle.sol";
+import {MockAPI3Oracle} from "./mocks/MockAPI3Oracle.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 contract OracleAggregatorTest is Test {
     OracleAggregator public aggregator;
@@ -45,9 +46,9 @@ contract OracleAggregatorTest is Test {
         );
 
         // Set initial prices (all $2000)
-        chainlinkOracle.setLatestAnswer(int256(GOLD_PRICE)); // 8 decimals
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(GOLD_PRICE)); // 8 decimals
         bandOracle.setReferenceData(GOLD_PRICE * 1e10); // 18 decimals
-        api3Oracle.setValue(int224(uint224(GOLD_PRICE * 1e10))); // 18 decimals
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(GOLD_PRICE * 1e10))); // 18 decimals
     }
 
     /* ============ Constructor Tests ============ */
@@ -76,7 +77,7 @@ contract OracleAggregatorTest is Test {
         vm.expectEmit(false, false, false, false);
         emit PriceUpdated(0, 0);
 
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         (uint256 price, uint256 timestamp) = aggregator.getGoldPrice();
         assertEq(price, GOLD_PRICE);
@@ -88,7 +89,7 @@ contract OracleAggregatorTest is Test {
         // Disable one oracle
         api3Oracle.setShouldFail(true);
 
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         (uint256 price,) = aggregator.getGoldPrice();
         assertEq(price, GOLD_PRICE); // Should still work with 2 oracles
@@ -100,16 +101,16 @@ contract OracleAggregatorTest is Test {
         api3Oracle.setShouldFail(true);
 
         vm.expectRevert("OracleAggregator: insufficient valid oracles");
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
     }
 
     function test_UpdateTWAPWithDifferentPrices() public {
         // Set slightly different prices
-        chainlinkOracle.setLatestAnswer(int256(GOLD_PRICE)); // $2000
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(GOLD_PRICE)); // $2000
         bandOracle.setReferenceData(199000000000 * 1e10); // $1990
-        api3Oracle.setValue(int224(uint224(201000000000 * 1e10))); // $2010
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(201000000000 * 1e10))); // $2010
 
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         (uint256 price,) = aggregator.getGoldPrice();
         // Should be average: (2000 + 1990 + 2010) / 3 = 2000
@@ -120,20 +121,20 @@ contract OracleAggregatorTest is Test {
 
     function test_TWAPCalculationOverTime() public {
         // First update
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
         (uint256 price1,) = aggregator.getGoldPrice();
 
         // Wait 5 minutes and update again with different price
         vm.warp(block.timestamp + 300);
-        chainlinkOracle.setLatestAnswer(int256(GOLD_PRICE + 1000000000)); // $2010
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(GOLD_PRICE + 1000000000)); // $2010
         bandOracle.setReferenceData((GOLD_PRICE + 1000000000) * 1e10);
-        api3Oracle.setValue(int224(uint224((GOLD_PRICE + 1000000000) * 1e10)));
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256((GOLD_PRICE + 1000000000) * 1e10)));
 
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         // Wait a bit more so the new price has weight in TWAP
         vm.warp(block.timestamp + 100);
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
         (uint256 price2,) = aggregator.getGoldPrice();
 
         // Price should be between 2000 and 2010 due to TWAP
@@ -144,7 +145,7 @@ contract OracleAggregatorTest is Test {
     function test_TWAPWindowMaintenance() public {
         // Add multiple price points
         for (uint256 i = 0; i < 5; i++) {
-            aggregator.updateTWAP();
+            aggregator.updateTwap();
             vm.warp(block.timestamp + 100); // 100 seconds between updates
         }
 
@@ -154,7 +155,7 @@ contract OracleAggregatorTest is Test {
 
         // Warp past TWAP window (10 minutes)
         vm.warp(block.timestamp + 600);
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         // Old entries should be removed
         uint256 newHistoryLength = aggregator.getPriceHistoryLength();
@@ -165,18 +166,18 @@ contract OracleAggregatorTest is Test {
 
     function test_CircuitBreakerTriggersOnLargeIncrease() public {
         // Initial update
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         // Set price 6% higher (exceeds 5% threshold)
         uint256 newPrice = GOLD_PRICE * 106 / 100;
-        chainlinkOracle.setLatestAnswer(int256(newPrice));
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
         bandOracle.setReferenceData(newPrice * 1e10);
-        api3Oracle.setValue(int224(uint224(newPrice * 1e10)));
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
 
         vm.expectEmit(true, true, true, false);
         emit CircuitBreakerTriggered(GOLD_PRICE, newPrice, 0);
 
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         // Should be paused
         assertTrue(aggregator.paused());
@@ -184,18 +185,18 @@ contract OracleAggregatorTest is Test {
 
     function test_CircuitBreakerTriggersOnLargeDecrease() public {
         // Initial update
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         // Set price 6% lower (exceeds 5% threshold)
         uint256 newPrice = GOLD_PRICE * 94 / 100;
-        chainlinkOracle.setLatestAnswer(int256(newPrice));
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
         bandOracle.setReferenceData(newPrice * 1e10);
-        api3Oracle.setValue(int224(uint224(newPrice * 1e10)));
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
 
         vm.expectEmit(true, true, true, false);
         emit CircuitBreakerTriggered(GOLD_PRICE, newPrice, 0);
 
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         // Should be paused
         assertTrue(aggregator.paused());
@@ -203,15 +204,15 @@ contract OracleAggregatorTest is Test {
 
     function test_CircuitBreakerDoesNotTriggerWithinThreshold() public {
         // Initial update
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         // Set price 4% higher (within 5% threshold)
         uint256 newPrice = GOLD_PRICE * 104 / 100;
-        chainlinkOracle.setLatestAnswer(int256(newPrice));
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
         bandOracle.setReferenceData(newPrice * 1e10);
-        api3Oracle.setValue(int224(uint224(newPrice * 1e10)));
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
 
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         // Should not be paused
         assertFalse(aggregator.paused());
@@ -221,11 +222,11 @@ contract OracleAggregatorTest is Test {
 
     function test_PriceDeviationTriggersMedian() public {
         // Set prices with >2% deviation
-        chainlinkOracle.setLatestAnswer(int256(GOLD_PRICE)); // $2000
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(GOLD_PRICE)); // $2000
         bandOracle.setReferenceData(210000000000 * 1e10); // $2100 (5% higher)
-        api3Oracle.setValue(int224(uint224(205000000000 * 1e10))); // $2050
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(205000000000 * 1e10))); // $2050
 
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         (uint256 price,) = aggregator.getGoldPrice();
         // Should use median: 2050
@@ -234,11 +235,11 @@ contract OracleAggregatorTest is Test {
 
     function test_PriceDeviationUsesAverageWhenSmall() public {
         // Set prices with <2% deviation
-        chainlinkOracle.setLatestAnswer(int256(GOLD_PRICE)); // $2000
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(GOLD_PRICE)); // $2000
         bandOracle.setReferenceData(200100000000 * 1e10); // $2001
-        api3Oracle.setValue(int224(uint224(199900000000 * 1e10))); // $1999
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(199900000000 * 1e10))); // $1999
 
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         (uint256 price,) = aggregator.getGoldPrice();
         // Should use average: 2000
@@ -253,12 +254,12 @@ contract OracleAggregatorTest is Test {
 
         // Update Band and API3 to current time (keep them fresh)
         bandOracle.setReferenceData(GOLD_PRICE * 1e10);
-        api3Oracle.setValue(int224(uint224(GOLD_PRICE * 1e10)));
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(GOLD_PRICE * 1e10)));
 
         // Set Chainlink price to be 3 hours old
         chainlinkOracle.setUpdatedAt(block.timestamp - 10800);
 
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         // Should still work with Band and API3
         (uint256 price,) = aggregator.getGoldPrice();
@@ -270,13 +271,13 @@ contract OracleAggregatorTest is Test {
         vm.warp(block.timestamp + 20000);
 
         // Update Chainlink and API3 to current time (keep them fresh)
-        chainlinkOracle.setLatestAnswer(int256(GOLD_PRICE));
-        api3Oracle.setValue(int224(uint224(GOLD_PRICE * 1e10)));
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(GOLD_PRICE));
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(GOLD_PRICE * 1e10)));
 
         // Set Band price to be 3 hours old
         bandOracle.setLastUpdated(block.timestamp - 10800, block.timestamp - 10800);
 
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         // Should still work with Chainlink and API3
         (uint256 price,) = aggregator.getGoldPrice();
@@ -288,13 +289,13 @@ contract OracleAggregatorTest is Test {
         vm.warp(block.timestamp + 20000);
 
         // Update Chainlink and Band to current time (keep them fresh)
-        chainlinkOracle.setLatestAnswer(int256(GOLD_PRICE));
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(GOLD_PRICE));
         bandOracle.setReferenceData(GOLD_PRICE * 1e10);
 
         // Set API3 price to be 3 hours old
         api3Oracle.setTimestamp(uint32(block.timestamp - 10800));
 
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         // Should still work with Chainlink and Band
         (uint256 price,) = aggregator.getGoldPrice();
@@ -311,7 +312,7 @@ contract OracleAggregatorTest is Test {
         api3Oracle.setTimestamp(uint32(block.timestamp - 10800));
 
         vm.expectRevert("OracleAggregator: insufficient valid oracles");
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
     }
 
     /* ============ Oracle Failure Tests ============ */
@@ -322,7 +323,7 @@ contract OracleAggregatorTest is Test {
         vm.expectEmit(true, true, true, true);
         emit OracleFailed("Chainlink", "Mock: Oracle failure");
 
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         // Should still work with Band and API3
         (uint256 price,) = aggregator.getGoldPrice();
@@ -335,7 +336,7 @@ contract OracleAggregatorTest is Test {
         vm.expectEmit(true, true, true, true);
         emit OracleFailed("Band", "Mock: Oracle failure");
 
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         // Should still work with Chainlink and API3
         (uint256 price,) = aggregator.getGoldPrice();
@@ -348,7 +349,7 @@ contract OracleAggregatorTest is Test {
         vm.expectEmit(true, true, true, true);
         emit OracleFailed("API3", "Mock: Oracle failure");
 
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         // Should still work with Chainlink and Band
         (uint256 price,) = aggregator.getGoldPrice();
@@ -488,12 +489,12 @@ contract OracleAggregatorTest is Test {
         aggregator.pause();
 
         vm.expectRevert();
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
     }
 
     function test_GetGoldPriceRevertsWhenPaused() public {
         // First set a price
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         vm.prank(admin);
         aggregator.pause();
@@ -512,16 +513,16 @@ contract OracleAggregatorTest is Test {
     function test_GetPriceHistoryLength() public {
         assertEq(aggregator.getPriceHistoryLength(), 0);
 
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
         assertEq(aggregator.getPriceHistoryLength(), 1);
 
         vm.warp(block.timestamp + 100);
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
         assertEq(aggregator.getPriceHistoryLength(), 2);
     }
 
     function test_GetPriceHistory() public {
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         (uint256 price, uint256 timestamp) = aggregator.getPriceHistory(0);
         assertEq(price, GOLD_PRICE);
@@ -537,22 +538,22 @@ contract OracleAggregatorTest is Test {
 
     function test_CompleteWorkflow() public {
         // 1. Initial price update
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
         (uint256 price1,) = aggregator.getGoldPrice();
         assertEq(price1, GOLD_PRICE);
 
         // 2. Wait and update with small price change
         vm.warp(block.timestamp + 300);
         uint256 newPrice = GOLD_PRICE * 102 / 100; // 2% increase
-        chainlinkOracle.setLatestAnswer(int256(newPrice));
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
         bandOracle.setReferenceData(newPrice * 1e10);
-        api3Oracle.setValue(int224(uint224(newPrice * 1e10)));
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
 
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         // Wait a bit more so the new price has weight in TWAP
         vm.warp(block.timestamp + 100);
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
         (uint256 price2,) = aggregator.getGoldPrice();
         assertGt(price2, price1);
 
@@ -562,7 +563,7 @@ contract OracleAggregatorTest is Test {
 
         // 4. Continue updating
         vm.warp(block.timestamp + 300);
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
 
         // Should work without issues
         assertFalse(aggregator.paused());
@@ -572,7 +573,7 @@ contract OracleAggregatorTest is Test {
 
     function test_PriceNormalizationChainlink() public {
         // Chainlink uses 8 decimals - should not change
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
         (uint256 price,) = aggregator.getGoldPrice();
         assertEq(price, GOLD_PRICE);
     }
@@ -582,7 +583,7 @@ contract OracleAggregatorTest is Test {
         // Disable Chainlink to test only Band and API3
         chainlinkOracle.setShouldFail(true);
 
-        aggregator.updateTWAP();
+        aggregator.updateTwap();
         (uint256 price,) = aggregator.getGoldPrice();
         assertEq(price, GOLD_PRICE);
     }

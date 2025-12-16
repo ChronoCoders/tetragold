@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 /**
  * @title OracleAggregator
@@ -89,7 +90,7 @@ contract OracleAggregator is AccessControl, Pausable {
      * @dev Update TWAP and aggregate price from multiple oracles
      * @notice Must have at least 2 working oracles to succeed
      */
-    function updateTWAP() external whenNotPaused {
+    function updateTwap() external whenNotPaused {
         // Fetch prices from all oracles
         (uint256[] memory prices, bool[] memory validity) = _fetchOraclePrices();
 
@@ -113,7 +114,7 @@ contract OracleAggregator is AccessControl, Pausable {
         _updatePriceHistory(aggregatedPrice);
 
         // Calculate TWAP
-        uint256 twapPrice = _calculateTWAP();
+        uint256 twapPrice = _calculateTwap();
 
         // Update state
         lastPrice = twapPrice;
@@ -140,7 +141,7 @@ contract OracleAggregator is AccessControl, Pausable {
             uint80
         ) {
             if (price > 0 && block.timestamp - updatedAt <= MAX_PRICE_AGE) {
-                prices[0] = _normalizePrice(uint256(price), chainlinkOracle.decimals());
+                prices[0] = _normalizePrice(SafeCast.toUint256(price), chainlinkOracle.decimals());
                 validity[0] = true;
             } else {
                 emit OracleFailed("Chainlink", "Stale or invalid price");
@@ -169,7 +170,9 @@ contract OracleAggregator is AccessControl, Pausable {
         // API3
         try api3Oracle.read() returns (int224 value, uint32 timestamp) {
             if (value > 0 && block.timestamp - timestamp <= MAX_PRICE_AGE) {
-                prices[2] = _normalizePrice(uint256(uint224(value)), 18); // API3 uses 18 decimals
+                // Safe cast: value > 0 checked above, int224 fits in int256, then safely convert to uint256
+                int256 valueInt256 = int256(value);
+                prices[2] = _normalizePrice(SafeCast.toUint256(valueInt256), 18); // API3 uses 18 decimals
                 validity[2] = true;
             } else {
                 emit OracleFailed("API3", "Stale or invalid price");
@@ -276,7 +279,7 @@ contract OracleAggregator is AccessControl, Pausable {
      * @dev Calculate Time-Weighted Average Price
      * @return twap Time-weighted average price
      */
-    function _calculateTWAP() internal view returns (uint256) {
+    function _calculateTwap() internal view returns (uint256) {
         if (priceHistory.length == 0) return 0;
         if (priceHistory.length == 1) return priceHistory[0].price;
 

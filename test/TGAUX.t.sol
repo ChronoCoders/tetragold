@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "forge-std/Test.sol";
-import "../src/TGAUX.sol";
+import {Test} from "forge-std/Test.sol";
+import {TGAUX} from "../src/TGAUX.sol";
 
 contract TGAUXTest is Test {
     TGAUX public token;
@@ -198,7 +198,8 @@ contract TGAUXTest is Test {
         token.mint(user1, mintAmount);
 
         vm.prank(user1);
-        token.transfer(user2, transferAmount);
+        bool success = token.transfer(user2, transferAmount);
+        assertTrue(success, "Transfer should succeed");
 
         assertEq(token.balanceOf(user1), mintAmount - transferAmount);
         assertEq(token.balanceOf(user2), transferAmount);
@@ -212,7 +213,8 @@ contract TGAUXTest is Test {
         token.mint(user1, mintAmount);
 
         vm.prank(user1);
-        token.transfer(user2, transferAmount);
+        bool success = token.transfer(user2, transferAmount);
+        assertTrue(success, "Transfer should succeed");
 
         assertEq(token.balanceOf(user2), transferAmount);
     }
@@ -227,7 +229,8 @@ contract TGAUXTest is Test {
 
         // Transfer entire balance (should work even if below minimum)
         vm.prank(user1);
-        token.transfer(user2, minimumAmount);
+        bool success = token.transfer(user2, minimumAmount);
+        assertTrue(success, "Transfer should succeed");
 
         assertEq(token.balanceOf(user1), 0);
         assertEq(token.balanceOf(user2), minimumAmount);
@@ -256,7 +259,8 @@ contract TGAUXTest is Test {
         token.approve(user2, transferAmount);
 
         vm.prank(user2);
-        token.transferFrom(user1, user2, transferAmount);
+        bool success = token.transferFrom(user1, user2, transferAmount);
+        assertTrue(success, "TransferFrom should succeed");
 
         assertEq(token.balanceOf(user2), transferAmount);
     }
@@ -463,7 +467,8 @@ contract TGAUXTest is Test {
         // User1 transfers to user2
         uint256 transferAmount = 30 ether;
         vm.prank(user1);
-        token.transfer(user2, transferAmount);
+        bool success = token.transfer(user2, transferAmount);
+        assertTrue(success, "Transfer should succeed");
 
         // User2 burns some tokens
         uint256 burnAmount = 10 ether;
@@ -496,7 +501,8 @@ contract TGAUXTest is Test {
 
         // Transfer should work now
         vm.prank(user1);
-        token.transfer(user2, 1 ether);
+        bool success2 = token.transfer(user2, 1 ether);
+        assertTrue(success2, "Transfer should succeed");
 
         assertEq(token.balanceOf(user2), 1 ether);
     }
@@ -524,7 +530,8 @@ contract TGAUXTest is Test {
         token.mint(user1, mintAmount);
 
         vm.prank(user1);
-        token.transfer(user2, transferAmount);
+        bool success = token.transfer(user2, transferAmount);
+        assertTrue(success, "Transfer should succeed");
 
         assertEq(token.balanceOf(user1), mintAmount - transferAmount);
         assertEq(token.balanceOf(user2), transferAmount);
