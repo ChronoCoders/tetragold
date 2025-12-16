@@ -418,28 +418,31 @@ contract TGAUXTest is Test {
         assertEq(token.allowance(user1, user2), amount);
     }
 
-    function test_IncreaseAllowance() public {
+    function test_ApproveUpdate() public {
         uint256 initialAmount = 1 ether;
-        uint256 increaseAmount = 0.5 ether;
+        uint256 newAmount = 0.5 ether;
 
         vm.startPrank(user1);
         token.approve(user2, initialAmount);
-        token.increaseAllowance(user2, increaseAmount);
-        vm.stopPrank();
+        assertEq(token.allowance(user1, user2), initialAmount);
 
-        assertEq(token.allowance(user1, user2), initialAmount + increaseAmount);
+        // Update approval to new amount
+        token.approve(user2, newAmount);
+        assertEq(token.allowance(user1, user2), newAmount);
+        vm.stopPrank();
     }
 
-    function test_DecreaseAllowance() public {
+    function test_ApproveZeroReset() public {
         uint256 initialAmount = 1 ether;
-        uint256 decreaseAmount = 0.3 ether;
 
         vm.startPrank(user1);
         token.approve(user2, initialAmount);
-        token.decreaseAllowance(user2, decreaseAmount);
-        vm.stopPrank();
+        assertEq(token.allowance(user1, user2), initialAmount);
 
-        assertEq(token.allowance(user1, user2), initialAmount - decreaseAmount);
+        // Reset approval to zero
+        token.approve(user2, 0);
+        assertEq(token.allowance(user1, user2), 0);
+        vm.stopPrank();
     }
 
     /* ============ Integration Tests ============ */
