@@ -1,0 +1,455 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {TGAUX} from "./TGAUX.sol";
+import {OracleAggregator} from "./OracleAggregator.sol";
+
+/**
+ * @title VaultManager
+ * @dev Manages leveraged positions for gold-backed TGAUX tokens
+ *
+ * Features:
+ * - Position management with 1x-10x leverage
+ * - Multi-collateral support (USDC, USDT)
+ * - Dynamic collateralization ratio enforcement
+ * - Borrowing fee accrual (0.05% daily = 18.25% APR)
+ * - Protocol fee collection
+ * - Liquidation mechanism
+ */
+contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
+    // Role definitions
+    bytes32 public constant LIQUIDATOR_ROLE = keccak256("LIQUIDATOR_ROLE");
+    bytes32 public constant FEE_COLLECTOR_ROLE = keccak256("FEE_COLLECTOR_ROLE");
+
+    // Position structure
+    struct Position {
+        address owner;
+        uint256 collateralAmount;
+        address collateralToken;
+        uint256 tgauxMinted;
+        uint256 borrowedAmount;
+        uint256 leverage;
+        uint256 openPrice;
+        uint256 lastUpdateTimestamp;
+        bool isActive;
+    }
+
+    // Leverage tier configuration
+    struct LeverageTier {
+        uint256 minCollateralRatio; // Basis points (10000 = 100%)
+        uint256 liquidationRatio;   // Basis points (10000 = 100%)
+    }
+
+    // State variables
+    TGAUX public immutable tgaux;
+    OracleAggregator public immutable oracle;
+    address public immutable liquidityPool;
+
+    mapping(address => bool) public supportedCollateral;
+    mapping(uint256 => Position) public positions;
+    mapping(uint256 => LeverageTier) public leverageTiers;
+
+    uint256 public nextPositionId;
+    uint256 public constant BASIS_POINTS = 10000;
+    uint256 public constant DAILY_BORROW_RATE = 5; // 0.05% = 5 basis points
+    uint256 public constant SECONDS_PER_DAY = 86400;
+
+    // Protocol fees (in basis points)
+    uint256 public constant FEE_NO_LEVERAGE = 10;      // 0.1%
+    uint256 public constant FEE_WITH_LEVERAGE = 20;    // 0.2%
+    uint256 public constant FEE_BURN = 15;             // 0.15%
+
+    // Fee collection
+    mapping(address => uint256) public collectedFees;
+
+    // Events
+    event PositionOpened(
+        uint256 indexed positionId,
+        address indexed owner,
+        uint256 collateral,
+        uint256 leverage,
+        uint256 tgauxMinted
+    );
+    event PositionClosed(
+        uint256 indexed positionId,
+        address indexed owner,
+        uint256 returnAmount
+    );
+    event CollateralAdded(uint256 indexed positionId, uint256 amount);
+    event FeesCollected(uint256 amount, address indexed token);
+    event PositionLiquidated(
+        uint256 indexed positionId,
+        address indexed liquidator,
+        uint256 collateralSeized
+    );
+
+    /**
+     * @dev Constructor
+     * @param _admin Address to receive admin role
+     * @param _tgaux TGAUX token address
+     * @param _oracle OracleAggregator address
+     * @param _liquidityPool LiquidityPool address
+     * @param _usdc USDC token address
+     * @param _usdt USDT token address
+     */
+    constructor(
+        address _admin,
+        address _tgaux,
+        address _oracle,
+        address _liquidityPool,
+        address _usdc,
+        address _usdt
+    ) {
+        require(_admin != address(0), "VaultManager: zero admin address");
+        require(_tgaux != address(0), "VaultManager: zero tgaux address");
+        require(_oracle != address(0), "VaultManager: zero oracle address");
+        require(_liquidityPool != address(0), "VaultManager: zero pool address");
+        require(_usdc != address(0), "VaultManager: zero usdc address");
+        require(_usdt != address(0), "VaultManager: zero usdt address");
+
+        tgaux = TGAUX(_tgaux);
+        oracle = OracleAggregator(_oracle);
+        liquidityPool = _liquidityPool;
+
+        _grantRole(DEFAULT_ADMIN_ROLE, _admin);
+        _grantRole(FEE_COLLECTOR_ROLE, _admin);
+
+        // Set up supported collateral
+        supportedCollateral[_usdc] = true;
+        supportedCollateral[_usdt] = true;
+
+        // Configure leverage tiers
+        leverageTiers[1] = LeverageTier(15000, 12500);  // 1x: 150% CR, 125% liquidation
+        leverageTiers[2] = LeverageTier(20000, 16600);  // 2x: 200% CR, 166% liquidation
+        leverageTiers[3] = LeverageTier(25000, 20800);  // 3x: 250% CR, 208% liquidation
+        leverageTiers[5] = LeverageTier(35000, 29100);  // 5x: 350% CR, 291% liquidation
+        leverageTiers[10] = LeverageTier(60000, 50000); // 10x: 600% CR, 500% liquidation
+
+        nextPositionId = 1;
+    }
+
+    /**
+     * @dev Opens a new leveraged position
+     * @param collateralAmount Amount of collateral to deposit
+     * @param leverage Leverage multiplier (1-10)
+     * @param collateralToken Address of collateral token (USDC or USDT)
+     * @return positionId The ID of the newly created position
+     */
+    function openPosition(
+        uint256 collateralAmount,
+        uint256 leverage,
+        address collateralToken
+    ) external nonReentrant whenNotPaused returns (uint256 positionId) {
+        require(supportedCollateral[collateralToken], "VaultManager: unsupported collateral");
+        require(collateralAmount > 0, "VaultManager: zero collateral");
+        require(_isValidLeverage(leverage), "VaultManager: invalid leverage");
+
+        // Get current gold price
+        (uint256 goldPrice, ) = oracle.getGoldPrice();
+        require(goldPrice > 0, "VaultManager: invalid gold price");
+
+        // Calculate position parameters
+        uint256 totalValue = collateralAmount * leverage;
+        uint256 borrowedAmount = leverage > 1 ? collateralAmount * (leverage - 1) : 0;
+
+        // Calculate TGAUX to mint (8 decimals price, 6 decimals USDC/USDT, 18 decimals TGAUX)
+        // totalValue is in 6 decimals, goldPrice is in 8 decimals
+        // tgauxAmount = (totalValue * 10^20) / goldPrice
+        uint256 tgauxAmount = (totalValue * 1e20) / goldPrice;
+
+        // Verify collateralization ratio (before fees)
+        uint256 requiredRatio = leverageTiers[leverage].minCollateralRatio;
+        uint256 actualRatio = _calculateCollateralRatio(
+            collateralAmount,
+            tgauxAmount,
+            goldPrice
+        );
+        require(actualRatio >= requiredRatio, "VaultManager: insufficient collateral");
+
+        // Apply protocol fee
+        uint256 feeRate = leverage > 1 ? FEE_WITH_LEVERAGE : FEE_NO_LEVERAGE;
+        uint256 fee = (collateralAmount * feeRate) / BASIS_POINTS;
+        uint256 effectiveCollateral = collateralAmount - fee;
+
+        // Transfer collateral from user
+        IERC20(collateralToken).safeTransferFrom(msg.sender, address(this), collateralAmount);
+
+        // Collect protocol fee
+        collectedFees[collateralToken] += fee;
+
+        // Borrow from liquidity pool if leveraged
+        if (borrowedAmount > 0) {
+            ILiquidityPool(liquidityPool).borrow(borrowedAmount, collateralToken);
+        }
+
+        // Create position
+        positionId = nextPositionId++;
+        positions[positionId] = Position({
+            owner: msg.sender,
+            collateralAmount: effectiveCollateral,
+            collateralToken: collateralToken,
+            tgauxMinted: tgauxAmount,
+            borrowedAmount: borrowedAmount,
+            leverage: leverage,
+            openPrice: goldPrice,
+            lastUpdateTimestamp: block.timestamp,
+            isActive: true
+        });
+
+        // Mint TGAUX to user
+        tgaux.mint(msg.sender, tgauxAmount);
+
+        emit PositionOpened(positionId, msg.sender, effectiveCollateral, leverage, tgauxAmount);
+    }
+
+    /**
+     * @dev Closes a position and returns collateral
+     * @param positionId ID of the position to close
+     */
+    function closePosition(uint256 positionId) external nonReentrant whenNotPaused {
+        Position storage position = positions[positionId];
+        require(position.isActive, "VaultManager: position not active");
+        require(position.owner == msg.sender, "VaultManager: not position owner");
+
+        // Calculate accrued interest
+        uint256 interest = calculateInterest(positionId);
+        uint256 totalOwed = position.borrowedAmount + interest;
+
+        // Get current gold price
+        (uint256 goldPrice, ) = oracle.getGoldPrice();
+        require(goldPrice > 0, "VaultManager: invalid gold price");
+
+        // Burn TGAUX from user
+        tgaux.burnFrom(msg.sender, position.tgauxMinted);
+
+        // Calculate burn fee
+        uint256 burnFee = (position.collateralAmount * FEE_BURN) / BASIS_POINTS;
+        collectedFees[position.collateralToken] += burnFee;
+
+        // Calculate return amount
+        uint256 returnAmount = position.collateralAmount - burnFee;
+
+        // Deduct borrowed amount and interest
+        if (totalOwed > 0) {
+            require(returnAmount >= totalOwed, "VaultManager: insufficient collateral for repayment");
+            returnAmount -= totalOwed;
+
+            // Repay liquidity pool
+            IERC20(position.collateralToken).safeTransfer(liquidityPool, totalOwed);
+        }
+
+        // Mark position as inactive
+        position.isActive = false;
+
+        // Return remaining collateral to user
+        if (returnAmount > 0) {
+            IERC20(position.collateralToken).safeTransfer(msg.sender, returnAmount);
+        }
+
+        emit PositionClosed(positionId, msg.sender, returnAmount);
+    }
+
+    /**
+     * @dev Adds collateral to an existing position
+     * @param positionId ID of the position
+     * @param amount Amount of collateral to add
+     */
+    function addCollateral(uint256 positionId, uint256 amount) external nonReentrant whenNotPaused {
+        Position storage position = positions[positionId];
+        require(position.isActive, "VaultManager: position not active");
+        require(position.owner == msg.sender, "VaultManager: not position owner");
+        require(amount > 0, "VaultManager: zero amount");
+
+        // Transfer collateral from user
+        IERC20(position.collateralToken).safeTransferFrom(msg.sender, address(this), amount);
+
+        // Update position
+        position.collateralAmount += amount;
+        position.lastUpdateTimestamp = block.timestamp;
+
+        emit CollateralAdded(positionId, amount);
+    }
+
+    /**
+     * @dev Liquidates an undercollateralized position
+     * @param positionId ID of the position to liquidate
+     */
+    function liquidate(uint256 positionId) external nonReentrant onlyRole(LIQUIDATOR_ROLE) {
+        require(isLiquidatable(positionId), "VaultManager: position not liquidatable");
+
+        Position storage position = positions[positionId];
+
+        // Calculate accrued interest
+        uint256 interest = calculateInterest(positionId);
+        uint256 totalOwed = position.borrowedAmount + interest;
+
+        // Burn TGAUX (liquidator must have the tokens)
+        tgaux.burnFrom(msg.sender, position.tgauxMinted);
+
+        // Repay liquidity pool if borrowed
+        if (totalOwed > 0) {
+            IERC20(position.collateralToken).safeTransfer(liquidityPool, totalOwed);
+        }
+
+        // Remaining collateral goes to liquidator as reward
+        uint256 collateralSeized = position.collateralAmount > totalOwed
+            ? position.collateralAmount - totalOwed
+            : 0;
+
+        if (collateralSeized > 0) {
+            IERC20(position.collateralToken).safeTransfer(msg.sender, collateralSeized);
+        }
+
+        // Mark position as inactive
+        position.isActive = false;
+
+        emit PositionLiquidated(positionId, msg.sender, collateralSeized);
+    }
+
+    /**
+     * @dev Collects protocol fees
+     * @param token Address of the token to collect fees for
+     */
+    function collectFees(address token) external onlyRole(FEE_COLLECTOR_ROLE) {
+        uint256 amount = collectedFees[token];
+        require(amount > 0, "VaultManager: no fees to collect");
+
+        collectedFees[token] = 0;
+        IERC20(token).safeTransfer(msg.sender, amount);
+
+        emit FeesCollected(amount, token);
+    }
+
+    /**
+     * @dev Pauses the contract
+     */
+    function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _pause();
+    }
+
+    /**
+     * @dev Unpauses the contract
+     */
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _unpause();
+    }
+
+    // View functions
+
+    /**
+     * @dev Gets the health of a position (collateralization ratio)
+     * @param positionId ID of the position
+     * @return ratio Current collateralization ratio in basis points
+     */
+    function getPositionHealth(uint256 positionId) external view returns (uint256 ratio) {
+        Position storage position = positions[positionId];
+        require(position.isActive, "VaultManager: position not active");
+
+        (uint256 goldPrice, ) = oracle.getGoldPrice();
+        ratio = _calculateCollateralRatio(
+            position.collateralAmount,
+            position.tgauxMinted,
+            goldPrice
+        );
+    }
+
+    /**
+     * @dev Calculates accrued borrowing fees for a position
+     * @param positionId ID of the position
+     * @return interest Amount of interest accrued
+     */
+    function calculateInterest(uint256 positionId) public view returns (uint256 interest) {
+        Position storage position = positions[positionId];
+
+        if (position.borrowedAmount == 0) {
+            return 0;
+        }
+
+        uint256 timeElapsed = block.timestamp - position.lastUpdateTimestamp;
+        uint256 daysElapsed = timeElapsed / SECONDS_PER_DAY;
+
+        // Interest = borrowedAmount * rate * days
+        interest = (position.borrowedAmount * DAILY_BORROW_RATE * daysElapsed) / BASIS_POINTS;
+    }
+
+    /**
+     * @dev Checks if a position can be liquidated
+     * @param positionId ID of the position
+     * @return liquidatable True if position is liquidatable
+     */
+    function isLiquidatable(uint256 positionId) public view returns (bool liquidatable) {
+        Position storage position = positions[positionId];
+
+        if (!position.isActive) {
+            return false;
+        }
+
+        (uint256 goldPrice, ) = oracle.getGoldPrice();
+        uint256 currentRatio = _calculateCollateralRatio(
+            position.collateralAmount,
+            position.tgauxMinted,
+            goldPrice
+        );
+
+        uint256 liquidationRatio = leverageTiers[position.leverage].liquidationRatio;
+        liquidatable = currentRatio < liquidationRatio;
+    }
+
+    /**
+     * @dev Gets position details
+     * @param positionId ID of the position
+     * @return position The position struct
+     */
+    function getPosition(uint256 positionId) external view returns (Position memory position) {
+        position = positions[positionId];
+    }
+
+    // Internal functions
+
+    /**
+     * @dev Calculates collateralization ratio
+     * @param collateralAmount Amount of collateral (6 decimals)
+     * @param tgauxAmount Amount of TGAUX minted (18 decimals)
+     * @param goldPrice Current gold price (8 decimals)
+     * @return ratio Collateralization ratio in basis points
+     */
+    function _calculateCollateralRatio(
+        uint256 collateralAmount,
+        uint256 tgauxAmount,
+        uint256 goldPrice
+    ) internal pure returns (uint256 ratio) {
+        if (tgauxAmount == 0) {
+            return type(uint256).max;
+        }
+
+        // collateralValue = collateralAmount (6 decimals)
+        // tgauxValue = (tgauxAmount * goldPrice) / 10^20 (to get to 6 decimals)
+        // ratio = (collateralValue * BASIS_POINTS) / tgauxValue
+
+        uint256 tgauxValue = (tgauxAmount * goldPrice) / 1e20;
+        ratio = (collateralAmount * BASIS_POINTS) / tgauxValue;
+    }
+
+    /**
+     * @dev Checks if leverage value is valid
+     * @param leverage Leverage value to check
+     * @return valid True if leverage is valid
+     */
+    function _isValidLeverage(uint256 leverage) internal view returns (bool valid) {
+        return leverageTiers[leverage].minCollateralRatio > 0;
+    }
+}
+
+/**
+ * @dev Interface for LiquidityPool
+ */
+interface ILiquidityPool {
+    function borrow(uint256 amount, address token) external;
+}
