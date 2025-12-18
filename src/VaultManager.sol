@@ -126,11 +126,12 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         supportedCollateral[_usdt] = true;
 
         // Configure leverage tiers
-        leverageTiers[1] = LeverageTier(15000, 12500);  // 1x: 150% CR, 125% liquidation
-        leverageTiers[2] = LeverageTier(20000, 16600);  // 2x: 200% CR, 166% liquidation
-        leverageTiers[3] = LeverageTier(25000, 20800);  // 3x: 250% CR, 208% liquidation
-        leverageTiers[5] = LeverageTier(35000, 29100);  // 5x: 350% CR, 291% liquidation
-        leverageTiers[10] = LeverageTier(60000, 50000); // 10x: 600% CR, 500% liquidation
+        // CR = collateral / borrowed = 1 / (leverage - 1) for leverage > 1
+        leverageTiers[1] = LeverageTier(15000, 12500);  // 1x: 150% CR (no borrowing), 125% liquidation
+        leverageTiers[2] = LeverageTier(10000, 9000);   // 2x: 100% CR (1/1), 90% liquidation
+        leverageTiers[3] = LeverageTier(5000, 4500);    // 3x: 50% CR (1/2), 45% liquidation
+        leverageTiers[5] = LeverageTier(2500, 2250);    // 5x: 25% CR (1/4), 22.5% liquidation
+        leverageTiers[10] = LeverageTier(1111, 1000);   // 10x: 11.1% CR (1/9), 10% liquidation
 
         nextPositionId = 1;
     }
@@ -155,36 +156,46 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         (uint256 goldPrice, ) = oracle.getGoldPrice();
         require(goldPrice > 0, "VaultManager: invalid gold price");
 
-        // Calculate position parameters
-        uint256 totalValue = collateralAmount * leverage;
-        uint256 borrowedAmount = leverage > 1 ? collateralAmount * (leverage - 1) : 0;
-
-        // Calculate TGAUX to mint (8 decimals price, 6 decimals USDC/USDT, 18 decimals TGAUX)
-        // totalValue is in 6 decimals, goldPrice is in 8 decimals
-        // tgauxAmount = (totalValue * 10^20) / goldPrice
-        uint256 tgauxAmount = (totalValue * 1e20) / goldPrice;
-
-        // Verify collateralization ratio (before fees)
-        uint256 requiredRatio = leverageTiers[leverage].minCollateralRatio;
-        uint256 actualRatio = _calculateCollateralRatio(
-            collateralAmount,
-            tgauxAmount,
-            goldPrice
-        );
-        require(actualRatio >= requiredRatio, "VaultManager: insufficient collateral");
-
-        // Apply protocol fee
+        // Apply protocol fee first
         uint256 feeRate = leverage > 1 ? FEE_WITH_LEVERAGE : FEE_NO_LEVERAGE;
         uint256 fee = (collateralAmount * feeRate) / BASIS_POINTS;
         uint256 effectiveCollateral = collateralAmount - fee;
 
-        // Transfer collateral from user
-        IERC20(collateralToken).safeTransferFrom(msg.sender, address(this), collateralAmount);
+        // Get required collateralization ratio
+        uint256 requiredRatio = leverageTiers[leverage].minCollateralRatio;
+        require(requiredRatio > 0, "VaultManager: invalid leverage tier");
 
-        // Collect protocol fee
+        // Simple leverage formula
+        uint256 totalValue;
+        uint256 borrowedAmount;
+
+        if (leverage == 1) {
+            // 1x: over-collateralized, position = collateral / CR
+            totalValue = (effectiveCollateral * BASIS_POINTS) / requiredRatio;
+            borrowedAmount = 0;
+        } else {
+            // leverage > 1: use original collateral for leverage calculations
+            borrowedAmount = collateralAmount * (leverage - 1);
+            totalValue = collateralAmount * leverage;
+        }
+
+        uint256 tgauxAmount = (totalValue * 1e20) / goldPrice;
+
+        // Verify CR
+        if (leverage == 1) {
+            uint256 actualRatio = _calculateCollateralRatio(effectiveCollateral, tgauxAmount, goldPrice);
+            require(actualRatio >= requiredRatio, "VaultManager: insufficient collateral");
+        } else {
+            // For leverage > 1, verify CR using original collateral
+            uint256 actualRatio = (collateralAmount * BASIS_POINTS) / borrowedAmount;
+            require(actualRatio >= requiredRatio, "VaultManager: insufficient collateral");
+        }
+
+        // Transfer collateral
+        IERC20(collateralToken).safeTransferFrom(msg.sender, address(this), collateralAmount);
         collectedFees[collateralToken] += fee;
 
-        // Borrow from liquidity pool if leveraged
+        // Borrow if needed
         if (borrowedAmount > 0) {
             ILiquidityPool(liquidityPool).borrow(borrowedAmount, collateralToken);
         }
@@ -229,26 +240,20 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         // Burn TGAUX from user
         tgaux.burnFrom(msg.sender, position.tgauxMinted);
 
-        // Calculate burn fee
+        // Calculate burn fee on collateral
         uint256 burnFee = (position.collateralAmount * FEE_BURN) / BASIS_POINTS;
         collectedFees[position.collateralToken] += burnFee;
 
-        // Calculate return amount
-        uint256 returnAmount = position.collateralAmount - burnFee;
-
-        // Deduct borrowed amount and interest
+        // Repay borrowed amount and interest to liquidity pool
         if (totalOwed > 0) {
-            require(returnAmount >= totalOwed, "VaultManager: insufficient collateral for repayment");
-            returnAmount -= totalOwed;
-
-            // Repay liquidity pool
             IERC20(position.collateralToken).safeTransfer(liquidityPool, totalOwed);
         }
 
         // Mark position as inactive
         position.isActive = false;
 
-        // Return remaining collateral to user
+        // Return collateral minus burn fee to user
+        uint256 returnAmount = position.collateralAmount - burnFee;
         if (returnAmount > 0) {
             IERC20(position.collateralToken).safeTransfer(msg.sender, returnAmount);
         }

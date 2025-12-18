@@ -161,9 +161,14 @@ contract VaultManagerTest is Test {
         vm.startPrank(user1);
         usdc.approve(address(vault), collateral);
 
-        // Calculate expected TGAUX: (4500e6 * 1e20) / 200000000000 = 2.25e18
-        uint256 expectedTgaux = (collateral * leverage * 1e20) / GOLD_PRICE;
-        uint256 expectedCollateral = collateral - (collateral / 1000);
+        // Calculate expected TGAUX with 150% CR over-collateralization
+        // effectiveCollateral = collateral - fee = 4500 - 4.5 = 4495.5
+        // totalValue = effectiveCollateral / 1.5 = 4495.5 / 1.5 = 2997
+        // expectedTgaux = (2997e6 * 1e20) / 2e11 = 1.4985e18
+        uint256 effectiveCollateral = collateral - (collateral / 1000);
+        uint256 totalValue = (effectiveCollateral * 10000) / 15000; // Divide by 1.5 for 150% CR
+        uint256 expectedTgaux = (totalValue * 1e20) / GOLD_PRICE;
+        uint256 expectedCollateral = effectiveCollateral;
 
         vm.expectEmit(true, true, false, true);
         emit PositionOpened(1, user1, expectedCollateral, leverage, expectedTgaux);
@@ -260,7 +265,8 @@ contract VaultManagerTest is Test {
 
         vm.startPrank(user1);
         usdc.approve(address(vault), collateral);
-        vm.expectRevert("VaultManager: insufficient collateral");
+        // Extremely small amounts fail TGAUX minimum mint check first
+        vm.expectRevert("TGAUX: amount below minimum");
         vault.openPosition(collateral, leverage, address(usdc));
         vm.stopPrank();
     }
@@ -542,15 +548,27 @@ contract VaultManagerTest is Test {
         assertFalse(vault.isLiquidatable(positionId));
 
         // Increase price significantly to make position liquidatable
-        // Use smaller increments to avoid circuit breaker
-        uint256 newPrice = GOLD_PRICE * 104 / 100;
+        // For 150% CR to drop to 125%, need 20% price increase (150/125 = 1.2)
+        // Use smaller increments to avoid circuit breaker (5% max per update)
+        uint256 newPrice = GOLD_PRICE * 105 / 100;
         chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
         bandOracle.setReferenceData(newPrice * 1e10);
         api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
         oracle.updateTwap();
 
-        // Increase again
-        newPrice = newPrice * 104 / 100;
+        newPrice = newPrice * 105 / 100;
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
+        bandOracle.setReferenceData(newPrice * 1e10);
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+        oracle.updateTwap();
+
+        newPrice = newPrice * 105 / 100;
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
+        bandOracle.setReferenceData(newPrice * 1e10);
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+        oracle.updateTwap();
+
+        newPrice = newPrice * 105 / 100;
         chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
         bandOracle.setReferenceData(newPrice * 1e10);
         api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
@@ -575,13 +593,26 @@ contract VaultManagerTest is Test {
         vm.stopPrank();
 
         // Make position liquidatable with small increments to avoid circuit breaker
-        uint256 newPrice = GOLD_PRICE * 104 / 100;
+        // Need ~21.6% total increase for CR to drop from 150% to 125%
+        uint256 newPrice = GOLD_PRICE * 105 / 100;
         chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
         bandOracle.setReferenceData(newPrice * 1e10);
         api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
         oracle.updateTwap();
 
-        newPrice = newPrice * 104 / 100;
+        newPrice = newPrice * 105 / 100;
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
+        bandOracle.setReferenceData(newPrice * 1e10);
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+        oracle.updateTwap();
+
+        newPrice = newPrice * 105 / 100;
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
+        bandOracle.setReferenceData(newPrice * 1e10);
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+        oracle.updateTwap();
+
+        newPrice = newPrice * 105 / 100;
         chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
         bandOracle.setReferenceData(newPrice * 1e10);
         api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
