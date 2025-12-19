@@ -416,6 +416,86 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         position = positions[positionId];
     }
 
+    /**
+     * @dev Liquidate a position with a specific percentage
+     * @param positionId ID of the position to liquidate
+     * @param percentage Percentage to liquidate in basis points (e.g., 2500 = 25%)
+     * @return penalty Penalty amount collected
+     */
+    function liquidatePosition(uint256 positionId, uint256 percentage)
+        external
+        onlyRole(LIQUIDATOR_ROLE)
+        nonReentrant
+        returns (uint256 penalty)
+    {
+        Position storage position = positions[positionId];
+        require(position.isActive, "VaultManager: position not active");
+        require(isLiquidatable(positionId), "VaultManager: position not liquidatable");
+
+        // Calculate amounts to liquidate
+        uint256 tgauxToLiquidate = (position.tgauxMinted * percentage) / BASIS_POINTS;
+        uint256 collateralToReturn = (position.collateralAmount * percentage) / BASIS_POINTS;
+        uint256 borrowedToRepay = (position.borrowedAmount * percentage) / BASIS_POINTS;
+
+        // Calculate penalty (5-15% based on leverage)
+        uint256 penaltyRate = _calculateLiquidationPenalty(position.leverage);
+        penalty = (collateralToReturn * penaltyRate) / BASIS_POINTS;
+
+        // Burn TGAUX from owner
+        tgaux.burnFrom(position.owner, tgauxToLiquidate);
+
+        // Repay borrowed amount to liquidity pool
+        if (borrowedToRepay > 0) {
+            IERC20(position.collateralToken).safeTransfer(liquidityPool, borrowedToRepay);
+        }
+
+        // Deduct penalty from collateral
+        uint256 returnToOwner = collateralToReturn - penalty;
+
+        // Return remaining collateral to owner
+        if (returnToOwner > 0) {
+            IERC20(position.collateralToken).safeTransfer(position.owner, returnToOwner);
+        }
+
+        // Update position
+        position.tgauxMinted -= tgauxToLiquidate;
+        position.collateralAmount -= collateralToReturn;
+        position.borrowedAmount -= borrowedToRepay;
+
+        // If fully liquidated, mark as inactive
+        if (position.tgauxMinted == 0 || position.collateralAmount == 0) {
+            position.isActive = false;
+        }
+
+        emit PositionLiquidated(positionId, msg.sender, penalty);
+
+        return penalty;
+    }
+
+    /**
+     * @dev Get all active position IDs
+     * @return activeIds Array of active position IDs
+     */
+    function getActivePositionIds() external view returns (uint256[] memory activeIds) {
+        // Count active positions
+        uint256 activeCount = 0;
+        for (uint256 i = 1; i < nextPositionId; i++) {
+            if (positions[i].isActive) {
+                activeCount++;
+            }
+        }
+
+        // Build array
+        activeIds = new uint256[](activeCount);
+        uint256 index = 0;
+        for (uint256 i = 1; i < nextPositionId; i++) {
+            if (positions[i].isActive) {
+                activeIds[index] = i;
+                index++;
+            }
+        }
+    }
+
     // Internal functions
 
     /**
@@ -449,6 +529,24 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
      */
     function _isValidLeverage(uint256 leverage) internal view returns (bool valid) {
         return leverageTiers[leverage].minCollateralRatio > 0;
+    }
+
+    /**
+     * @dev Calculate liquidation penalty based on leverage
+     * @param leverage Leverage level
+     * @return penalty Penalty rate in basis points
+     */
+    function _calculateLiquidationPenalty(uint256 leverage) internal pure returns (uint256 penalty) {
+        if (leverage <= 2) {
+            return 500; // 5%
+        } else if (leverage == 3) {
+            return 700; // 7%
+        } else if (leverage == 5) {
+            return 1000; // 10%
+        } else if (leverage >= 10) {
+            return 1500; // 15%
+        }
+        return 500; // Default 5%
     }
 }
 
