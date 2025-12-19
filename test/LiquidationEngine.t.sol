@@ -259,10 +259,27 @@ contract LiquidationEngineTest is Test {
     /* ============ Batch Liquidation Tests ============ */
 
     function test_BatchLiquidate() public {
-        // Create multiple liquidatable positions
+        // Create multiple positions first
         uint256[] memory positionIds = new uint256[](3);
         for (uint256 i = 0; i < 3; i++) {
-            positionIds[i] = _createLiquidatablePosition();
+            vm.startPrank(user1);
+            usdc.approve(address(vaultManager), 3000e6);
+            positionIds[i] = vaultManager.openPosition(3000e6, 1, address(usdc));
+            tgaux.approve(address(vaultManager), type(uint256).max);
+            vm.stopPrank();
+        }
+
+        // Make all positions liquidatable with a single price increase sequence
+        for (uint256 i = 0; i < 5; i++) {
+            uint256 newPrice = GOLD_PRICE * (105 + i * 5) / 100;
+            chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
+            bandOracle.setReferenceData(newPrice * 1e10);
+            api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+            oracle.updateTwap();
+        }
+
+        // Mark all for liquidation
+        for (uint256 i = 0; i < 3; i++) {
             vm.prank(liquidator);
             liquidationEngine.markForLiquidation(positionIds[i]);
         }
@@ -366,6 +383,9 @@ contract LiquidationEngineTest is Test {
         vm.startPrank(user1);
         usdc.approve(address(vaultManager), 3000e6);
         positionId = vaultManager.openPosition(3000e6, 1, address(usdc));
+
+        // Approve VaultManager to burn TGAUX for liquidation
+        tgaux.approve(address(vaultManager), type(uint256).max);
         vm.stopPrank();
 
         // Increase price significantly to make it liquidatable
