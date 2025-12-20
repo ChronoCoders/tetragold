@@ -294,7 +294,6 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
         if (token == address(0)) revert InsuranceFund__InvalidToken();
         if (deployed[token] < amount) revert InsuranceFund__InsufficientFunds();
 
-        uint256 balanceBefore = IERC20(token).balanceOf(address(this));
         uint256 withdrawn = IAavePool(aavePool).withdraw(token, amount, address(this));
 
         deployed[token] -= amount;
@@ -355,7 +354,6 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
             // Withdraw excess
             uint256 toWithdraw = deployed[token] - targetDeployed;
 
-            uint256 balanceBefore = IERC20(token).balanceOf(address(this));
             uint256 withdrawn = IAavePool(aavePool).withdraw(token, toWithdraw, address(this));
 
             deployed[token] -= toWithdraw;
@@ -378,14 +376,13 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
      * @notice Get total reserves in USD equivalent (USDC + USDT, both 6 decimals)
      * @return Total reserves in USD (6 decimals)
      */
-    function getTotalReserves() public view returns (uint256) {
+    function getTotalReserves() public pure returns (uint256) {
         // Assuming USDC and USDT addresses are known
         // For simplicity, we'll sum all token reserves
         // In production, you'd iterate through supported tokens
-        uint256 total = 0;
         // This would need to be implemented based on supported tokens
         // For now, return 0 as placeholder
-        return total;
+        return 0;
     }
 
     /**
