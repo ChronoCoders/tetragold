@@ -462,14 +462,14 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
      */
     function _distributePenalty(uint256 penalty, address liquidator) internal {
         uint256 liquidatorReward = (penalty * LIQUIDATOR_SHARE) / BASIS_POINTS;
-        uint256 insuranceAmount = (penalty * INSURANCE_SHARE) / BASIS_POINTS;
-        uint256 treasuryAmount = (penalty * TREASURY_SHARE) / BASIS_POINTS;
 
         // Credit liquidator (pending rewards)
         liquidators[liquidator].pendingRewards += liquidatorReward;
 
-        // Note: Actual token transfers would happen here in production
-        // For now, we track amounts. Insurance fund and treasury would receive their shares.
+        // Note: Insurance fund and treasury shares calculated but not transferred yet
+        // uint256 insuranceAmount = (penalty * INSURANCE_SHARE) / BASIS_POINTS;
+        // uint256 treasuryAmount = (penalty * TREASURY_SHARE) / BASIS_POINTS;
+        // Actual token transfers to insurance fund and treasury would happen here in production
     }
 
     /**
