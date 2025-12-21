@@ -159,7 +159,8 @@ contract FeeDistributor is AccessControl, Pausable, ReentrancyGuard {
 
         // Update accumulated rewards per share for stakers
         if (totalStakedTGX > 0) {
-            accRewardPerShare[token] += (stakerAmount * PRECISION) / totalStakedTGX;
+            // Combine calculations to multiply before dividing (prevents precision loss)
+            accRewardPerShare[token] += (amount * STAKER_SHARE * PRECISION) / (BASIS_POINTS * totalStakedTGX);
         }
         stakerPools[token] += stakerAmount;
 
