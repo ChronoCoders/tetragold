@@ -181,6 +181,9 @@ contract FeeDistributor is AccessControl, Pausable, ReentrancyGuard {
     function stake(uint256 amount) external nonReentrant whenNotPaused {
         if (amount == 0) revert FeeDistributor__ZeroAmount();
 
+        // Update rewards before changing stake
+        _updateRewards(msg.sender);
+
         // Transfer TGX from user
         IERC20(tgxToken).safeTransferFrom(msg.sender, address(this), amount);
 
@@ -188,8 +191,8 @@ contract FeeDistributor is AccessControl, Pausable, ReentrancyGuard {
         stakedTGX[msg.sender] += amount;
         totalStakedTGX += amount;
 
-        // Update reward debt after staking
-        _updateRewards(msg.sender);
+        // Reset debt based on new stake to prevent claiming old rewards
+        _resetDebt(msg.sender);
 
         emit Staked(msg.sender, amount);
     }
@@ -208,6 +211,9 @@ contract FeeDistributor is AccessControl, Pausable, ReentrancyGuard {
         // Update stakes
         stakedTGX[msg.sender] -= amount;
         totalStakedTGX -= amount;
+
+        // Reset debt based on new stake
+        _resetDebt(msg.sender);
 
         // Return TGX to user
         IERC20(tgxToken).safeTransfer(msg.sender, amount);
@@ -228,11 +234,31 @@ contract FeeDistributor is AccessControl, Pausable, ReentrancyGuard {
         for (uint256 i = 0; i < supportedTokens.length; i++) {
             address token = supportedTokens[i];
             uint256 accumulatedReward = (userStake * accRewardPerShare[token]) / PRECISION;
-            uint256 pending = accumulatedReward - rewardDebt[user][token];
+            uint256 debt = rewardDebt[user][token];
+
+            // Calculate pending (handle case where debt > accumulated due to unstaking)
+            uint256 pending = accumulatedReward >= debt ? accumulatedReward - debt : 0;
+
             if (pending > 0) {
                 claimableRewards[user][token] += pending;
                 stakerPools[token] -= pending; // Deduct from pool when saving
             }
+
+            // CRITICAL: Always reset debt to current accumulated amount
+            // This ensures debt stays in sync with stake changes
+            rewardDebt[user][token] = accumulatedReward;
+        }
+    }
+
+    /**
+     * @notice Reset reward debt based on current stake
+     * @dev Called after stake changes to prevent claiming unearned rewards
+     * @param user User address
+     */
+    function _resetDebt(address user) internal {
+        uint256 userStake = stakedTGX[user];
+        for (uint256 i = 0; i < supportedTokens.length; i++) {
+            address token = supportedTokens[i];
             rewardDebt[user][token] = (userStake * accRewardPerShare[token]) / PRECISION;
         }
     }
