@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.30;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
@@ -30,7 +30,7 @@ contract TGAUX is ERC20, ERC20Burnable, ERC20Pausable, AccessControl {
     // Minimum transfer amount: 0.03215 TGAUX (1 gram equivalent)
     // 1 troy ounce = 31.1035 grams
     // 1 gram = 1/31.1035 troy ounce = 0.03215 TGAUX
-    uint256 public constant MINIMUM_TRANSFER_AMOUNT = 32150000000000000; // 0.03215 * 10^18
+    uint256 public constant MINIMUM_TRANSFER_AMOUNT = 32_150_000_000_000_000; // 0.03215 * 10^18
 
     // Custom events
     event Minted(address indexed to, uint256 amount, address indexed minter);

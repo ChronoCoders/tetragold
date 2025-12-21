@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.30;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
@@ -378,10 +378,10 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         }
 
         uint256 timeElapsed = block.timestamp - position.lastUpdateTimestamp;
-        uint256 daysElapsed = timeElapsed / SECONDS_PER_DAY;
 
-        // Interest = borrowedAmount * rate * days
-        interest = (position.borrowedAmount * DAILY_BORROW_RATE * daysElapsed) / BASIS_POINTS;
+        // Interest = borrowedAmount * rate * timeElapsed / (BASIS_POINTS * SECONDS_PER_DAY)
+        // Multiply first to avoid precision loss from intermediate division
+        interest = (position.borrowedAmount * DAILY_BORROW_RATE * timeElapsed) / (BASIS_POINTS * SECONDS_PER_DAY);
     }
 
     /**
@@ -438,8 +438,9 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         uint256 borrowedToRepay = (position.borrowedAmount * percentage) / BASIS_POINTS;
 
         // Calculate penalty (5-15% based on leverage)
+        // Combine multiplications to avoid precision loss
         uint256 penaltyRate = _calculateLiquidationPenalty(position.leverage);
-        penalty = (collateralToReturn * penaltyRate) / BASIS_POINTS;
+        penalty = (position.collateralAmount * percentage * penaltyRate) / (BASIS_POINTS * BASIS_POINTS);
 
         // Burn TGAUX from owner
         tgaux.burnFrom(position.owner, tgauxToLiquidate);

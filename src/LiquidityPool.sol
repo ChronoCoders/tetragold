@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.30;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
@@ -84,6 +84,9 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
     /* ============ Constructor ============ */
 
     constructor(address _usdc, address _usdt) {
+        require(_usdc != address(0), "LiquidityPool: zero usdc address");
+        require(_usdt != address(0), "LiquidityPool: zero usdt address");
+
         usdc = _usdc;
         usdt = _usdt;
 

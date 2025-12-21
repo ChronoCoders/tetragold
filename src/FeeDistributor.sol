@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.30;
+pragma solidity 0.8.30;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
@@ -229,9 +229,10 @@ contract FeeDistributor is AccessControl, Pausable, ReentrancyGuard {
      */
     function _updateRewards(address user) internal {
         uint256 userStake = stakedTGX[user];
+        uint256 tokensLength = supportedTokens.length;
 
         // Save pending rewards before updating debt
-        for (uint256 i = 0; i < supportedTokens.length; i++) {
+        for (uint256 i = 0; i < tokensLength; i++) {
             address token = supportedTokens[i];
             uint256 accumulatedReward = (userStake * accRewardPerShare[token]) / PRECISION;
             uint256 debt = rewardDebt[user][token];
@@ -307,9 +308,10 @@ contract FeeDistributor is AccessControl, Pausable, ReentrancyGuard {
      */
     function claimAllRewards() external nonReentrant whenNotPaused returns (uint256[] memory amounts) {
         uint256 userStake = stakedTGX[msg.sender];
-        amounts = new uint256[](supportedTokens.length);
+        uint256 tokensLength = supportedTokens.length;
+        amounts = new uint256[](tokensLength);
 
-        for (uint256 i = 0; i < supportedTokens.length; i++) {
+        for (uint256 i = 0; i < tokensLength; i++) {
             address token = supportedTokens[i];
             uint256 accumulatedReward = (userStake * accRewardPerShare[token]) / PRECISION;
             uint256 debt = rewardDebt[msg.sender][token];

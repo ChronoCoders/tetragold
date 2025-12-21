@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.30;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
@@ -17,7 +17,7 @@ contract LPToken is ERC20 {
         _;
     }
 
-    constructor(string memory name, string memory symbol) ERC20(name, symbol) {
+    constructor(string memory _name, string memory _symbol) ERC20(_name, _symbol) {
         liquidityPool = msg.sender;
     }
 
