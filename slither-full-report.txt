@@ -1,0 +1,697 @@
+'forge clean' running (wd: /home/user/tetragold)
+'forge config --json' running
+'forge build --build-info --skip ./test/** ./script/** --force' running (wd: /home/user/tetragold)
+INFO:Detectors:
+FeeDistributor._distributeFees(address,uint256) (src/FeeDistributor.sol#147-173) performs a multiplication on the result of a division:
+	- stakerAmount = (amount * STAKER_SHARE) / BASIS_POINTS (src/FeeDistributor.sol#151)
+	- accRewardPerShare[token] += (stakerAmount * PRECISION) / totalStakedTGX (src/FeeDistributor.sol#162)
+VaultManager.calculateInterest(uint256) (src/VaultManager.sol#373-385) performs a multiplication on the result of a division:
+	- daysElapsed = timeElapsed / SECONDS_PER_DAY (src/VaultManager.sol#381)
+	- interest = (position.borrowedAmount * DAILY_BORROW_RATE * daysElapsed) / BASIS_POINTS (src/VaultManager.sol#384)
+VaultManager.liquidatePosition(uint256,uint256) (src/VaultManager.sol#425-473) performs a multiplication on the result of a division:
+	- collateralToReturn = (position.collateralAmount * percentage) / BASIS_POINTS (src/VaultManager.sol#437)
+	- penalty = (collateralToReturn * penaltyRate) / BASIS_POINTS (src/VaultManager.sol#442)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#divide-before-multiply
+INFO:Detectors:
+LiquidityPool._accrueInterest(LiquidityPool.PoolType) (src/LiquidityPool.sol#406-422) uses a dangerous strict equality:
+	- timeDelta == 0 || pool.totalBorrowed == 0 (src/LiquidityPool.sol#411)
+OracleAggregator._calculateTwap() (src/OracleAggregator.sol#282-301) uses a dangerous strict equality:
+	- priceHistory.length == 0 (src/OracleAggregator.sol#283)
+OracleAggregator._calculateTwap() (src/OracleAggregator.sol#282-301) uses a dangerous strict equality:
+	- priceHistory.length == 1 (src/OracleAggregator.sol#284)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#dangerous-strict-equalities
+INFO:Detectors:
+Reentrancy in LiquidationEngine._liquidatePosition(uint256,address) (src/LiquidationEngine.sol#413-456):
+	External calls:
+	- penalty = IVaultManager(vaultManager).liquidatePosition(positionId,LIQUIDATION_TRANCHE) (src/LiquidationEngine.sol#435)
+	State variables written after the call(s):
+	- partialLiq.tranchesLiquidated ++ (src/LiquidationEngine.sol#438)
+	LiquidationEngine.partialLiquidations (src/LiquidationEngine.sol#72) can be used in cross function reentrancies:
+	- LiquidationEngine._liquidatePosition(uint256,address) (src/LiquidationEngine.sol#413-456)
+	- LiquidationEngine.getPositionLiquidationInfo(uint256) (src/LiquidationEngine.sol#352-362)
+	- LiquidationEngine.partialLiquidations (src/LiquidationEngine.sol#72)
+	- partialLiq.lastLiquidationTime = block.timestamp (src/LiquidationEngine.sol#439)
+	LiquidationEngine.partialLiquidations (src/LiquidationEngine.sol#72) can be used in cross function reentrancies:
+	- LiquidationEngine._liquidatePosition(uint256,address) (src/LiquidationEngine.sol#413-456)
+	- LiquidationEngine.getPositionLiquidationInfo(uint256) (src/LiquidationEngine.sol#352-362)
+	- LiquidationEngine.partialLiquidations (src/LiquidationEngine.sol#72)
+	- partialLiq.totalPenalty += penalty (src/LiquidationEngine.sol#440)
+	LiquidationEngine.partialLiquidations (src/LiquidationEngine.sol#72) can be used in cross function reentrancies:
+	- LiquidationEngine._liquidatePosition(uint256,address) (src/LiquidationEngine.sol#413-456)
+	- LiquidationEngine.getPositionLiquidationInfo(uint256) (src/LiquidationEngine.sol#352-362)
+	- LiquidationEngine.partialLiquidations (src/LiquidationEngine.sol#72)
+Reentrancy in InsuranceFund._rebalanceToken(address) (src/InsuranceFund.sol#335-371):
+	External calls:
+	- withdrawn = IAavePool(aavePool).withdraw(token,toWithdraw,address(this)) (src/InsuranceFund.sol#357)
+	State variables written after the call(s):
+	- deployed[token] -= toWithdraw (src/InsuranceFund.sol#359)
+	InsuranceFund.deployed (src/InsuranceFund.sol#83) can be used in cross function reentrancies:
+	- InsuranceFund._rebalanceToken(address) (src/InsuranceFund.sol#335-371)
+	- InsuranceFund._withdrawFromAave(uint256,address) (src/InsuranceFund.sol#292-310)
+	- InsuranceFund.deployToAave(uint256,address) (src/InsuranceFund.sol#256-272)
+	- InsuranceFund.deployed (src/InsuranceFund.sol#83)
+	- InsuranceFund.getAvailableLiquidity(address) (src/InsuranceFund.sol#402-404)
+	- InsuranceFund.getTotalReservesForToken(address) (src/InsuranceFund.sol#393-395)
+	- InsuranceFund.getYieldStrategy(address) (src/InsuranceFund.sol#447-452)
+	- reserves[token] += withdrawn (src/InsuranceFund.sol#360)
+	InsuranceFund.reserves (src/InsuranceFund.sol#82) can be used in cross function reentrancies:
+	- InsuranceFund._rebalanceToken(address) (src/InsuranceFund.sol#335-371)
+	- InsuranceFund._withdrawFromAave(uint256,address) (src/InsuranceFund.sol#292-310)
+	- InsuranceFund.deployToAave(uint256,address) (src/InsuranceFund.sol#256-272)
+	- InsuranceFund.depositFromFees(uint256,address) (src/InsuranceFund.sol#156-171)
+	- InsuranceFund.depositFromLiquidation(uint256,address) (src/InsuranceFund.sol#178-193)
+	- InsuranceFund.getAvailableLiquidity(address) (src/InsuranceFund.sol#402-404)
+	- InsuranceFund.getTotalReservesForToken(address) (src/InsuranceFund.sol#393-395)
+	- InsuranceFund.getYieldStrategy(address) (src/InsuranceFund.sol#447-452)
+	- InsuranceFund.reserves (src/InsuranceFund.sol#82)
+Reentrancy in InsuranceFund._withdrawFromAave(uint256,address) (src/InsuranceFund.sol#292-310):
+	External calls:
+	- withdrawn = IAavePool(aavePool).withdraw(token,amount,address(this)) (src/InsuranceFund.sol#297)
+	State variables written after the call(s):
+	- deployed[token] -= amount (src/InsuranceFund.sol#299)
+	InsuranceFund.deployed (src/InsuranceFund.sol#83) can be used in cross function reentrancies:
+	- InsuranceFund._rebalanceToken(address) (src/InsuranceFund.sol#335-371)
+	- InsuranceFund._withdrawFromAave(uint256,address) (src/InsuranceFund.sol#292-310)
+	- InsuranceFund.deployToAave(uint256,address) (src/InsuranceFund.sol#256-272)
+	- InsuranceFund.deployed (src/InsuranceFund.sol#83)
+	- InsuranceFund.getAvailableLiquidity(address) (src/InsuranceFund.sol#402-404)
+	- InsuranceFund.getTotalReservesForToken(address) (src/InsuranceFund.sol#393-395)
+	- InsuranceFund.getYieldStrategy(address) (src/InsuranceFund.sol#447-452)
+Reentrancy in VaultManager.addCollateral(uint256,uint256) (src/VaultManager.sol#269-283):
+	External calls:
+	- IERC20(position.collateralToken).safeTransferFrom(msg.sender,address(this),amount) (src/VaultManager.sol#276)
+	State variables written after the call(s):
+	- position.collateralAmount += amount (src/VaultManager.sol#279)
+	VaultManager.positions (src/VaultManager.sol#56) can be used in cross function reentrancies:
+	- VaultManager.calculateInterest(uint256) (src/VaultManager.sol#373-385)
+	- VaultManager.getActivePositionIds() (src/VaultManager.sol#479-497)
+	- VaultManager.getPosition(uint256) (src/VaultManager.sol#415-417)
+	- VaultManager.getPositionHealth(uint256) (src/VaultManager.sol#356-366)
+	- VaultManager.isLiquidatable(uint256) (src/VaultManager.sol#392-408)
+	- VaultManager.positions (src/VaultManager.sol#56)
+	- position.lastUpdateTimestamp = block.timestamp (src/VaultManager.sol#280)
+	VaultManager.positions (src/VaultManager.sol#56) can be used in cross function reentrancies:
+	- VaultManager.calculateInterest(uint256) (src/VaultManager.sol#373-385)
+	- VaultManager.getActivePositionIds() (src/VaultManager.sol#479-497)
+	- VaultManager.getPosition(uint256) (src/VaultManager.sol#415-417)
+	- VaultManager.getPositionHealth(uint256) (src/VaultManager.sol#356-366)
+	- VaultManager.isLiquidatable(uint256) (src/VaultManager.sol#392-408)
+	- VaultManager.positions (src/VaultManager.sol#56)
+Reentrancy in LiquidityPool.borrow(uint256,address) (src/LiquidityPool.sol#201-234):
+	External calls:
+	- IERC20(token).safeTransfer(msg.sender,amount) (src/LiquidityPool.sol#226)
+	State variables written after the call(s):
+	- _updateUtilization(poolType) (src/LiquidityPool.sol#229)
+		- pool.utilizationRate = 0 (src/LiquidityPool.sol#394)
+		- pool.utilizationRate = (pool.totalBorrowed * BASIS_POINTS) / pool.totalDeposits (src/LiquidityPool.sol#396)
+	LiquidityPool.pools (src/LiquidityPool.sol#49) can be used in cross function reentrancies:
+	- LiquidityPool.calculateBorrowAPY(LiquidityPool.PoolType) (src/LiquidityPool.sol#302-315)
+	- LiquidityPool.calculateLPAPY(LiquidityPool.PoolType) (src/LiquidityPool.sol#322-328)
+	- LiquidityPool.calculateLPTokenPrice(LiquidityPool.PoolType) (src/LiquidityPool.sol#345-356)
+	- LiquidityPool.constructor(address,address) (src/LiquidityPool.sol#86-107)
+	- LiquidityPool.getAvailableLiquidity(LiquidityPool.PoolType) (src/LiquidityPool.sol#335-338)
+	- LiquidityPool.getPoolInfo(LiquidityPool.PoolType) (src/LiquidityPool.sol#367-382)
+	- LiquidityPool.pools (src/LiquidityPool.sol#49)
+Reentrancy in FeeDistributor.claimAllRewards() (src/FeeDistributor.sol#308-335):
+	External calls:
+	- IERC20(token).safeTransfer(msg.sender,amount) (src/FeeDistributor.sol#330)
+	State variables written after the call(s):
+	- claimableRewards[msg.sender][token] = 0 (src/FeeDistributor.sol#322)
+	FeeDistributor.claimableRewards (src/FeeDistributor.sol#63) can be used in cross function reentrancies:
+	- FeeDistributor.claimableRewards (src/FeeDistributor.sol#63)
+	- FeeDistributor.getPendingRewards(address,address) (src/FeeDistributor.sol#345-355)
+	- rewardDebt[msg.sender][token] = accumulatedReward (src/FeeDistributor.sol#323)
+	FeeDistributor.rewardDebt (src/FeeDistributor.sol#62) can be used in cross function reentrancies:
+	- FeeDistributor.getPendingRewards(address,address) (src/FeeDistributor.sol#345-355)
+	- FeeDistributor.rewardDebt (src/FeeDistributor.sol#62)
+	- stakerPools[token] -= pending (src/FeeDistributor.sol#327)
+	FeeDistributor.stakerPools (src/FeeDistributor.sol#64) can be used in cross function reentrancies:
+	- FeeDistributor._distributeFees(address,uint256) (src/FeeDistributor.sol#147-173)
+	- FeeDistributor.stakerPools (src/FeeDistributor.sol#64)
+Reentrancy in VaultManager.closePosition(uint256) (src/VaultManager.sol#227-262):
+	External calls:
+	- tgaux.burnFrom(msg.sender,position.tgauxMinted) (src/VaultManager.sol#241)
+	- IERC20(position.collateralToken).safeTransfer(liquidityPool,totalOwed) (src/VaultManager.sol#249)
+	State variables written after the call(s):
+	- position.isActive = false (src/VaultManager.sol#253)
+	VaultManager.positions (src/VaultManager.sol#56) can be used in cross function reentrancies:
+	- VaultManager.calculateInterest(uint256) (src/VaultManager.sol#373-385)
+	- VaultManager.getActivePositionIds() (src/VaultManager.sol#479-497)
+	- VaultManager.getPosition(uint256) (src/VaultManager.sol#415-417)
+	- VaultManager.getPositionHealth(uint256) (src/VaultManager.sol#356-366)
+	- VaultManager.isLiquidatable(uint256) (src/VaultManager.sol#392-408)
+	- VaultManager.positions (src/VaultManager.sol#56)
+Reentrancy in InsuranceFund.coverLoss(uint256,uint256,address,InsuranceFund.CoverageReason) (src/InsuranceFund.sol#205-247):
+	External calls:
+	- _withdrawFromAave(toWithdraw,token) (src/InsuranceFund.sol#220)
+		- withdrawn = IAavePool(aavePool).withdraw(token,amount,address(this)) (src/InsuranceFund.sol#297)
+	State variables written after the call(s):
+	- reserves[token] -= amount (src/InsuranceFund.sol#224)
+	InsuranceFund.reserves (src/InsuranceFund.sol#82) can be used in cross function reentrancies:
+	- InsuranceFund._rebalanceToken(address) (src/InsuranceFund.sol#335-371)
+	- InsuranceFund._withdrawFromAave(uint256,address) (src/InsuranceFund.sol#292-310)
+	- InsuranceFund.deployToAave(uint256,address) (src/InsuranceFund.sol#256-272)
+	- InsuranceFund.depositFromFees(uint256,address) (src/InsuranceFund.sol#156-171)
+	- InsuranceFund.depositFromLiquidation(uint256,address) (src/InsuranceFund.sol#178-193)
+	- InsuranceFund.getAvailableLiquidity(address) (src/InsuranceFund.sol#402-404)
+	- InsuranceFund.getTotalReservesForToken(address) (src/InsuranceFund.sol#393-395)
+	- InsuranceFund.getYieldStrategy(address) (src/InsuranceFund.sol#447-452)
+	- InsuranceFund.reserves (src/InsuranceFund.sol#82)
+Reentrancy in LiquidityPool.depositLP(uint256,LiquidityPool.PoolType,address) (src/LiquidityPool.sol#118-149):
+	External calls:
+	- IERC20(token).safeTransferFrom(msg.sender,address(this),amount) (src/LiquidityPool.sol#136)
+	State variables written after the call(s):
+	- pool.totalDeposits += amount (src/LiquidityPool.sol#139)
+	LiquidityPool.pools (src/LiquidityPool.sol#49) can be used in cross function reentrancies:
+	- LiquidityPool.calculateBorrowAPY(LiquidityPool.PoolType) (src/LiquidityPool.sol#302-315)
+	- LiquidityPool.calculateLPAPY(LiquidityPool.PoolType) (src/LiquidityPool.sol#322-328)
+	- LiquidityPool.calculateLPTokenPrice(LiquidityPool.PoolType) (src/LiquidityPool.sol#345-356)
+	- LiquidityPool.constructor(address,address) (src/LiquidityPool.sol#86-107)
+	- LiquidityPool.getAvailableLiquidity(LiquidityPool.PoolType) (src/LiquidityPool.sol#335-338)
+	- LiquidityPool.getPoolInfo(LiquidityPool.PoolType) (src/LiquidityPool.sol#367-382)
+	- LiquidityPool.pools (src/LiquidityPool.sol#49)
+Reentrancy in LiquidityPool.depositLP(uint256,LiquidityPool.PoolType,address) (src/LiquidityPool.sol#118-149):
+	External calls:
+	- IERC20(token).safeTransferFrom(msg.sender,address(this),amount) (src/LiquidityPool.sol#136)
+	- LPToken(pool.lpToken).mint(msg.sender,lpTokens) (src/LiquidityPool.sol#143)
+	State variables written after the call(s):
+	- _updateUtilization(poolType) (src/LiquidityPool.sol#146)
+		- pool.utilizationRate = 0 (src/LiquidityPool.sol#394)
+		- pool.utilizationRate = (pool.totalBorrowed * BASIS_POINTS) / pool.totalDeposits (src/LiquidityPool.sol#396)
+	LiquidityPool.pools (src/LiquidityPool.sol#49) can be used in cross function reentrancies:
+	- LiquidityPool.calculateBorrowAPY(LiquidityPool.PoolType) (src/LiquidityPool.sol#302-315)
+	- LiquidityPool.calculateLPAPY(LiquidityPool.PoolType) (src/LiquidityPool.sol#322-328)
+	- LiquidityPool.calculateLPTokenPrice(LiquidityPool.PoolType) (src/LiquidityPool.sol#345-356)
+	- LiquidityPool.constructor(address,address) (src/LiquidityPool.sol#86-107)
+	- LiquidityPool.getAvailableLiquidity(LiquidityPool.PoolType) (src/LiquidityPool.sol#335-338)
+	- LiquidityPool.getPoolInfo(LiquidityPool.PoolType) (src/LiquidityPool.sol#367-382)
+	- LiquidityPool.pools (src/LiquidityPool.sol#49)
+Reentrancy in InsuranceFund.emergencyWithdraw(address,uint256,address,string) (src/InsuranceFund.sol#490-514):
+	External calls:
+	- _withdrawFromAave(toWithdraw,token) (src/InsuranceFund.sol#504)
+		- withdrawn = IAavePool(aavePool).withdraw(token,amount,address(this)) (src/InsuranceFund.sol#297)
+	State variables written after the call(s):
+	- reserves[token] -= amount (src/InsuranceFund.sol#510)
+	InsuranceFund.reserves (src/InsuranceFund.sol#82) can be used in cross function reentrancies:
+	- InsuranceFund._rebalanceToken(address) (src/InsuranceFund.sol#335-371)
+	- InsuranceFund._withdrawFromAave(uint256,address) (src/InsuranceFund.sol#292-310)
+	- InsuranceFund.deployToAave(uint256,address) (src/InsuranceFund.sol#256-272)
+	- InsuranceFund.depositFromFees(uint256,address) (src/InsuranceFund.sol#156-171)
+	- InsuranceFund.depositFromLiquidation(uint256,address) (src/InsuranceFund.sol#178-193)
+	- InsuranceFund.getAvailableLiquidity(address) (src/InsuranceFund.sol#402-404)
+	- InsuranceFund.getTotalReservesForToken(address) (src/InsuranceFund.sol#393-395)
+	- InsuranceFund.getYieldStrategy(address) (src/InsuranceFund.sol#447-452)
+	- InsuranceFund.reserves (src/InsuranceFund.sol#82)
+Reentrancy in VaultManager.liquidate(uint256) (src/VaultManager.sol#289-319):
+	External calls:
+	- tgaux.burnFrom(msg.sender,position.tgauxMinted) (src/VaultManager.sol#299)
+	- IERC20(position.collateralToken).safeTransfer(liquidityPool,totalOwed) (src/VaultManager.sol#303)
+	- IERC20(position.collateralToken).safeTransfer(msg.sender,collateralSeized) (src/VaultManager.sol#312)
+	State variables written after the call(s):
+	- position.isActive = false (src/VaultManager.sol#316)
+	VaultManager.positions (src/VaultManager.sol#56) can be used in cross function reentrancies:
+	- VaultManager.calculateInterest(uint256) (src/VaultManager.sol#373-385)
+	- VaultManager.getActivePositionIds() (src/VaultManager.sol#479-497)
+	- VaultManager.getPosition(uint256) (src/VaultManager.sol#415-417)
+	- VaultManager.getPositionHealth(uint256) (src/VaultManager.sol#356-366)
+	- VaultManager.isLiquidatable(uint256) (src/VaultManager.sol#392-408)
+	- VaultManager.positions (src/VaultManager.sol#56)
+Reentrancy in VaultManager.liquidatePosition(uint256,uint256) (src/VaultManager.sol#425-473):
+	External calls:
+	- tgaux.burnFrom(position.owner,tgauxToLiquidate) (src/VaultManager.sol#445)
+	- IERC20(position.collateralToken).safeTransfer(liquidityPool,borrowedToRepay) (src/VaultManager.sol#449)
+	- IERC20(position.collateralToken).safeTransfer(position.owner,returnToOwner) (src/VaultManager.sol#457)
+	State variables written after the call(s):
+	- position.tgauxMinted -= tgauxToLiquidate (src/VaultManager.sol#461)
+	VaultManager.positions (src/VaultManager.sol#56) can be used in cross function reentrancies:
+	- VaultManager.calculateInterest(uint256) (src/VaultManager.sol#373-385)
+	- VaultManager.getActivePositionIds() (src/VaultManager.sol#479-497)
+	- VaultManager.getPosition(uint256) (src/VaultManager.sol#415-417)
+	- VaultManager.getPositionHealth(uint256) (src/VaultManager.sol#356-366)
+	- VaultManager.isLiquidatable(uint256) (src/VaultManager.sol#392-408)
+	- VaultManager.positions (src/VaultManager.sol#56)
+	- position.collateralAmount -= collateralToReturn (src/VaultManager.sol#462)
+	VaultManager.positions (src/VaultManager.sol#56) can be used in cross function reentrancies:
+	- VaultManager.calculateInterest(uint256) (src/VaultManager.sol#373-385)
+	- VaultManager.getActivePositionIds() (src/VaultManager.sol#479-497)
+	- VaultManager.getPosition(uint256) (src/VaultManager.sol#415-417)
+	- VaultManager.getPositionHealth(uint256) (src/VaultManager.sol#356-366)
+	- VaultManager.isLiquidatable(uint256) (src/VaultManager.sol#392-408)
+	- VaultManager.positions (src/VaultManager.sol#56)
+	- position.borrowedAmount -= borrowedToRepay (src/VaultManager.sol#463)
+	VaultManager.positions (src/VaultManager.sol#56) can be used in cross function reentrancies:
+	- VaultManager.calculateInterest(uint256) (src/VaultManager.sol#373-385)
+	- VaultManager.getActivePositionIds() (src/VaultManager.sol#479-497)
+	- VaultManager.getPosition(uint256) (src/VaultManager.sol#415-417)
+	- VaultManager.getPositionHealth(uint256) (src/VaultManager.sol#356-366)
+	- VaultManager.isLiquidatable(uint256) (src/VaultManager.sol#392-408)
+	- VaultManager.positions (src/VaultManager.sol#56)
+	- position.isActive = false (src/VaultManager.sol#467)
+	VaultManager.positions (src/VaultManager.sol#56) can be used in cross function reentrancies:
+	- VaultManager.calculateInterest(uint256) (src/VaultManager.sol#373-385)
+	- VaultManager.getActivePositionIds() (src/VaultManager.sol#479-497)
+	- VaultManager.getPosition(uint256) (src/VaultManager.sol#415-417)
+	- VaultManager.getPositionHealth(uint256) (src/VaultManager.sol#356-366)
+	- VaultManager.isLiquidatable(uint256) (src/VaultManager.sol#392-408)
+	- VaultManager.positions (src/VaultManager.sol#56)
+Reentrancy in LiquidityPool.repay(uint256,address) (src/LiquidityPool.sol#242-279):
+	External calls:
+	- IERC20(token).safeTransferFrom(msg.sender,address(this),amount) (src/LiquidityPool.sol#257)
+	State variables written after the call(s):
+	- pool.totalBorrowed -= principal (src/LiquidityPool.sol#264)
+	LiquidityPool.pools (src/LiquidityPool.sol#49) can be used in cross function reentrancies:
+	- LiquidityPool.calculateBorrowAPY(LiquidityPool.PoolType) (src/LiquidityPool.sol#302-315)
+	- LiquidityPool.calculateLPAPY(LiquidityPool.PoolType) (src/LiquidityPool.sol#322-328)
+	- LiquidityPool.calculateLPTokenPrice(LiquidityPool.PoolType) (src/LiquidityPool.sol#345-356)
+	- LiquidityPool.constructor(address,address) (src/LiquidityPool.sol#86-107)
+	- LiquidityPool.getAvailableLiquidity(LiquidityPool.PoolType) (src/LiquidityPool.sol#335-338)
+	- LiquidityPool.getPoolInfo(LiquidityPool.PoolType) (src/LiquidityPool.sol#367-382)
+	- LiquidityPool.pools (src/LiquidityPool.sol#49)
+	- pool.totalDeposits += interest (src/LiquidityPool.sol#269)
+	LiquidityPool.pools (src/LiquidityPool.sol#49) can be used in cross function reentrancies:
+	- LiquidityPool.calculateBorrowAPY(LiquidityPool.PoolType) (src/LiquidityPool.sol#302-315)
+	- LiquidityPool.calculateLPAPY(LiquidityPool.PoolType) (src/LiquidityPool.sol#322-328)
+	- LiquidityPool.calculateLPTokenPrice(LiquidityPool.PoolType) (src/LiquidityPool.sol#345-356)
+	- LiquidityPool.constructor(address,address) (src/LiquidityPool.sol#86-107)
+	- LiquidityPool.getAvailableLiquidity(LiquidityPool.PoolType) (src/LiquidityPool.sol#335-338)
+	- LiquidityPool.getPoolInfo(LiquidityPool.PoolType) (src/LiquidityPool.sol#367-382)
+	- LiquidityPool.pools (src/LiquidityPool.sol#49)
+	- pool.accruedInterest -= interest (src/LiquidityPool.sol#270)
+	LiquidityPool.pools (src/LiquidityPool.sol#49) can be used in cross function reentrancies:
+	- LiquidityPool.calculateBorrowAPY(LiquidityPool.PoolType) (src/LiquidityPool.sol#302-315)
+	- LiquidityPool.calculateLPAPY(LiquidityPool.PoolType) (src/LiquidityPool.sol#322-328)
+	- LiquidityPool.calculateLPTokenPrice(LiquidityPool.PoolType) (src/LiquidityPool.sol#345-356)
+	- LiquidityPool.constructor(address,address) (src/LiquidityPool.sol#86-107)
+	- LiquidityPool.getAvailableLiquidity(LiquidityPool.PoolType) (src/LiquidityPool.sol#335-338)
+	- LiquidityPool.getPoolInfo(LiquidityPool.PoolType) (src/LiquidityPool.sol#367-382)
+	- LiquidityPool.pools (src/LiquidityPool.sol#49)
+	- _updateUtilization(poolType) (src/LiquidityPool.sol#274)
+		- pool.utilizationRate = 0 (src/LiquidityPool.sol#394)
+		- pool.utilizationRate = (pool.totalBorrowed * BASIS_POINTS) / pool.totalDeposits (src/LiquidityPool.sol#396)
+	LiquidityPool.pools (src/LiquidityPool.sol#49) can be used in cross function reentrancies:
+	- LiquidityPool.calculateBorrowAPY(LiquidityPool.PoolType) (src/LiquidityPool.sol#302-315)
+	- LiquidityPool.calculateLPAPY(LiquidityPool.PoolType) (src/LiquidityPool.sol#322-328)
+	- LiquidityPool.calculateLPTokenPrice(LiquidityPool.PoolType) (src/LiquidityPool.sol#345-356)
+	- LiquidityPool.constructor(address,address) (src/LiquidityPool.sol#86-107)
+	- LiquidityPool.getAvailableLiquidity(LiquidityPool.PoolType) (src/LiquidityPool.sol#335-338)
+	- LiquidityPool.getPoolInfo(LiquidityPool.PoolType) (src/LiquidityPool.sol#367-382)
+	- LiquidityPool.pools (src/LiquidityPool.sol#49)
+Reentrancy in FeeDistributor.stake(uint256) (src/FeeDistributor.sol#181-198):
+	External calls:
+	- IERC20(tgxToken).safeTransferFrom(msg.sender,address(this),amount) (src/FeeDistributor.sol#188)
+	State variables written after the call(s):
+	- _resetDebt(msg.sender) (src/FeeDistributor.sol#195)
+		- rewardDebt[user][token] = (userStake * accRewardPerShare[token]) / PRECISION (src/FeeDistributor.sol#262)
+	FeeDistributor.rewardDebt (src/FeeDistributor.sol#62) can be used in cross function reentrancies:
+	- FeeDistributor.getPendingRewards(address,address) (src/FeeDistributor.sol#345-355)
+	- FeeDistributor.rewardDebt (src/FeeDistributor.sol#62)
+	- stakedTGX[msg.sender] += amount (src/FeeDistributor.sol#191)
+	FeeDistributor.stakedTGX (src/FeeDistributor.sol#56) can be used in cross function reentrancies:
+	- FeeDistributor.getPendingRewards(address,address) (src/FeeDistributor.sol#345-355)
+	- FeeDistributor.getStakerInfo(address) (src/FeeDistributor.sol#362-367)
+	- FeeDistributor.stakedTGX (src/FeeDistributor.sol#56)
+Reentrancy in LiquidityPool.withdrawLP(uint256,LiquidityPool.PoolType) (src/LiquidityPool.sol#157-193):
+	External calls:
+	- LPToken(pool.lpToken).burn(msg.sender,lpTokenAmount) (src/LiquidityPool.sol#177)
+	State variables written after the call(s):
+	- pool.totalDeposits -= amount (src/LiquidityPool.sol#183)
+	LiquidityPool.pools (src/LiquidityPool.sol#49) can be used in cross function reentrancies:
+	- LiquidityPool.calculateBorrowAPY(LiquidityPool.PoolType) (src/LiquidityPool.sol#302-315)
+	- LiquidityPool.calculateLPAPY(LiquidityPool.PoolType) (src/LiquidityPool.sol#322-328)
+	- LiquidityPool.calculateLPTokenPrice(LiquidityPool.PoolType) (src/LiquidityPool.sol#345-356)
+	- LiquidityPool.constructor(address,address) (src/LiquidityPool.sol#86-107)
+	- LiquidityPool.getAvailableLiquidity(LiquidityPool.PoolType) (src/LiquidityPool.sol#335-338)
+	- LiquidityPool.getPoolInfo(LiquidityPool.PoolType) (src/LiquidityPool.sol#367-382)
+	- LiquidityPool.pools (src/LiquidityPool.sol#49)
+Reentrancy in LiquidityPool.withdrawLP(uint256,LiquidityPool.PoolType) (src/LiquidityPool.sol#157-193):
+	External calls:
+	- LPToken(pool.lpToken).burn(msg.sender,lpTokenAmount) (src/LiquidityPool.sol#177)
+	- IERC20(tokenToReturn).safeTransfer(msg.sender,amount) (src/LiquidityPool.sol#187)
+	State variables written after the call(s):
+	- _updateUtilization(poolType) (src/LiquidityPool.sol#190)
+		- pool.utilizationRate = 0 (src/LiquidityPool.sol#394)
+		- pool.utilizationRate = (pool.totalBorrowed * BASIS_POINTS) / pool.totalDeposits (src/LiquidityPool.sol#396)
+	LiquidityPool.pools (src/LiquidityPool.sol#49) can be used in cross function reentrancies:
+	- LiquidityPool.calculateBorrowAPY(LiquidityPool.PoolType) (src/LiquidityPool.sol#302-315)
+	- LiquidityPool.calculateLPAPY(LiquidityPool.PoolType) (src/LiquidityPool.sol#322-328)
+	- LiquidityPool.calculateLPTokenPrice(LiquidityPool.PoolType) (src/LiquidityPool.sol#345-356)
+	- LiquidityPool.constructor(address,address) (src/LiquidityPool.sol#86-107)
+	- LiquidityPool.getAvailableLiquidity(LiquidityPool.PoolType) (src/LiquidityPool.sol#335-338)
+	- LiquidityPool.getPoolInfo(LiquidityPool.PoolType) (src/LiquidityPool.sol#367-382)
+	- LiquidityPool.pools (src/LiquidityPool.sol#49)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-1
+INFO:Detectors:
+LiquidationEngine.performUpkeep(bytes) (src/LiquidationEngine.sol#270-286) ignores return value by this._liquidatePositionInternal(positionIds[i],msg.sender) (src/LiquidationEngine.sol#279-284)
+OracleAggregator._fetchOraclePrices() (src/OracleAggregator.sol#131-187) ignores return value by (price,updatedAt) = chainlinkOracle.latestRoundData() (src/OracleAggregator.sol#136-153)
+VaultManager.openPosition(uint256,uint256,address) (src/VaultManager.sol#146-221) ignores return value by (goldPrice,None) = oracle.getGoldPrice() (src/VaultManager.sol#156)
+VaultManager.closePosition(uint256) (src/VaultManager.sol#227-262) ignores return value by (goldPrice,None) = oracle.getGoldPrice() (src/VaultManager.sol#237)
+VaultManager.getPositionHealth(uint256) (src/VaultManager.sol#356-366) ignores return value by (goldPrice,None) = oracle.getGoldPrice() (src/VaultManager.sol#360)
+VaultManager.isLiquidatable(uint256) (src/VaultManager.sol#392-408) ignores return value by (goldPrice,None) = oracle.getGoldPrice() (src/VaultManager.sol#399)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#unused-return
+INFO:Detectors:
+LPToken.constructor(string,string).name (src/LPToken.sol#20) shadows:
+	- ERC20.name() (lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol#58-60) (function)
+	- IERC20Metadata.name() (lib/openzeppelin-contracts/contracts/token/ERC20/extensions/IERC20Metadata.sol#15) (function)
+LPToken.constructor(string,string).symbol (src/LPToken.sol#20) shadows:
+	- ERC20.symbol() (lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol#66-68) (function)
+	- IERC20Metadata.symbol() (lib/openzeppelin-contracts/contracts/token/ERC20/extensions/IERC20Metadata.sol#20) (function)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#local-variable-shadowing
+INFO:Detectors:
+LiquidityPool.constructor(address,address)._usdc (src/LiquidityPool.sol#86) lacks a zero-check on :
+		- usdc = _usdc (src/LiquidityPool.sol#87)
+LiquidityPool.constructor(address,address)._usdt (src/LiquidityPool.sol#86) lacks a zero-check on :
+		- usdt = _usdt (src/LiquidityPool.sol#88)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#missing-zero-address-validation
+INFO:Detectors:
+LiquidationEngine.batchLiquidate(uint256[]) (src/LiquidationEngine.sol#154-173) has external calls inside a loop: penalty = this._liquidatePositionInternal(positionIds[i],msg.sender) (src/LiquidationEngine.sol#166-171)
+LiquidationEngine._isPositionLiquidatable(uint256) (src/LiquidationEngine.sol#480-486) has external calls inside a loop: liquidatable = IVaultManager(vaultManager).isLiquidatable(positionId) (src/LiquidationEngine.sol#481-485)
+	Calls stack containing the loop:
+		LiquidationEngine.checkUpkeep(bytes)
+		LiquidationEngine._getLiquidatablePositions(uint256,uint256)
+		LiquidationEngine._canLiquidateNow(uint256)
+LiquidationEngine.performUpkeep(bytes) (src/LiquidationEngine.sol#270-286) has external calls inside a loop: this._liquidatePositionInternal(positionIds[i],msg.sender) (src/LiquidationEngine.sol#279-284)
+LiquidationEngine._isPositionLiquidatable(uint256) (src/LiquidationEngine.sol#480-486) has external calls inside a loop: liquidatable = IVaultManager(vaultManager).isLiquidatable(positionId) (src/LiquidationEngine.sol#481-485)
+	Calls stack containing the loop:
+		LiquidationEngine.getLiquidatablePositions()
+		LiquidationEngine._getLiquidatablePositions(uint256,uint256)
+		LiquidationEngine._canLiquidateNow(uint256)
+LiquidationEngine._isPositionLiquidatable(uint256) (src/LiquidationEngine.sol#480-486) has external calls inside a loop: liquidatable = IVaultManager(vaultManager).isLiquidatable(positionId) (src/LiquidationEngine.sol#481-485)
+	Calls stack containing the loop:
+		LiquidationEngine.checkPositions(uint256,uint256)
+LiquidationEngine.checkPositions(uint256,uint256) (src/LiquidationEngine.sol#304-345) has external calls inside a loop: position = IVaultManager(vaultManager).getPosition(positionId) (src/LiquidationEngine.sol#332)
+LiquidationEngine.checkPositions(uint256,uint256) (src/LiquidationEngine.sol#304-345) has external calls inside a loop: health = IVaultManager(vaultManager).getPositionHealth(positionId) (src/LiquidationEngine.sol#333)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation/#calls-inside-a-loop
+INFO:Detectors:
+Reentrancy in FeeDistributor._distributeFees(address,uint256) (src/FeeDistributor.sol#147-173):
+	External calls:
+	- IERC20(token).safeIncreaseAllowance(insuranceFund,insuranceAmount) (src/FeeDistributor.sol#154)
+	- IInsuranceFund(insuranceFund).depositFromFees(insuranceAmount,token) (src/FeeDistributor.sol#155)
+	- IERC20(token).safeTransfer(treasury,treasuryAmount) (src/FeeDistributor.sol#158)
+	State variables written after the call(s):
+	- accRewardPerShare[token] += (stakerAmount * PRECISION) / totalStakedTGX (src/FeeDistributor.sol#162)
+	- feeStats[token].totalCollected += amount (src/FeeDistributor.sol#167)
+	- feeStats[token].toInsurance += insuranceAmount (src/FeeDistributor.sol#168)
+	- feeStats[token].toTreasury += treasuryAmount (src/FeeDistributor.sol#169)
+	- feeStats[token].toStakers += stakerAmount (src/FeeDistributor.sol#170)
+	- stakerPools[token] += stakerAmount (src/FeeDistributor.sol#164)
+Reentrancy in LiquidationEngine._liquidatePosition(uint256,address) (src/LiquidationEngine.sol#413-456):
+	External calls:
+	- penalty = IVaultManager(vaultManager).liquidatePosition(positionId,LIQUIDATION_TRANCHE) (src/LiquidationEngine.sol#435)
+	State variables written after the call(s):
+	- _distributePenalty(penalty,liquidator) (src/LiquidationEngine.sol#443)
+		- liquidators[liquidator].pendingRewards += liquidatorReward (src/LiquidationEngine.sol#467)
+	- stats.totalLiquidations ++ (src/LiquidationEngine.sol#450)
+	- stats.totalRewards += (penalty * LIQUIDATOR_SHARE) / BASIS_POINTS (src/LiquidationEngine.sol#451)
+	- totalLiquidations ++ (src/LiquidationEngine.sol#446)
+	- totalPenaltiesCollected += penalty (src/LiquidationEngine.sol#447)
+Reentrancy in InsuranceFund._rebalanceToken(address) (src/InsuranceFund.sol#335-371):
+	External calls:
+	- withdrawn = IAavePool(aavePool).withdraw(token,toWithdraw,address(this)) (src/InsuranceFund.sol#357)
+	State variables written after the call(s):
+	- fundingSources[token].fromYield += yieldEarned (src/InsuranceFund.sol#365)
+	- fundingSources[token].totalCollected += yieldEarned (src/InsuranceFund.sol#366)
+Reentrancy in InsuranceFund._withdrawFromAave(uint256,address) (src/InsuranceFund.sol#292-310):
+	External calls:
+	- withdrawn = IAavePool(aavePool).withdraw(token,amount,address(this)) (src/InsuranceFund.sol#297)
+	State variables written after the call(s):
+	- fundingSources[token].fromYield += yieldEarned (src/InsuranceFund.sol#305)
+	- fundingSources[token].totalCollected += yieldEarned (src/InsuranceFund.sol#306)
+	- reserves[token] += withdrawn (src/InsuranceFund.sol#300)
+Reentrancy in VaultManager.closePosition(uint256) (src/VaultManager.sol#227-262):
+	External calls:
+	- tgaux.burnFrom(msg.sender,position.tgauxMinted) (src/VaultManager.sol#241)
+	State variables written after the call(s):
+	- collectedFees[position.collateralToken] += burnFee (src/VaultManager.sol#245)
+Reentrancy in InsuranceFund.coverLoss(uint256,uint256,address,InsuranceFund.CoverageReason) (src/InsuranceFund.sol#205-247):
+	External calls:
+	- _withdrawFromAave(toWithdraw,token) (src/InsuranceFund.sol#220)
+		- withdrawn = IAavePool(aavePool).withdraw(token,amount,address(this)) (src/InsuranceFund.sol#297)
+	State variables written after the call(s):
+	- totalCoverage[token] += amount (src/InsuranceFund.sol#225)
+Reentrancy in InsuranceFund.coverLoss(uint256,uint256,address,InsuranceFund.CoverageReason) (src/InsuranceFund.sol#205-247):
+	External calls:
+	- _withdrawFromAave(toWithdraw,token) (src/InsuranceFund.sol#220)
+		- withdrawn = IAavePool(aavePool).withdraw(token,amount,address(this)) (src/InsuranceFund.sol#297)
+	- IERC20(token).safeTransfer(liquidityPool,amount) (src/InsuranceFund.sol#226)
+	State variables written after the call(s):
+	- coverageHistory.push(CoverageEvent({eventId:eventId,positionId:positionId,token:token,amountCovered:amount,timestamp:block.timestamp,reason:reason})) (src/InsuranceFund.sol#230-239)
+	- eventId = nextEventId ++ (src/InsuranceFund.sol#229)
+Reentrancy in InsuranceFund.depositFromFees(uint256,address) (src/InsuranceFund.sol#156-171):
+	External calls:
+	- IERC20(token).safeTransferFrom(msg.sender,address(this),amount) (src/InsuranceFund.sol#164)
+	State variables written after the call(s):
+	- fundingSources[token].fromProtocolFees += amount (src/InsuranceFund.sol#167)
+	- fundingSources[token].totalCollected += amount (src/InsuranceFund.sol#168)
+	- reserves[token] += amount (src/InsuranceFund.sol#166)
+Reentrancy in InsuranceFund.depositFromLiquidation(uint256,address) (src/InsuranceFund.sol#178-193):
+	External calls:
+	- IERC20(token).safeTransferFrom(msg.sender,address(this),amount) (src/InsuranceFund.sol#186)
+	State variables written after the call(s):
+	- fundingSources[token].fromLiquidations += amount (src/InsuranceFund.sol#189)
+	- fundingSources[token].totalCollected += amount (src/InsuranceFund.sol#190)
+	- reserves[token] += amount (src/InsuranceFund.sol#188)
+Reentrancy in LiquidityPool.depositLP(uint256,LiquidityPool.PoolType,address) (src/LiquidityPool.sol#118-149):
+	External calls:
+	- IERC20(token).safeTransferFrom(msg.sender,address(this),amount) (src/LiquidityPool.sol#136)
+	State variables written after the call(s):
+	- poolBalances[poolType][token] += amount (src/LiquidityPool.sol#140)
+Reentrancy in VaultManager.openPosition(uint256,uint256,address) (src/VaultManager.sol#146-221):
+	External calls:
+	- IERC20(collateralToken).safeTransferFrom(msg.sender,address(this),collateralAmount) (src/VaultManager.sol#195)
+	State variables written after the call(s):
+	- collectedFees[collateralToken] += fee (src/VaultManager.sol#196)
+Reentrancy in VaultManager.openPosition(uint256,uint256,address) (src/VaultManager.sol#146-221):
+	External calls:
+	- IERC20(collateralToken).safeTransferFrom(msg.sender,address(this),collateralAmount) (src/VaultManager.sol#195)
+	- ILiquidityPool(liquidityPool).borrow(borrowedAmount,collateralToken) (src/VaultManager.sol#200)
+	State variables written after the call(s):
+	- positionId = nextPositionId ++ (src/VaultManager.sol#204)
+	- positions[positionId] = Position({owner:msg.sender,collateralAmount:effectiveCollateral,collateralToken:collateralToken,tgauxMinted:tgauxAmount,borrowedAmount:borrowedAmount,leverage:leverage,openPrice:goldPrice,lastUpdateTimestamp:block.timestamp,isActive:true}) (src/VaultManager.sol#205-215)
+Reentrancy in LiquidityPool.repay(uint256,address) (src/LiquidityPool.sol#242-279):
+	External calls:
+	- IERC20(token).safeTransferFrom(msg.sender,address(this),amount) (src/LiquidityPool.sol#257)
+	State variables written after the call(s):
+	- poolBalances[poolType][token] += amount (src/LiquidityPool.sol#265)
+Reentrancy in FeeDistributor.stake(uint256) (src/FeeDistributor.sol#181-198):
+	External calls:
+	- IERC20(tgxToken).safeTransferFrom(msg.sender,address(this),amount) (src/FeeDistributor.sol#188)
+	State variables written after the call(s):
+	- totalStakedTGX += amount (src/FeeDistributor.sol#192)
+Reentrancy in LiquidityPool.withdrawLP(uint256,LiquidityPool.PoolType) (src/LiquidityPool.sol#157-193):
+	External calls:
+	- LPToken(pool.lpToken).burn(msg.sender,lpTokenAmount) (src/LiquidityPool.sol#177)
+	State variables written after the call(s):
+	- poolBalances[poolType][tokenToReturn] -= amount (src/LiquidityPool.sol#184)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-2
+INFO:Detectors:
+Reentrancy in FeeDistributor._distributeFees(address,uint256) (src/FeeDistributor.sol#147-173):
+	External calls:
+	- IERC20(token).safeIncreaseAllowance(insuranceFund,insuranceAmount) (src/FeeDistributor.sol#154)
+	- IInsuranceFund(insuranceFund).depositFromFees(insuranceAmount,token) (src/FeeDistributor.sol#155)
+	- IERC20(token).safeTransfer(treasury,treasuryAmount) (src/FeeDistributor.sol#158)
+	Event emitted after the call(s):
+	- FeesCollected(token,amount,insuranceAmount,treasuryAmount,stakerAmount) (src/FeeDistributor.sol#172)
+Reentrancy in LiquidationEngine._liquidatePosition(uint256,address) (src/LiquidationEngine.sol#413-456):
+	External calls:
+	- penalty = IVaultManager(vaultManager).liquidatePosition(positionId,LIQUIDATION_TRANCHE) (src/LiquidationEngine.sol#435)
+	Event emitted after the call(s):
+	- PositionLiquidated(positionId,liquidator,penalty,LIQUIDATION_TRANCHE) (src/LiquidationEngine.sol#453)
+Reentrancy in InsuranceFund._rebalanceToken(address) (src/InsuranceFund.sol#335-371):
+	External calls:
+	- IERC20(token).safeIncreaseAllowance(aavePool,toDeploy) (src/InsuranceFund.sol#348)
+	- IAavePool(aavePool).supply(token,toDeploy,address(this),0) (src/InsuranceFund.sol#349)
+	Event emitted after the call(s):
+	- Rebalanced(token,deployed[token],reserves[token]) (src/InsuranceFund.sol#351)
+Reentrancy in InsuranceFund._rebalanceToken(address) (src/InsuranceFund.sol#335-371):
+	External calls:
+	- withdrawn = IAavePool(aavePool).withdraw(token,toWithdraw,address(this)) (src/InsuranceFund.sol#357)
+	Event emitted after the call(s):
+	- Rebalanced(token,deployed[token],reserves[token]) (src/InsuranceFund.sol#369)
+Reentrancy in InsuranceFund._withdrawFromAave(uint256,address) (src/InsuranceFund.sol#292-310):
+	External calls:
+	- withdrawn = IAavePool(aavePool).withdraw(token,amount,address(this)) (src/InsuranceFund.sol#297)
+	Event emitted after the call(s):
+	- WithdrawnFromYield(token,withdrawn,yieldEarned) (src/InsuranceFund.sol#309)
+Reentrancy in FeeDistributor.collectFees(address,uint256) (src/FeeDistributor.sol#124-140):
+	External calls:
+	- IERC20(token).safeTransferFrom(msg.sender,address(this),amount) (src/FeeDistributor.sol#134)
+	- _distributeFees(token,amount) (src/FeeDistributor.sol#137)
+		- returndata = address(token).functionCall(data) (lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol#96)
+		- (success,returndata) = address(token).call(data) (lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol#115)
+		- IERC20(token).safeIncreaseAllowance(insuranceFund,insuranceAmount) (src/FeeDistributor.sol#154)
+		- IInsuranceFund(insuranceFund).depositFromFees(insuranceAmount,token) (src/FeeDistributor.sol#155)
+		- (success,returndata) = target.call{value: value}(data) (lib/openzeppelin-contracts/contracts/utils/Address.sol#87)
+		- IERC20(token).safeTransfer(treasury,treasuryAmount) (src/FeeDistributor.sol#158)
+	External calls sending eth:
+	- _distributeFees(token,amount) (src/FeeDistributor.sol#137)
+		- (success,returndata) = target.call{value: value}(data) (lib/openzeppelin-contracts/contracts/utils/Address.sol#87)
+	Event emitted after the call(s):
+	- FeesCollected(token,amount,insuranceAmount,treasuryAmount,stakerAmount) (src/FeeDistributor.sol#172)
+		- _distributeFees(token,amount) (src/FeeDistributor.sol#137)
+Reentrancy in VaultManager.collectFees(address) (src/VaultManager.sol#325-333):
+	External calls:
+	- IERC20(token).safeTransfer(msg.sender,amount) (src/VaultManager.sol#330)
+	Event emitted after the call(s):
+	- FeesCollected(amount,token) (src/VaultManager.sol#332)
+Reentrancy in InsuranceFund.deployToAave(uint256,address) (src/InsuranceFund.sol#256-272):
+	External calls:
+	- IERC20(token).safeIncreaseAllowance(aavePool,amount) (src/InsuranceFund.sol#268)
+	- IAavePool(aavePool).supply(token,amount,address(this),0) (src/InsuranceFund.sol#269)
+	Event emitted after the call(s):
+	- DeployedToYield(token,amount,aavePool) (src/InsuranceFund.sol#271)
+Reentrancy in InsuranceFund.depositFromFees(uint256,address) (src/InsuranceFund.sol#156-171):
+	External calls:
+	- IERC20(token).safeTransferFrom(msg.sender,address(this),amount) (src/InsuranceFund.sol#164)
+	Event emitted after the call(s):
+	- FundsDeposited(msg.sender,amount,token,protocol_fees) (src/InsuranceFund.sol#170)
+Reentrancy in InsuranceFund.depositFromLiquidation(uint256,address) (src/InsuranceFund.sol#178-193):
+	External calls:
+	- IERC20(token).safeTransferFrom(msg.sender,address(this),amount) (src/InsuranceFund.sol#186)
+	Event emitted after the call(s):
+	- FundsDeposited(msg.sender,amount,token,liquidation_penalty) (src/InsuranceFund.sol#192)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-3
+INFO:Detectors:
+LiquidationEngine.getPositionLiquidationInfo(uint256) (src/LiquidationEngine.sol#352-362) uses timestamp for comparisons
+	Dangerous comparisons:
+	- info.isMarked = liquidationWarningTime[positionId] != 0 (src/LiquidationEngine.sol#357)
+LiquidationEngine._canLiquidateNow(uint256) (src/LiquidationEngine.sol#493-507) uses timestamp for comparisons
+	Dangerous comparisons:
+	- block.timestamp >= markedTime + GRACE_PERIOD (src/LiquidationEngine.sol#506)
+LiquidityPool._accrueInterest(LiquidityPool.PoolType) (src/LiquidityPool.sol#406-422) uses timestamp for comparisons
+	Dangerous comparisons:
+	- timeDelta == 0 || pool.totalBorrowed == 0 (src/LiquidityPool.sol#411)
+LiquidityPool._findPoolWithBorrow(address) (src/LiquidityPool.sol#443-449) uses timestamp for comparisons
+	Dangerous comparisons:
+	- pools[PoolType.CONSERVATIVE].totalBorrowed > 0 && pools[PoolType.CONSERVATIVE].supportedTokens[token] (src/LiquidityPool.sol#445)
+OracleAggregator.getGoldPrice() (src/OracleAggregator.sol#84-87) uses timestamp for comparisons
+	Dangerous comparisons:
+	- require(bool,string)(lastPrice > 0,OracleAggregator: no price data available) (src/OracleAggregator.sol#85)
+OracleAggregator.updateTwap() (src/OracleAggregator.sol#93-124) uses timestamp for comparisons
+	Dangerous comparisons:
+	- lastPrice > 0 (src/OracleAggregator.sol#109)
+OracleAggregator._fetchOraclePrices() (src/OracleAggregator.sol#131-187) uses timestamp for comparisons
+	Dangerous comparisons:
+	- price > 0 && block.timestamp - updatedAt <= MAX_PRICE_AGE (src/OracleAggregator.sol#143)
+	- rate > 0 && block.timestamp - lastUpdated <= MAX_PRICE_AGE (src/OracleAggregator.sol#158)
+	- value > 0 && block.timestamp - timestamp <= MAX_PRICE_AGE (src/OracleAggregator.sol#172)
+OracleAggregator._updatePriceHistory(uint256) (src/OracleAggregator.sol#259-276) uses timestamp for comparisons
+	Dangerous comparisons:
+	- block.timestamp > TWAP_WINDOW (src/OracleAggregator.sol#266)
+	- priceHistory.length > 0 && priceHistory[0].timestamp < cutoffTime (src/OracleAggregator.sol#268)
+	- i < priceHistory.length - 1 (src/OracleAggregator.sol#270)
+OracleAggregator._calculateTwap() (src/OracleAggregator.sol#282-301) uses timestamp for comparisons
+	Dangerous comparisons:
+	- priceHistory.length == 0 (src/OracleAggregator.sol#283)
+	- priceHistory.length == 1 (src/OracleAggregator.sol#284)
+	- i < priceHistory.length - 1 (src/OracleAggregator.sol#289)
+	- totalTime > 0 (src/OracleAggregator.sol#300)
+OracleAggregator._checkCircuitBreaker(uint256) (src/OracleAggregator.sol#307-315) uses timestamp for comparisons
+	Dangerous comparisons:
+	- deviationBps > circuitBreakerThreshold (src/OracleAggregator.sol#311)
+	- newPrice > lastPrice (src/OracleAggregator.sol#308)
+OracleAggregator.getPriceHistory(uint256) (src/OracleAggregator.sol#402-406) uses timestamp for comparisons
+	Dangerous comparisons:
+	- require(bool,string)(index < priceHistory.length,OracleAggregator: index out of bounds) (src/OracleAggregator.sol#403)
+VaultManager.closePosition(uint256) (src/VaultManager.sol#227-262) uses timestamp for comparisons
+	Dangerous comparisons:
+	- require(bool,string)(position.isActive,VaultManager: position not active) (src/VaultManager.sol#229)
+	- require(bool,string)(position.owner == msg.sender,VaultManager: not position owner) (src/VaultManager.sol#230)
+	- totalOwed > 0 (src/VaultManager.sol#248)
+VaultManager.addCollateral(uint256,uint256) (src/VaultManager.sol#269-283) uses timestamp for comparisons
+	Dangerous comparisons:
+	- require(bool,string)(position.isActive,VaultManager: position not active) (src/VaultManager.sol#271)
+	- require(bool,string)(position.owner == msg.sender,VaultManager: not position owner) (src/VaultManager.sol#272)
+VaultManager.liquidate(uint256) (src/VaultManager.sol#289-319) uses timestamp for comparisons
+	Dangerous comparisons:
+	- totalOwed > 0 (src/VaultManager.sol#302)
+	- collateralSeized > 0 (src/VaultManager.sol#311)
+	- position.collateralAmount > totalOwed (src/VaultManager.sol#307-309)
+VaultManager.getPositionHealth(uint256) (src/VaultManager.sol#356-366) uses timestamp for comparisons
+	Dangerous comparisons:
+	- require(bool,string)(position.isActive,VaultManager: position not active) (src/VaultManager.sol#358)
+VaultManager.liquidatePosition(uint256,uint256) (src/VaultManager.sol#425-473) uses timestamp for comparisons
+	Dangerous comparisons:
+	- require(bool,string)(position.isActive,VaultManager: position not active) (src/VaultManager.sol#432)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#block-timestamp
+INFO:Detectors:
+2 different versions of Solidity are used:
+	- Version constraint ^0.8.20 is used by:
+		-^0.8.20 (lib/openzeppelin-contracts/contracts/access/AccessControl.sol#4)
+		-^0.8.20 (lib/openzeppelin-contracts/contracts/access/IAccessControl.sol#4)
+		-^0.8.20 (lib/openzeppelin-contracts/contracts/interfaces/draft-IERC6093.sol#3)
+		-^0.8.20 (lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol#4)
+		-^0.8.20 (lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol#4)
+		-^0.8.20 (lib/openzeppelin-contracts/contracts/token/ERC20/extensions/ERC20Burnable.sol#4)
+		-^0.8.20 (lib/openzeppelin-contracts/contracts/token/ERC20/extensions/ERC20Pausable.sol#4)
+		-^0.8.20 (lib/openzeppelin-contracts/contracts/token/ERC20/extensions/IERC20Metadata.sol#4)
+		-^0.8.20 (lib/openzeppelin-contracts/contracts/token/ERC20/extensions/IERC20Permit.sol#4)
+		-^0.8.20 (lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol#4)
+		-^0.8.20 (lib/openzeppelin-contracts/contracts/utils/Address.sol#4)
+		-^0.8.20 (lib/openzeppelin-contracts/contracts/utils/Context.sol#4)
+		-^0.8.20 (lib/openzeppelin-contracts/contracts/utils/Pausable.sol#4)
+		-^0.8.20 (lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol#4)
+		-^0.8.20 (lib/openzeppelin-contracts/contracts/utils/introspection/ERC165.sol#4)
+		-^0.8.20 (lib/openzeppelin-contracts/contracts/utils/introspection/IERC165.sol#4)
+		-^0.8.20 (lib/openzeppelin-contracts/contracts/utils/math/SafeCast.sol#5)
+		-^0.8.20 (src/LPToken.sol#2)
+		-^0.8.20 (src/LiquidationEngine.sol#2)
+		-^0.8.20 (src/LiquidityPool.sol#2)
+		-^0.8.20 (src/OracleAggregator.sol#2)
+		-^0.8.20 (src/TGAUX.sol#2)
+		-^0.8.20 (src/VaultManager.sol#2)
+		-^0.8.20 (src/interfaces/AutomationCompatibleInterface.sol#2)
+	- Version constraint ^0.8.30 is used by:
+		-^0.8.30 (src/FeeDistributor.sol#2)
+		-^0.8.30 (src/InsuranceFund.sol#2)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#different-pragma-directives-are-used
+INFO:Detectors:
+OracleAggregator._fetchOraclePrices() (src/OracleAggregator.sol#131-187) has a high cyclomatic complexity (13).
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#cyclomatic-complexity
+INFO:Detectors:
+Version constraint ^0.8.20 contains known severe issues (https://solidity.readthedocs.io/en/latest/bugs.html)
+	- VerbatimInvalidDeduplication
+	- FullInlinerNonExpressionSplitArgumentEvaluationOrder
+	- MissingSideEffectsOnSelectorAccess.
+It is used by:
+	- ^0.8.20 (lib/openzeppelin-contracts/contracts/access/AccessControl.sol#4)
+	- ^0.8.20 (lib/openzeppelin-contracts/contracts/access/IAccessControl.sol#4)
+	- ^0.8.20 (lib/openzeppelin-contracts/contracts/interfaces/draft-IERC6093.sol#3)
+	- ^0.8.20 (lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol#4)
+	- ^0.8.20 (lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol#4)
+	- ^0.8.20 (lib/openzeppelin-contracts/contracts/token/ERC20/extensions/ERC20Burnable.sol#4)
+	- ^0.8.20 (lib/openzeppelin-contracts/contracts/token/ERC20/extensions/ERC20Pausable.sol#4)
+	- ^0.8.20 (lib/openzeppelin-contracts/contracts/token/ERC20/extensions/IERC20Metadata.sol#4)
+	- ^0.8.20 (lib/openzeppelin-contracts/contracts/token/ERC20/extensions/IERC20Permit.sol#4)
+	- ^0.8.20 (lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol#4)
+	- ^0.8.20 (lib/openzeppelin-contracts/contracts/utils/Address.sol#4)
+	- ^0.8.20 (lib/openzeppelin-contracts/contracts/utils/Context.sol#4)
+	- ^0.8.20 (lib/openzeppelin-contracts/contracts/utils/Pausable.sol#4)
+	- ^0.8.20 (lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol#4)
+	- ^0.8.20 (lib/openzeppelin-contracts/contracts/utils/introspection/ERC165.sol#4)
+	- ^0.8.20 (lib/openzeppelin-contracts/contracts/utils/introspection/IERC165.sol#4)
+	- ^0.8.20 (lib/openzeppelin-contracts/contracts/utils/math/SafeCast.sol#5)
+	- ^0.8.20 (src/LPToken.sol#2)
+	- ^0.8.20 (src/LiquidationEngine.sol#2)
+	- ^0.8.20 (src/LiquidityPool.sol#2)
+	- ^0.8.20 (src/OracleAggregator.sol#2)
+	- ^0.8.20 (src/TGAUX.sol#2)
+	- ^0.8.20 (src/VaultManager.sol#2)
+	- ^0.8.20 (src/interfaces/AutomationCompatibleInterface.sol#2)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#incorrect-versions-of-solidity
+INFO:Detectors:
+InsuranceFund (src/InsuranceFund.sol#15-568) should inherit from IInsuranceFund (src/FeeDistributor.sol#461-463)
+LiquidityPool (src/LiquidityPool.sol#15-450) should inherit from ILiquidityPool (src/VaultManager.sol#556-558)
+VaultManager (src/VaultManager.sol#24-551) should inherit from IVaultManager (src/LiquidationEngine.sol#581-599)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#missing-inheritance
+INFO:Detectors:
+Function LiquidationEngine._liquidatePositionInternal(uint256,address) (src/LiquidationEngine.sol#399-405) is not in mixedCase
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#conformance-to-solidity-naming-conventions
+INFO:Detectors:
+TGAUX.slitherConstructorConstantVariables() (src/TGAUX.sol#25-154) uses literals with too many digits:
+	- MINIMUM_TRANSFER_AMOUNT = 32150000000000000 (src/TGAUX.sol#33)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#too-many-digits
+INFO:Detectors:
+Loop condition i < supportedTokens.length (src/FeeDistributor.sol#234) should use cached array length instead of referencing `length` member of the storage array.
+ Loop condition i < supportedTokens.length (src/FeeDistributor.sol#260) should use cached array length instead of referencing `length` member of the storage array.
+ Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#cache-array-length
+INFO:Slither:. analyzed (36 contracts with 100 detectors), 91 result(s) found
