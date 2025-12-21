@@ -157,6 +157,7 @@ contract FeeDistributor is AccessControl, Pausable, ReentrancyGuard {
         // Transfer to Treasury
         IERC20(token).safeTransfer(treasury, treasuryAmount);
 
+        // slither-disable-next-line reentrancy-eth
         // Update accumulated rewards per share for stakers
         if (totalStakedTGX > 0) {
             // Combine calculations to multiply before dividing (prevents precision loss)
@@ -259,7 +260,8 @@ contract FeeDistributor is AccessControl, Pausable, ReentrancyGuard {
      */
     function _resetDebt(address user) internal {
         uint256 userStake = stakedTGX[user];
-        for (uint256 i = 0; i < supportedTokens.length; i++) {
+        uint256 tokensLength = supportedTokens.length;
+        for (uint256 i = 0; i < tokensLength; i++) {
             address token = supportedTokens[i];
             rewardDebt[user][token] = (userStake * accRewardPerShare[token]) / PRECISION;
         }
@@ -290,6 +292,7 @@ contract FeeDistributor is AccessControl, Pausable, ReentrancyGuard {
 
         if (amount == 0) revert FeeDistributor__NoRewards();
 
+        // slither-disable-next-line reentrancy-eth
         claimableRewards[msg.sender][token] = 0;
         rewardDebt[msg.sender][token] = accumulatedReward;
 

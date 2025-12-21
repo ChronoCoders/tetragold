@@ -17,7 +17,7 @@ contract LPToken is ERC20 {
         _;
     }
 
-    constructor(string memory _name, string memory _symbol) ERC20(_name, _symbol) {
+    constructor(string memory tokenName, string memory tokenSymbol) ERC20(tokenName, tokenSymbol) {
         liquidityPool = msg.sender;
     }
 

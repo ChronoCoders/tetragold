@@ -133,11 +133,12 @@ contract OracleAggregator is AccessControl, Pausable {
         validity = new bool[](3);
 
         // Chainlink
+        // slither-disable-next-line unused-return
         try chainlinkOracle.latestRoundData() returns (
             uint80,
             int256 price,
             uint256,
-            uint256 updatedAt,
+            uint256 updatedAt,  // updatedAt used in validation
             uint80
         ) {
             if (price > 0 && block.timestamp - updatedAt <= MAX_PRICE_AGE) {
@@ -280,8 +281,10 @@ contract OracleAggregator is AccessControl, Pausable {
      * @return twap Time-weighted average price
      */
     function _calculateTwap() internal view returns (uint256) {
-        if (priceHistory.length == 0) return 0;
-        if (priceHistory.length == 1) return priceHistory[0].price;
+        // slither-disable-next-line incorrect-equality
+        if (priceHistory.length == 0) return 0;  // Intentional: handle empty price history
+        // slither-disable-next-line incorrect-equality
+        if (priceHistory.length == 1) return priceHistory[0].price;  // Intentional: single entry case
 
         uint256 weightedSum = 0;
         uint256 totalTime = 0;

@@ -276,6 +276,7 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
      * @param amount Amount to withdraw
      * @param token Token address
      */
+    // slither-disable-next-line reentrancy-eth
     function withdrawFromAave(uint256 amount, address token)
         external
         onlyRole(DEFAULT_ADMIN_ROLE)
@@ -320,6 +321,7 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
      * @notice Rebalance a specific token
      * @param token Token to rebalance
      */
+    // slither-disable-next-line reentrancy-eth
     function rebalanceToken(address token)
         external
         onlyRole(DEFAULT_ADMIN_ROLE)

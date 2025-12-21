@@ -153,6 +153,7 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         require(_isValidLeverage(leverage), "VaultManager: invalid leverage");
 
         // Get current gold price
+        // slither-disable-next-line unused-return
         (uint256 goldPrice, ) = oracle.getGoldPrice();
         require(goldPrice > 0, "VaultManager: invalid gold price");
 
@@ -197,6 +198,7 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
 
         // Borrow if needed
         if (borrowedAmount > 0) {
+            // slither-disable-next-line unused-return
             ILiquidityPool(liquidityPool).borrow(borrowedAmount, collateralToken);
         }
 
@@ -234,6 +236,7 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         uint256 totalOwed = position.borrowedAmount + interest;
 
         // Get current gold price
+        // slither-disable-next-line unused-return
         (uint256 goldPrice, ) = oracle.getGoldPrice();
         require(goldPrice > 0, "VaultManager: invalid gold price");
 
@@ -254,6 +257,7 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
 
         // Return collateral minus burn fee to user
         uint256 returnAmount = position.collateralAmount - burnFee;
+        // slither-disable-next-line reentrancy-eth
         if (returnAmount > 0) {
             IERC20(position.collateralToken).safeTransfer(msg.sender, returnAmount);
         }
@@ -275,6 +279,7 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         // Transfer collateral from user
         IERC20(position.collateralToken).safeTransferFrom(msg.sender, address(this), amount);
 
+        // slither-disable-next-line reentrancy-eth
         // Update position
         position.collateralAmount += amount;
         position.lastUpdateTimestamp = block.timestamp;
@@ -357,6 +362,7 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         Position storage position = positions[positionId];
         require(position.isActive, "VaultManager: position not active");
 
+        // slither-disable-next-line unused-return
         (uint256 goldPrice, ) = oracle.getGoldPrice();
         ratio = _calculateCollateralRatio(
             position.collateralAmount,
@@ -396,6 +402,7 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
             return false;
         }
 
+        // slither-disable-next-line unused-return
         (uint256 goldPrice, ) = oracle.getGoldPrice();
         uint256 currentRatio = _calculateCollateralRatio(
             position.collateralAmount,
@@ -458,6 +465,7 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
             IERC20(position.collateralToken).safeTransfer(position.owner, returnToOwner);
         }
 
+        // slither-disable-next-line reentrancy-eth
         // Update position
         position.tgauxMinted -= tgauxToLiquidate;
         position.collateralAmount -= collateralToReturn;

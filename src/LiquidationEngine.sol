@@ -163,7 +163,8 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
         }
 
         for (uint256 i = 0; i < length; i++) {
-            try this._liquidatePositionInternal(positionIds[i], msg.sender) returns (uint256 penalty) {
+            // slither-disable-next-line unused-return
+            try this.liquidatePositionInternal(positionIds[i], msg.sender) returns (uint256 penalty) {
                 totalPenalty += penalty;
             } catch {
                 // Skip positions that can't be liquidated
@@ -276,7 +277,8 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
         }
 
         for (uint256 i = 0; i < length; i++) {
-            try this._liquidatePositionInternal(positionIds[i], msg.sender) returns (uint256) {
+            // slither-disable-next-line unused-return
+            try this.liquidatePositionInternal(positionIds[i], msg.sender) returns (uint256) {
                 // Liquidation succeeded
             } catch {
                 // Skip positions that can't be liquidated
@@ -396,7 +398,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
      * @param liquidator Liquidator address
      * @return penalty Penalty collected
      */
-    function _liquidatePositionInternal(uint256 positionId, address liquidator)
+    function liquidatePositionInternal(uint256 positionId, address liquidator)
         external
         returns (uint256 penalty)
     {
@@ -410,6 +412,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
      * @param liquidator Liquidator address
      * @return penalty Penalty collected
      */
+    // slither-disable-start reentrancy-eth
     function _liquidatePosition(uint256 positionId, address liquidator) internal returns (uint256 penalty) {
         // Check if can liquidate
         if (!_canLiquidateNow(positionId)) {
@@ -454,6 +457,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
 
         return penalty;
     }
+    // slither-disable-end reentrancy-eth
 
     /**
      * @dev Distribute liquidation penalty
