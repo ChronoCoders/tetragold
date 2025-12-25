@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
 
-import "forge-std/Test.sol";
-import "../src/InsuranceFund.sol";
-import "./mocks/MockERC20.sol";
-import "./mocks/MockAavePool.sol";
+import {Test} from "forge-std/Test.sol";
+import {InsuranceFund} from "../src/InsuranceFund.sol";
+import {MockERC20} from "./mocks/MockERC20.sol";
+import {MockAavePool} from "./mocks/MockAavePool.sol";
 
 contract MockVaultManager {
     uint256 public tvl;
@@ -518,12 +518,12 @@ contract InsuranceFundTest is Test {
     }
 
     function test_SetAToken() public {
-        address aUSDC = address(888);
+        address aUsdc = address(888);
 
         vm.prank(admin);
-        fund.setAToken(address(usdc), aUSDC);
+        fund.setAToken(address(usdc), aUsdc);
 
-        assertEq(fund.aTokens(address(usdc)), aUSDC);
+        assertEq(fund.aTokens(address(usdc)), aUsdc);
     }
 
     function test_UpdateTargetPercentage() public {

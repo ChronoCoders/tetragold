@@ -589,7 +589,8 @@ contract VaultManagerTest is Test {
         VaultManager.Position memory position = vault.getPosition(positionId);
 
         // Transfer TGAUX to liquidator for later use
-        tgaux.transfer(liquidator, position.tgauxMinted);
+        bool success = tgaux.transfer(liquidator, position.tgauxMinted);
+        require(success, "Transfer failed");
         vm.stopPrank();
 
         // Make position liquidatable with small increments to avoid circuit breaker

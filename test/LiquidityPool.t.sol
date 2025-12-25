@@ -3,7 +3,6 @@ pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
 import {LiquidityPool} from "../src/LiquidityPool.sol";
-import {LPToken} from "../src/LPToken.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
@@ -98,11 +97,11 @@ contract LiquidityPoolTest is Test {
         assertEq(pool.usdt(), address(usdt));
 
         // Check LP tokens created
-        (,, , address conservativeLPToken,) = pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
-        (,, , address aggressiveLPToken,) = pool.getPoolInfo(LiquidityPool.PoolType.AGGRESSIVE);
+        (,, , address conservativeLpToken,) = pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
+        (,, , address aggressiveLpToken,) = pool.getPoolInfo(LiquidityPool.PoolType.AGGRESSIVE);
 
-        assertTrue(conservativeLPToken != address(0));
-        assertTrue(aggressiveLPToken != address(0));
+        assertTrue(conservativeLpToken != address(0));
+        assertTrue(aggressiveLpToken != address(0));
 
         // Check roles
         assertTrue(pool.hasRole(pool.DEFAULT_ADMIN_ROLE(), admin));
@@ -212,13 +211,13 @@ contract LiquidityPoolTest is Test {
         uint256 lpTokens = pool.depositLP(depositAmount, LiquidityPool.PoolType.CONSERVATIVE, address(usdc));
 
         // Withdraw half
-        uint256 withdrawLPTokens = lpTokens / 2;
+        uint256 withdrawLpTokens = lpTokens / 2;
         uint256 balanceBefore = usdc.balanceOf(lp1);
 
         vm.expectEmit(true, true, true, false);
-        emit LPWithdrawal(lp1, 0, LiquidityPool.PoolType.CONSERVATIVE, withdrawLPTokens, address(usdc));
+        emit LPWithdrawal(lp1, 0, LiquidityPool.PoolType.CONSERVATIVE, withdrawLpTokens, address(usdc));
 
-        uint256 amountReturned = pool.withdrawLP(withdrawLPTokens, LiquidityPool.PoolType.CONSERVATIVE);
+        uint256 amountReturned = pool.withdrawLP(withdrawLpTokens, LiquidityPool.PoolType.CONSERVATIVE);
         vm.stopPrank();
 
         // Check amount returned
@@ -396,11 +395,11 @@ contract LiquidityPoolTest is Test {
         vm.prank(address(vaultManager));
         pool.borrow(5000e6, address(usdc));
 
-        uint256 lpAPY = pool.calculateLPAPY(LiquidityPool.PoolType.CONSERVATIVE);
+        uint256 lpApy = pool.calculateLPAPY(LiquidityPool.PoolType.CONSERVATIVE);
 
         // Borrow APY at 50% utilization should be ~12.5%
         // LP APY = 12.5% × 50% = 6.25% = 625 basis points
-        assertApproxEqAbs(lpAPY, 625, 100);
+        assertApproxEqAbs(lpApy, 625, 100);
     }
 
     /* ============ LP Token Pricing Tests ============ */

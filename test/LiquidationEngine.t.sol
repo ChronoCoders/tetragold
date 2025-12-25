@@ -6,7 +6,6 @@ import {LiquidationEngine} from "../src/LiquidationEngine.sol";
 import {VaultManager} from "../src/VaultManager.sol";
 import {TGAUX} from "../src/TGAUX.sol";
 import {OracleAggregator} from "../src/OracleAggregator.sol";
-import {LiquidityPool} from "../src/LiquidityPool.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockChainlinkOracle} from "./mocks/MockChainlinkOracle.sol";
 import {MockBandOracle} from "./mocks/MockBandOracle.sol";

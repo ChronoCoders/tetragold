@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
 
-import "forge-std/Test.sol";
-import "../src/FeeDistributor.sol";
-import "./mocks/MockERC20.sol";
-import "./mocks/MockTGX.sol";
+import {Test} from "forge-std/Test.sol";
+import {FeeDistributor} from "../src/FeeDistributor.sol";
+import {MockERC20} from "./mocks/MockERC20.sol";
+import {MockTGX} from "./mocks/MockTGX.sol";
 
 contract MockInsuranceFund {
     mapping(address => uint256) public depositsReceived;

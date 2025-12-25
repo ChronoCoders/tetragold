@@ -245,7 +245,8 @@ contract TGAUXTest is Test {
 
         vm.prank(user1);
         vm.expectRevert("TGAUX: transfer amount below minimum");
-        token.transfer(user2, transferAmount);
+        (bool success) = token.transfer(user2, transferAmount);
+        success; // Silence unused variable warning
     }
 
     function test_TransferFromWithApproval() public {
@@ -307,7 +308,8 @@ contract TGAUXTest is Test {
 
         vm.prank(user1);
         vm.expectRevert();
-        token.transfer(user2, amount);
+        (bool success) = token.transfer(user2, amount);
+        success; // Silence unused variable warning
     }
 
     function test_MintRevertsWhenPaused() public {
@@ -493,7 +495,8 @@ contract TGAUXTest is Test {
         // Try to transfer (should fail)
         vm.prank(user1);
         vm.expectRevert();
-        token.transfer(user2, 1 ether);
+        (bool success) = token.transfer(user2, 1 ether);
+        success; // Silence unused variable warning
 
         // Unpause
         vm.prank(pauser);
