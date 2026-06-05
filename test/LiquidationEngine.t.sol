@@ -12,6 +12,23 @@ import {MockBandOracle} from "./mocks/MockBandOracle.sol";
 import {MockAPI3Oracle} from "./mocks/MockAPI3Oracle.sol";
 import {MockLiquidityPool} from "./mocks/MockLiquidityPool.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+
+contract MockInsuranceFund {
+    using SafeERC20 for IERC20;
+
+    mapping(address => uint256) public depositsReceived;
+
+    function depositFromLiquidation(uint256 amount, address token) external {
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+        depositsReceived[token] += amount;
+    }
+
+    function getDeposits(address token) external view returns (uint256) {
+        return depositsReceived[token];
+    }
+}
 
 contract LiquidationEngineTest is Test {
     LiquidationEngine public liquidationEngine;
@@ -29,7 +46,7 @@ contract LiquidationEngineTest is Test {
     address public admin;
     address public user1;
     address public liquidator;
-    address public insuranceFund;
+    MockInsuranceFund public insuranceFund;
     address public treasury;
 
     uint256 public constant GOLD_PRICE = 200000000000; // $2000 with 8 decimals
@@ -42,8 +59,9 @@ contract LiquidationEngineTest is Test {
         admin = vm.addr(1);
         user1 = vm.addr(2);
         liquidator = vm.addr(3);
-        insuranceFund = vm.addr(4);
         treasury = vm.addr(5);
+
+        insuranceFund = new MockInsuranceFund();
 
         vm.startPrank(admin);
 
@@ -93,7 +111,7 @@ contract LiquidationEngineTest is Test {
         // Deploy LiquidationEngine
         liquidationEngine = new LiquidationEngine(
             address(vaultManager),
-            insuranceFund,
+            address(insuranceFund),
             treasury
         );
 
@@ -114,19 +132,19 @@ contract LiquidationEngineTest is Test {
 
     function test_Constructor() public view {
         assertEq(liquidationEngine.vaultManager(), address(vaultManager));
-        assertEq(liquidationEngine.insuranceFund(), insuranceFund);
+        assertEq(liquidationEngine.insuranceFund(), address(insuranceFund));
         assertEq(liquidationEngine.treasury(), treasury);
     }
 
     function test_ConstructorRevertsWithZeroAddress() public {
         vm.expectRevert(LiquidationEngine.LiquidationEngine__InvalidAddress.selector);
-        new LiquidationEngine(address(0), insuranceFund, treasury);
+        new LiquidationEngine(address(0), address(insuranceFund), treasury);
 
         vm.expectRevert(LiquidationEngine.LiquidationEngine__InvalidAddress.selector);
         new LiquidationEngine(address(vaultManager), address(0), treasury);
 
         vm.expectRevert(LiquidationEngine.LiquidationEngine__InvalidAddress.selector);
-        new LiquidationEngine(address(vaultManager), insuranceFund, address(0));
+        new LiquidationEngine(address(vaultManager), address(insuranceFund), address(0));
     }
 
     /* ============ Liquidator Registration Tests ============ */
