@@ -304,17 +304,12 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
         view
         returns (LiquidationCandidate[] memory candidates)
     {
-        // Get active position IDs from VaultManager
-        uint256[] memory activeIds = IVaultManager(vaultManager).getActivePositionIds();
-
-        uint256 endIndex = startIndex + count;
-        if (endIndex > activeIds.length) {
-            endIndex = activeIds.length;
-        }
+        (uint256[] memory activeIds, ) =
+            IVaultManager(vaultManager).getActivePositionIds(startIndex, count);
 
         // Count liquidatable positions
         uint256 liquidatableCount = 0;
-        for (uint256 i = startIndex; i < endIndex; i++) {
+        for (uint256 i = 0; i < activeIds.length; i++) {
             if (_isPositionLiquidatable(activeIds[i])) {
                 liquidatableCount++;
             }
@@ -324,7 +319,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
         candidates = new LiquidationCandidate[](liquidatableCount);
         uint256 candidateIndex = 0;
 
-        for (uint256 i = startIndex; i < endIndex; i++) {
+        for (uint256 i = 0; i < activeIds.length; i++) {
             uint256 positionId = activeIds[i];
             if (_isPositionLiquidatable(positionId)) {
                 IVaultManager.Position memory position = IVaultManager(vaultManager).getPosition(positionId);
@@ -522,16 +517,12 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
         view
         returns (uint256[] memory liquidatableIds)
     {
-        uint256[] memory activeIds = IVaultManager(vaultManager).getActivePositionIds();
-
-        uint256 endIndex = startIndex + count;
-        if (endIndex > activeIds.length) {
-            endIndex = activeIds.length;
-        }
+        (uint256[] memory activeIds, ) =
+            IVaultManager(vaultManager).getActivePositionIds(startIndex, count);
 
         // Count liquidatable positions
         uint256 liquidatableCount = 0;
-        for (uint256 i = startIndex; i < endIndex; i++) {
+        for (uint256 i = 0; i < activeIds.length; i++) {
             if (_canLiquidateNow(activeIds[i])) {
                 liquidatableCount++;
             }
@@ -541,7 +532,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
         liquidatableIds = new uint256[](liquidatableCount);
         uint256 liquidatableIndex = 0;
 
-        for (uint256 i = startIndex; i < endIndex; i++) {
+        for (uint256 i = 0; i < activeIds.length; i++) {
             uint256 positionId = activeIds[i];
             if (_canLiquidateNow(positionId)) {
                 liquidatableIds[liquidatableIndex] = positionId;
@@ -601,6 +592,7 @@ interface IVaultManager {
     function liquidatePosition(uint256 positionId, uint256 percentage) external returns (uint256);
     function isLiquidatable(uint256 positionId) external view returns (bool);
     function getActivePositionIds() external view returns (uint256[] memory);
+    function getActivePositionIds(uint256 offset, uint256 limit) external view returns (uint256[] memory ids, uint256 total);
 }
 
 interface IInsuranceFund {

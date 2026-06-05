@@ -6,6 +6,7 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {TGAUX} from "./TGAUX.sol";
 import {OracleAggregator} from "./OracleAggregator.sol";
 
@@ -23,6 +24,7 @@ import {OracleAggregator} from "./OracleAggregator.sol";
  */
 contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
+    using EnumerableSet for EnumerableSet.UintSet;
 
     // Role definitions
     bytes32 public constant LIQUIDATOR_ROLE = keccak256("LIQUIDATOR_ROLE");
@@ -57,6 +59,8 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
     mapping(uint256 => LeverageTier) public leverageTiers;
 
     address public feeDistributor;
+
+    EnumerableSet.UintSet private _activePositions;
 
     uint256 public nextPositionId;
     uint256 public totalValueLocked;
@@ -219,8 +223,9 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
             isActive: true
         });
 
-        // Track TVL
+        // Track TVL and active set
         totalValueLocked += effectiveCollateral;
+        _activePositions.add(positionId);
 
         // Mint TGAUX to user
         tgaux.mint(msg.sender, tgauxAmount);
@@ -259,14 +264,20 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
             ILiquidityPool(liquidityPool).repay(totalOwed, position.collateralToken);
         }
 
-        // Track TVL
+        // Track TVL and active set
         totalValueLocked -= position.collateralAmount;
+        _activePositions.remove(positionId);
 
         // Mark position as inactive
         position.isActive = false;
 
-        // Return collateral minus burn fee to user
+        // Return collateral minus burn fee and interest to user.
+        // Interest is deducted here because it is funded from the position's collateral,
+        // not from phantom funds — vault only holds collateral + borrowed principal.
+        uint256 interestOwed = totalOwed > position.borrowedAmount ? totalOwed - position.borrowedAmount : 0;
         uint256 returnAmount = position.collateralAmount - burnFee;
+        returnAmount = returnAmount > interestOwed ? returnAmount - interestOwed : 0;
+
         // slither-disable-next-line reentrancy-eth
         if (returnAmount > 0) {
             IERC20(position.collateralToken).safeTransfer(msg.sender, returnAmount);
@@ -336,8 +347,9 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
             collectedFees[position.collateralToken] += penalty;
         }
 
-        // Track TVL
+        // Track TVL and active set
         totalValueLocked -= position.collateralAmount;
+        _activePositions.remove(positionId);
 
         // Mark position as inactive
         position.isActive = false;
@@ -364,11 +376,19 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         emit FeesCollected(amount, token);
     }
 
+    /**
+     * @dev Sets the FeeDistributor address. Must be called before pushFeesToDistributor can be used.
+     */
     function setFeeDistributor(address _feeDistributor) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(_feeDistributor != address(0), "VaultManager: zero address");
         feeDistributor = _feeDistributor;
     }
 
+    /**
+     * @dev Approves FeeDistributor to pull collected fees and calls collectFees() on it,
+     *      which distributes to insurance (30%), treasury (40%), and stakers (30%).
+     *      Caller must hold FEE_COLLECTOR_ROLE. feeDistributor must be set first.
+     */
     function pushFeesToDistributor(address token) external onlyRole(FEE_COLLECTOR_ROLE) {
         require(feeDistributor != address(0), "VaultManager: fee distributor not set");
         uint256 amount = collectedFees[token];
@@ -523,9 +543,10 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         position.collateralAmount -= collateralToReturn;
         position.borrowedAmount -= borrowedToRepay;
 
-        // If fully liquidated, mark as inactive
+        // If fully liquidated, mark as inactive and remove from active set
         if (position.tgauxMinted == 0 || position.collateralAmount == 0) {
             position.isActive = false;
+            _activePositions.remove(positionId);
         }
 
         emit PositionLiquidated(positionId, msg.sender, penalty);
@@ -542,26 +563,37 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
     }
 
     /**
-     * @dev Get all active position IDs
-     * @return activeIds Array of active position IDs
+     * @dev Returns the total number of currently active positions.
      */
-    function getActivePositionIds() external view returns (uint256[] memory activeIds) {
-        // Count active positions
-        uint256 activeCount = 0;
-        for (uint256 i = 1; i < nextPositionId; i++) {
-            if (positions[i].isActive) {
-                activeCount++;
-            }
-        }
+    function activePositionCount() external view returns (uint256) {
+        return _activePositions.length();
+    }
 
-        // Build array
-        activeIds = new uint256[](activeCount);
-        uint256 index = 0;
-        for (uint256 i = 1; i < nextPositionId; i++) {
-            if (positions[i].isActive) {
-                activeIds[index] = i;
-                index++;
-            }
+    /**
+     * @dev Returns all active position IDs. Use the paginated overload for large sets.
+     */
+    function getActivePositionIds() external view returns (uint256[] memory) {
+        return _activePositions.values();
+    }
+
+    /**
+     * @dev Returns a page of active position IDs.
+     * @param offset Index to start from within the active set
+     * @param limit Maximum number of IDs to return
+     * @return ids Slice of active position IDs
+     * @return total Total number of active positions
+     */
+    function getActivePositionIds(uint256 offset, uint256 limit)
+        external
+        view
+        returns (uint256[] memory ids, uint256 total)
+    {
+        total = _activePositions.length();
+        if (offset >= total || limit == 0) return (new uint256[](0), total);
+        uint256 end = offset + limit > total ? total : offset + limit;
+        ids = new uint256[](end - offset);
+        for (uint256 i = offset; i < end; i++) {
+            ids[i - offset] = _activePositions.at(i);
         }
     }
 

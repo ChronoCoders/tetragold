@@ -329,10 +329,12 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
     }
 
     /**
-     * @notice Rebalance reserves to maintain target utilization (50/50 split)
+     * @notice Rebalance reserves for all registered tokens to maintain target utilization
      */
-    function rebalance() external whenNotPaused {
-        _rebalanceToken(address(0)); // Will be set by caller or iterate through supported tokens
+    function rebalance() external onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused {
+        for (uint256 i = 0; i < _tokenList.length; i++) {
+            _rebalanceToken(_tokenList[i]);
+        }
     }
 
     /**
