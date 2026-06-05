@@ -86,6 +86,21 @@ contract TGAUX is ERC20, ERC20Burnable, ERC20Pausable, AccessControl {
     }
 
     /**
+     * @dev Burns tokens from an account without requiring allowance.
+     *      Used by VaultManager during liquidations so a position owner
+     *      cannot block liquidation by revoking their TGAUX allowance.
+     * @param account Account to burn tokens from
+     * @param amount Amount of tokens to burn
+     *
+     * Requirements:
+     * - Caller must have MINTER_ROLE (VaultManager)
+     */
+    function vaultBurn(address account, uint256 amount) external onlyRole(MINTER_ROLE) {
+        _burn(account, amount);
+        emit Burned(account, amount);
+    }
+
+    /**
      * @dev Pauses all token transfers
      *
      * Requirements:
@@ -114,10 +129,7 @@ contract TGAUX is ERC20, ERC20Burnable, ERC20Pausable, AccessControl {
      * Overrides ERC20 transfer hook to enforce minimum transfer amount
      * Exception: Allows transfers of exact balance (to enable complete withdrawals)
      */
-    function _update(address from, address to, uint256 amount)
-        internal
-        override(ERC20, ERC20Pausable)
-    {
+    function _update(address from, address to, uint256 amount) internal override(ERC20, ERC20Pausable) {
         // Minting and burning can be any amount (handled in mint function and burn is user's choice)
         // For transfers, enforce minimum unless transferring entire balance
         if (from != address(0) && to != address(0)) {
@@ -149,12 +161,7 @@ contract TGAUX is ERC20, ERC20Burnable, ERC20Pausable, AccessControl {
     /**
      * @dev See {IERC165-supportsInterface}
      */
-    function supportsInterface(bytes4 interfaceId)
-        public
-        view
-        override(AccessControl)
-        returns (bool)
-    {
+    function supportsInterface(bytes4 interfaceId) public view override(AccessControl) returns (bool) {
         return super.supportsInterface(interfaceId);
     }
 }

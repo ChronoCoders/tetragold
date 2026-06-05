@@ -82,14 +82,10 @@ contract LiquidationEngineTest is Test {
         api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(GOLD_PRICE * 1e10)));
 
         // Deploy OracleAggregator
-        oracle = new OracleAggregator(
-            admin,
-            address(chainlinkOracle),
-            address(bandOracle),
-            address(api3Oracle)
-        );
+        oracle = new OracleAggregator(admin, address(chainlinkOracle), address(bandOracle), address(api3Oracle));
 
         // Update TWAP
+        vm.warp(block.timestamp + 601);
         oracle.updateTwap();
 
         // Deploy mock liquidity pool
@@ -97,23 +93,14 @@ contract LiquidationEngineTest is Test {
 
         // Deploy VaultManager
         vaultManager = new VaultManager(
-            admin,
-            address(tgaux),
-            address(oracle),
-            address(liquidityPool),
-            address(usdc),
-            address(usdt)
+            admin, address(tgaux), address(oracle), address(liquidityPool), address(usdc), address(usdt)
         );
 
         // Grant roles
         tgaux.grantRole(tgaux.MINTER_ROLE(), address(vaultManager));
 
         // Deploy LiquidationEngine
-        liquidationEngine = new LiquidationEngine(
-            address(vaultManager),
-            address(insuranceFund),
-            treasury
-        );
+        liquidationEngine = new LiquidationEngine(address(vaultManager), address(insuranceFund), treasury);
 
         // Grant liquidator role to LiquidationEngine
         vaultManager.grantRole(vaultManager.LIQUIDATOR_ROLE(), address(liquidationEngine));
@@ -216,6 +203,63 @@ contract LiquidationEngineTest is Test {
         assertTrue(stats.totalRewards > 0);
     }
 
+    /// @dev M-01 regression: an unmarked liquidatable position must be auto-marked
+    ///      on the first liquidation attempt instead of being liquidated instantly
+    function test_AutoMarkOnFirstLiquidationAttempt() public {
+        uint256 positionId = _createLiquidatablePosition();
+
+        // No explicit markForLiquidation() — first attempt should auto-mark and not liquidate
+        vm.prank(liquidator);
+        vm.expectEmit(true, false, false, false);
+        emit PositionMarkedForLiquidation(positionId, block.timestamp);
+
+        uint256 penalty = liquidationEngine.liquidatePosition(positionId);
+        assertEq(penalty, 0);
+
+        LiquidationEngine.LiquidationInfo memory info = liquidationEngine.getPositionLiquidationInfo(positionId);
+        assertTrue(info.isMarked);
+        assertEq(info.tranchesLiquidated, 0);
+
+        // Second attempt within grace period still reverts
+        vm.prank(liquidator);
+        vm.expectRevert(LiquidationEngine.LiquidationEngine__GracePeriodActive.selector);
+        liquidationEngine.liquidatePosition(positionId);
+
+        // After the grace period the liquidation proceeds
+        vm.warp(block.timestamp + 11 minutes);
+        vm.prank(liquidator);
+        penalty = liquidationEngine.liquidatePosition(positionId);
+        assertGt(penalty, 0);
+    }
+
+    /// @dev M-01 regression: checkUpkeep must surface unmarked liquidatable
+    ///      positions so performUpkeep can auto-mark them
+    function test_CheckUpkeepIncludesUnmarkedPositions() public {
+        uint256 positionId = _createLiquidatablePosition();
+
+        (bool upkeepNeeded, bytes memory performData) = liquidationEngine.checkUpkeep("");
+        assertTrue(upkeepNeeded);
+
+        uint256[] memory ids = abi.decode(performData, (uint256[]));
+        assertEq(ids.length, 1);
+        assertEq(ids[0], positionId);
+
+        // performUpkeep auto-marks instead of liquidating
+        liquidationEngine.performUpkeep(performData);
+        LiquidationEngine.LiquidationInfo memory info = liquidationEngine.getPositionLiquidationInfo(positionId);
+        assertTrue(info.isMarked);
+        assertEq(info.tranchesLiquidated, 0);
+
+        // After grace period, the same flow liquidates
+        vm.warp(block.timestamp + 11 minutes);
+        (upkeepNeeded, performData) = liquidationEngine.checkUpkeep("");
+        assertTrue(upkeepNeeded);
+        liquidationEngine.performUpkeep(performData);
+
+        info = liquidationEngine.getPositionLiquidationInfo(positionId);
+        assertEq(info.tranchesLiquidated, 1);
+    }
+
     function test_LiquidatePositionRevertsBeforeGracePeriod() public {
         uint256 positionId = _createLiquidatablePosition();
 
@@ -292,6 +336,7 @@ contract LiquidationEngineTest is Test {
             chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
             bandOracle.setReferenceData(newPrice * 1e10);
             api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+            vm.warp(block.timestamp + 601);
             oracle.updateTwap();
         }
 
@@ -413,6 +458,7 @@ contract LiquidationEngineTest is Test {
             chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
             bandOracle.setReferenceData(newPrice * 1e10);
             api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+            vm.warp(block.timestamp + 601);
             oracle.updateTwap();
         }
 

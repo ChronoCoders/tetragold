@@ -35,24 +35,12 @@ contract VaultManagerTest is Test {
 
     // Events
     event PositionOpened(
-        uint256 indexed positionId,
-        address indexed owner,
-        uint256 collateral,
-        uint256 leverage,
-        uint256 tgauxMinted
+        uint256 indexed positionId, address indexed owner, uint256 collateral, uint256 leverage, uint256 tgauxMinted
     );
-    event PositionClosed(
-        uint256 indexed positionId,
-        address indexed owner,
-        uint256 returnAmount
-    );
+    event PositionClosed(uint256 indexed positionId, address indexed owner, uint256 returnAmount);
     event CollateralAdded(uint256 indexed positionId, uint256 amount);
     event FeesCollected(uint256 amount, address indexed token);
-    event PositionLiquidated(
-        uint256 indexed positionId,
-        address indexed liquidator,
-        uint256 collateralSeized
-    );
+    event PositionLiquidated(uint256 indexed positionId, address indexed liquidator, uint256 collateralSeized);
 
     function setUp() public {
         admin = makeAddr("admin");
@@ -81,14 +69,10 @@ contract VaultManagerTest is Test {
 
         // Deploy oracle aggregator
         vm.prank(admin);
-        oracle = new OracleAggregator(
-            admin,
-            address(chainlinkOracle),
-            address(bandOracle),
-            address(api3Oracle)
-        );
+        oracle = new OracleAggregator(admin, address(chainlinkOracle), address(bandOracle), address(api3Oracle));
 
         // Initialize oracle with first price
+        vm.warp(block.timestamp + 601);
         oracle.updateTwap();
 
         // Deploy liquidity pool
@@ -96,14 +80,7 @@ contract VaultManagerTest is Test {
 
         // Deploy VaultManager
         vm.prank(admin);
-        vault = new VaultManager(
-            admin,
-            address(tgaux),
-            address(oracle),
-            address(pool),
-            address(usdc),
-            address(usdt)
-        );
+        vault = new VaultManager(admin, address(tgaux), address(oracle), address(pool), address(usdc), address(usdt));
 
         // Grant roles
         bytes32 minterRole = tgaux.MINTER_ROLE();
@@ -141,14 +118,7 @@ contract VaultManagerTest is Test {
 
     function test_ConstructorRevertsWithZeroAddresses() public {
         vm.expectRevert("VaultManager: zero admin address");
-        new VaultManager(
-            address(0),
-            address(tgaux),
-            address(oracle),
-            address(pool),
-            address(usdc),
-            address(usdt)
-        );
+        new VaultManager(address(0), address(tgaux), address(oracle), address(pool), address(usdc), address(usdt));
     }
 
     /* ============ Position Opening Tests ============ */
@@ -200,7 +170,9 @@ contract VaultManagerTest is Test {
 
         VaultManager.Position memory position = vault.getPosition(positionId);
         assertEq(position.leverage, leverage);
-        assertEq(position.borrowedAmount, collateral); // Borrowed 1x collateral
+        // Borrowed 1x effective (post-fee) collateral: 0.2% leverage fee
+        uint256 effectiveCollateral = collateral - (collateral * 20) / BASIS_POINTS;
+        assertEq(position.borrowedAmount, effectiveCollateral);
         assertTrue(position.isActive);
     }
 
@@ -215,7 +187,9 @@ contract VaultManagerTest is Test {
 
         VaultManager.Position memory position = vault.getPosition(positionId);
         assertEq(position.leverage, leverage);
-        assertEq(position.borrowedAmount, collateral * 9); // Borrowed 9x collateral
+        // Borrowed 9x effective (post-fee) collateral: 0.2% leverage fee
+        uint256 effectiveCollateral = collateral - (collateral * 20) / BASIS_POINTS;
+        assertEq(position.borrowedAmount, effectiveCollateral * 9);
         assertTrue(position.isActive);
     }
 
@@ -413,10 +387,7 @@ contract VaultManagerTest is Test {
         vm.stopPrank();
 
         VaultManager.Position memory positionAfter = vault.getPosition(positionId);
-        assertEq(
-            positionAfter.collateralAmount,
-            positionBefore.collateralAmount + additionalCollateral
-        );
+        assertEq(positionAfter.collateralAmount, positionBefore.collateralAmount + additionalCollateral);
     }
 
     function test_AddCollateralRevertsWhenNotOwner() public {
@@ -527,6 +498,7 @@ contract VaultManagerTest is Test {
         chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
         bandOracle.setReferenceData(newPrice * 1e10);
         api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+        vm.warp(block.timestamp + 601);
         oracle.updateTwap();
 
         uint256 healthAfter = vault.getPositionHealth(positionId);
@@ -554,24 +526,28 @@ contract VaultManagerTest is Test {
         chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
         bandOracle.setReferenceData(newPrice * 1e10);
         api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+        vm.warp(block.timestamp + 601);
         oracle.updateTwap();
 
         newPrice = newPrice * 105 / 100;
         chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
         bandOracle.setReferenceData(newPrice * 1e10);
         api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+        vm.warp(block.timestamp + 601);
         oracle.updateTwap();
 
         newPrice = newPrice * 105 / 100;
         chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
         bandOracle.setReferenceData(newPrice * 1e10);
         api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+        vm.warp(block.timestamp + 601);
         oracle.updateTwap();
 
         newPrice = newPrice * 105 / 100;
         chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
         bandOracle.setReferenceData(newPrice * 1e10);
         api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+        vm.warp(block.timestamp + 601);
         oracle.updateTwap();
 
         // Now position should be liquidatable
@@ -585,13 +561,10 @@ contract VaultManagerTest is Test {
         vm.startPrank(user1);
         usdc.approve(address(vault), collateral);
         uint256 positionId = vault.openPosition(collateral, leverage, address(usdc));
-
-        VaultManager.Position memory position = vault.getPosition(positionId);
-
-        // Transfer TGAUX to liquidator for later use
-        bool success = tgaux.transfer(liquidator, position.tgauxMinted);
-        require(success, "Transfer failed");
         vm.stopPrank();
+
+        // TGAUX stays with the position owner — liquidation burns from the owner
+        // via vaultBurn, so the liquidator does not need to hold or approve TGAUX
 
         // Make position liquidatable with small increments to avoid circuit breaker
         // Need ~21.6% total increase for CR to drop from 150% to 125%
@@ -599,29 +572,32 @@ contract VaultManagerTest is Test {
         chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
         bandOracle.setReferenceData(newPrice * 1e10);
         api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+        vm.warp(block.timestamp + 601);
         oracle.updateTwap();
 
         newPrice = newPrice * 105 / 100;
         chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
         bandOracle.setReferenceData(newPrice * 1e10);
         api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+        vm.warp(block.timestamp + 601);
         oracle.updateTwap();
 
         newPrice = newPrice * 105 / 100;
         chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
         bandOracle.setReferenceData(newPrice * 1e10);
         api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+        vm.warp(block.timestamp + 601);
         oracle.updateTwap();
 
         newPrice = newPrice * 105 / 100;
         chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
         bandOracle.setReferenceData(newPrice * 1e10);
         api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+        vm.warp(block.timestamp + 601);
         oracle.updateTwap();
 
         // Liquidate
         vm.startPrank(liquidator);
-        tgaux.approve(address(vault), position.tgauxMinted);
 
         vm.expectEmit(true, true, false, false);
         emit PositionLiquidated(positionId, liquidator, 0);
@@ -657,18 +633,132 @@ contract VaultManagerTest is Test {
         chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
         bandOracle.setReferenceData(newPrice * 1e10);
         api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+        vm.warp(block.timestamp + 601);
         oracle.updateTwap();
 
         newPrice = newPrice * 104 / 100;
         chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
         bandOracle.setReferenceData(newPrice * 1e10);
         api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+        vm.warp(block.timestamp + 601);
         oracle.updateTwap();
 
         vm.startPrank(user2);
         vm.expectRevert();
         vault.liquidate(positionId);
         vm.stopPrank();
+    }
+
+    /// @dev Push gold price up in two 4% steps (~8.2% total), enough to drop a 2x
+    ///      position's equity ratio below the 90% liquidation threshold without
+    ///      tripping the 5% circuit breaker
+    function _make2xLiquidatable() internal {
+        uint256 newPrice = GOLD_PRICE * 104 / 100;
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
+        bandOracle.setReferenceData(newPrice * 1e10);
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+        vm.warp(block.timestamp + 601);
+        oracle.updateTwap();
+
+        newPrice = newPrice * 104 / 100;
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
+        bandOracle.setReferenceData(newPrice * 1e10);
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+        vm.warp(block.timestamp + 601);
+        oracle.updateTwap();
+    }
+
+    /// @dev C-01 regression: partial liquidation must repay the pool via repay(),
+    ///      decrementing totalBorrowed, instead of a raw token transfer
+    function test_LiquidatePositionRepaysPoolAccounting() public {
+        uint256 collateral = 4000e6;
+
+        vm.startPrank(user1);
+        usdc.approve(address(vault), collateral);
+        uint256 positionId = vault.openPosition(collateral, 2, address(usdc));
+        vm.stopPrank();
+
+        VaultManager.Position memory position = vault.getPosition(positionId);
+        uint256 borrowedBefore = pool.totalBorrowed(address(usdc));
+        assertEq(borrowedBefore, position.borrowedAmount);
+
+        // Healthy at open; liquidatable only after an adverse price move
+        assertFalse(vault.isLiquidatable(positionId));
+        _make2xLiquidatable();
+        assertTrue(vault.isLiquidatable(positionId));
+
+        vm.prank(liquidator);
+        vault.liquidatePosition(positionId, 2500);
+
+        uint256 expectedRepay = (position.borrowedAmount * 2500) / BASIS_POINTS;
+        assertEq(pool.totalBorrowed(address(usdc)), borrowedBefore - expectedRepay);
+    }
+
+    /// @dev H-02 regression: liquidation burns TGAUX from the position owner via
+    ///      vaultBurn — it must succeed even if the owner revoked all allowances
+    function test_LiquidateSucceedsWithoutOwnerAllowance() public {
+        uint256 collateral = 4000e6;
+
+        vm.startPrank(user1);
+        usdc.approve(address(vault), collateral);
+        uint256 positionId = vault.openPosition(collateral, 2, address(usdc));
+        tgaux.approve(address(vault), 0); // owner revokes allowance
+        vm.stopPrank();
+
+        uint256 ownerTgauxBefore = tgaux.balanceOf(user1);
+        _make2xLiquidatable();
+        assertTrue(vault.isLiquidatable(positionId));
+
+        vm.prank(liquidator);
+        vault.liquidatePosition(positionId, 2500);
+
+        // 25% of the owner's TGAUX was burned despite zero allowance
+        VaultManager.Position memory position = vault.getPosition(positionId);
+        assertEq(tgaux.balanceOf(user1), ownerTgauxBefore - (ownerTgauxBefore * 2500) / BASIS_POINTS);
+        assertTrue(position.isActive);
+    }
+
+    /// @dev Leveraged health ratio regression: a freshly opened leveraged position
+    ///      must be healthy (equity/borrowed at the tier's open ratio), not
+    ///      instantly liquidatable as under the old collateral/notional formula
+    function test_LeveragedPositionHealthyAtOpen() public {
+        vm.startPrank(user1);
+        usdc.approve(address(vault), 4000e6);
+        uint256 positionId2x = vault.openPosition(4000e6, 2, address(usdc));
+        usdc.approve(address(vault), 12000e6);
+        uint256 positionId10x = vault.openPosition(12000e6, 10, address(usdc));
+        vm.stopPrank();
+
+        // 2x opens at ~100% equity/borrowed (vs 90% liquidation threshold)
+        assertFalse(vault.isLiquidatable(positionId2x));
+        assertApproxEqAbs(vault.getPositionHealth(positionId2x), 10000, 5);
+
+        // 10x opens at ~11.1% equity/borrowed (vs 10% liquidation threshold)
+        assertFalse(vault.isLiquidatable(positionId10x));
+        assertApproxEqAbs(vault.getPositionHealth(positionId10x), 1111, 5);
+    }
+
+    /// @dev Equity ratio falls as gold rises: ~1% adverse move liquidates 10x
+    ///      while 2x stays healthy
+    function test_LeveragedHealthDropsWithAdversePriceMove() public {
+        vm.startPrank(user1);
+        usdc.approve(address(vault), 4000e6);
+        uint256 positionId2x = vault.openPosition(4000e6, 2, address(usdc));
+        usdc.approve(address(vault), 12000e6);
+        uint256 positionId10x = vault.openPosition(12000e6, 10, address(usdc));
+        vm.stopPrank();
+
+        // 2% gold rise: 10x equity ratio drops below its 10% threshold,
+        // 2x (90% threshold, ~96% ratio after the move) stays healthy
+        uint256 newPrice = GOLD_PRICE * 102 / 100;
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
+        bandOracle.setReferenceData(newPrice * 1e10);
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+        vm.warp(block.timestamp + 601);
+        oracle.updateTwap();
+
+        assertFalse(vault.isLiquidatable(positionId2x));
+        assertTrue(vault.isLiquidatable(positionId10x));
     }
 
     /* ============ Fee Collection Tests ============ */
@@ -774,6 +864,12 @@ contract VaultManagerTest is Test {
 
         // Wait some time for interest to accrue
         vm.warp(block.timestamp + 5 days);
+
+        // Re-seed mock feeds and refresh oracle so the price is not stale after the warp
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(GOLD_PRICE));
+        bandOracle.setReferenceData(GOLD_PRICE * 1e10);
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(GOLD_PRICE * 1e10)));
+        oracle.updateTwap();
 
         // Close position
         tgaux.approve(address(vault), tgauxMinted);

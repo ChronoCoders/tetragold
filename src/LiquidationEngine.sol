@@ -79,12 +79,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
     /* ============ Events ============ */
 
     event PositionMarkedForLiquidation(uint256 indexed positionId, uint256 timestamp);
-    event PositionLiquidated(
-        uint256 indexed positionId,
-        address indexed liquidator,
-        uint256 penalty,
-        uint256 portion
-    );
+    event PositionLiquidated(uint256 indexed positionId, address indexed liquidator, uint256 penalty, uint256 portion);
     event LiquidationRewardPaid(address indexed liquidator, uint256 amount);
     event GracePeriodExpired(uint256 indexed positionId);
     event LiquidatorRegistered(address indexed liquidator);
@@ -138,12 +133,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
      * @param positionId ID of the position to liquidate
      * @return penalty Penalty amount collected
      */
-    function liquidatePosition(uint256 positionId)
-        external
-        nonReentrant
-        whenNotPaused
-        returns (uint256 penalty)
-    {
+    function liquidatePosition(uint256 positionId) external nonReentrant whenNotPaused returns (uint256 penalty) {
         return _liquidatePosition(positionId, msg.sender);
     }
 
@@ -250,9 +240,8 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
         override
         returns (bool upkeepNeeded, bytes memory performData)
     {
-        (uint256 startIndex, uint256 count) = checkData.length == 0
-            ? (0, MAX_POSITIONS_PER_CHECK)
-            : abi.decode(checkData, (uint256, uint256));
+        (uint256 startIndex, uint256 count) =
+            checkData.length == 0 ? (0, MAX_POSITIONS_PER_CHECK) : abi.decode(checkData, (uint256, uint256));
 
         uint256[] memory liquidatablePositions = _getLiquidatablePositions(startIndex, count);
 
@@ -274,9 +263,12 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
 
         for (uint256 i = 0; i < length; i++) {
             // slither-disable-next-line unused-return
-            try this.liquidatePositionInternal(positionIds[i], msg.sender) returns (uint256) {
-                // Liquidation succeeded
-            } catch {
+            try this.liquidatePositionInternal(positionIds[i], msg.sender) returns (
+                uint256
+            ) {
+            // Liquidation succeeded
+            }
+            catch {
                 // Skip positions that can't be liquidated
                 continue;
             }
@@ -304,8 +296,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
         view
         returns (LiquidationCandidate[] memory candidates)
     {
-        (uint256[] memory activeIds, ) =
-            IVaultManager(vaultManager).getActivePositionIds(startIndex, count);
+        (uint256[] memory activeIds,) = IVaultManager(vaultManager).getActivePositionIds(startIndex, count);
 
         // Count liquidatable positions
         uint256 liquidatableCount = 0;
@@ -330,7 +321,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
                     owner: position.owner,
                     currentRatio: health,
                     liquidationRatio: _getLiquidationThreshold(position.leverage),
-                    positionValue: _getPositionValue(position)
+                    positionValue: _getPositionValue(positionId, position)
                 });
                 candidateIndex++;
             }
@@ -342,11 +333,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
      * @param positionId Position ID
      * @return info Liquidation information
      */
-    function getPositionLiquidationInfo(uint256 positionId)
-        external
-        view
-        returns (LiquidationInfo memory info)
-    {
+    function getPositionLiquidationInfo(uint256 positionId) external view returns (LiquidationInfo memory info) {
         info.isMarked = liquidationWarningTime[positionId] != 0;
         info.markedTime = liquidationWarningTime[positionId];
         info.tranchesLiquidated = partialLiquidations[positionId].tranchesLiquidated;
@@ -389,10 +376,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
      * @param liquidator Liquidator address
      * @return penalty Penalty collected
      */
-    function liquidatePositionInternal(uint256 positionId, address liquidator)
-        external
-        returns (uint256 penalty)
-    {
+    function liquidatePositionInternal(uint256 positionId, address liquidator) external returns (uint256 penalty) {
         require(msg.sender == address(this), "LiquidationEngine: internal only");
         return _liquidatePosition(positionId, liquidator);
     }
@@ -405,6 +389,15 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
      */
     // slither-disable-start reentrancy-eth
     function _liquidatePosition(uint256 positionId, address liquidator) internal returns (uint256 penalty) {
+        // Auto-mark: the first time a position is seen liquidatable, start the
+        // grace period instead of liquidating. The user always gets GRACE_PERIOD
+        // to self-remediate before any tranche is taken.
+        if (liquidationWarningTime[positionId] == 0 && _isPositionLiquidatable(positionId)) {
+            liquidationWarningTime[positionId] = block.timestamp;
+            emit PositionMarkedForLiquidation(positionId, block.timestamp);
+            return 0;
+        }
+
         // Check if can liquidate
         if (!_canLiquidateNow(positionId)) {
             revert LiquidationEngine__GracePeriodActive();
@@ -420,7 +413,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
         IVaultManager.Position memory position = IVaultManager(vaultManager).getPosition(positionId);
 
         // Check minimum value
-        uint256 positionValue = _getPositionValue(position);
+        uint256 positionValue = _getPositionValue(positionId, position);
         if (positionValue < MIN_LIQUIDATION_VALUE) {
             revert LiquidationEngine__InsufficientValue();
         }
@@ -448,6 +441,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
 
         return penalty;
     }
+
     // slither-disable-end reentrancy-eth
 
     /**
@@ -497,13 +491,28 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
 
         uint256 markedTime = liquidationWarningTime[positionId];
 
-        // If not marked, can liquidate immediately if unhealthy
+        // Unmarked positions cannot be liquidated yet — the grace period starts
+        // at the first mark (explicit or auto-mark in _liquidatePosition)
         if (markedTime == 0) {
-            return true;
+            return false;
         }
 
         // Check if grace period has expired
         return block.timestamp >= markedTime + GRACE_PERIOD;
+    }
+
+    /**
+     * @dev Check whether a position needs keeper action: either an auto-mark
+     *      (liquidatable but unmarked) or an actual liquidation (grace expired)
+     * @param positionId Position ID
+     * @return True if performUpkeep should process this position
+     */
+    function _needsAction(uint256 positionId) internal view returns (bool) {
+        if (!_isPositionLiquidatable(positionId)) {
+            return false;
+        }
+        uint256 markedTime = liquidationWarningTime[positionId];
+        return markedTime == 0 || block.timestamp >= markedTime + GRACE_PERIOD;
     }
 
     /**
@@ -517,13 +526,12 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
         view
         returns (uint256[] memory liquidatableIds)
     {
-        (uint256[] memory activeIds, ) =
-            IVaultManager(vaultManager).getActivePositionIds(startIndex, count);
+        (uint256[] memory activeIds,) = IVaultManager(vaultManager).getActivePositionIds(startIndex, count);
 
-        // Count liquidatable positions
+        // Count positions needing keeper action (auto-mark or liquidate)
         uint256 liquidatableCount = 0;
         for (uint256 i = 0; i < activeIds.length; i++) {
-            if (_canLiquidateNow(activeIds[i])) {
+            if (_needsAction(activeIds[i])) {
                 liquidatableCount++;
             }
         }
@@ -534,7 +542,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
 
         for (uint256 i = 0; i < activeIds.length; i++) {
             uint256 positionId = activeIds[i];
-            if (_canLiquidateNow(positionId)) {
+            if (_needsAction(positionId)) {
                 liquidatableIds[liquidatableIndex] = positionId;
                 liquidatableIndex++;
             }
@@ -566,9 +574,17 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
      * @param position Position struct
      * @return value Position value
      */
-    function _getPositionValue(IVaultManager.Position memory position) internal pure returns (uint256 value) {
-        // Simplified - in reality would need to calculate based on current price
-        return position.collateralAmount;
+    function _getPositionValue(uint256 positionId, IVaultManager.Position memory position)
+        internal
+        view
+        returns (uint256 value)
+    {
+        // Economic value = notional exposure at current gold price minus total debt.
+        // tgauxMinted (18 dec) * goldPrice (8 dec) / 1e20 -> 6 decimals, matching collateral.
+        (uint256 goldPrice,) = IOracleAggregator(IVaultManager(vaultManager).oracle()).getGoldPrice();
+        uint256 notional = (position.tgauxMinted * goldPrice) / 1e20;
+        uint256 totalOwed = position.borrowedAmount + IVaultManager(vaultManager).calculateInterest(positionId);
+        return notional > totalOwed ? notional - totalOwed : 0;
     }
 }
 
@@ -592,7 +608,16 @@ interface IVaultManager {
     function liquidatePosition(uint256 positionId, uint256 percentage) external returns (uint256);
     function isLiquidatable(uint256 positionId) external view returns (bool);
     function getActivePositionIds() external view returns (uint256[] memory);
-    function getActivePositionIds(uint256 offset, uint256 limit) external view returns (uint256[] memory ids, uint256 total);
+    function getActivePositionIds(uint256 offset, uint256 limit)
+        external
+        view
+        returns (uint256[] memory ids, uint256 total);
+    function oracle() external view returns (address);
+    function calculateInterest(uint256 positionId) external view returns (uint256);
+}
+
+interface IOracleAggregator {
+    function getGoldPrice() external view returns (uint256 price, uint256 timestamp);
 }
 
 interface IInsuranceFund {

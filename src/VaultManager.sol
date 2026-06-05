@@ -46,7 +46,7 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
     // Leverage tier configuration
     struct LeverageTier {
         uint256 minCollateralRatio; // Basis points (10000 = 100%)
-        uint256 liquidationRatio;   // Basis points (10000 = 100%)
+        uint256 liquidationRatio; // Basis points (10000 = 100%)
     }
 
     // State variables
@@ -69,33 +69,21 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
     uint256 public constant SECONDS_PER_DAY = 86400;
 
     // Protocol fees (in basis points)
-    uint256 public constant FEE_NO_LEVERAGE = 10;      // 0.1%
-    uint256 public constant FEE_WITH_LEVERAGE = 20;    // 0.2%
-    uint256 public constant FEE_BURN = 15;             // 0.15%
+    uint256 public constant FEE_NO_LEVERAGE = 10; // 0.1%
+    uint256 public constant FEE_WITH_LEVERAGE = 20; // 0.2%
+    uint256 public constant FEE_BURN = 15; // 0.15%
 
     // Fee collection
     mapping(address => uint256) public collectedFees;
 
     // Events
     event PositionOpened(
-        uint256 indexed positionId,
-        address indexed owner,
-        uint256 collateral,
-        uint256 leverage,
-        uint256 tgauxMinted
+        uint256 indexed positionId, address indexed owner, uint256 collateral, uint256 leverage, uint256 tgauxMinted
     );
-    event PositionClosed(
-        uint256 indexed positionId,
-        address indexed owner,
-        uint256 returnAmount
-    );
+    event PositionClosed(uint256 indexed positionId, address indexed owner, uint256 returnAmount);
     event CollateralAdded(uint256 indexed positionId, uint256 amount);
     event FeesCollected(uint256 amount, address indexed token);
-    event PositionLiquidated(
-        uint256 indexed positionId,
-        address indexed liquidator,
-        uint256 collateralSeized
-    );
+    event PositionLiquidated(uint256 indexed positionId, address indexed liquidator, uint256 collateralSeized);
 
     /**
      * @dev Constructor
@@ -106,14 +94,7 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
      * @param _usdc USDC token address
      * @param _usdt USDT token address
      */
-    constructor(
-        address _admin,
-        address _tgaux,
-        address _oracle,
-        address _liquidityPool,
-        address _usdc,
-        address _usdt
-    ) {
+    constructor(address _admin, address _tgaux, address _oracle, address _liquidityPool, address _usdc, address _usdt) {
         require(_admin != address(0), "VaultManager: zero admin address");
         require(_tgaux != address(0), "VaultManager: zero tgaux address");
         require(_oracle != address(0), "VaultManager: zero oracle address");
@@ -134,11 +115,11 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
 
         // Configure leverage tiers
         // CR = collateral / borrowed = 1 / (leverage - 1) for leverage > 1
-        leverageTiers[1] = LeverageTier(15000, 12500);  // 1x: 150% CR (no borrowing), 125% liquidation
-        leverageTiers[2] = LeverageTier(10000, 9000);   // 2x: 100% CR (1/1), 90% liquidation
-        leverageTiers[3] = LeverageTier(5000, 4500);    // 3x: 50% CR (1/2), 45% liquidation
-        leverageTiers[5] = LeverageTier(2500, 2250);    // 5x: 25% CR (1/4), 22.5% liquidation
-        leverageTiers[10] = LeverageTier(1111, 1000);   // 10x: 11.1% CR (1/9), 10% liquidation
+        leverageTiers[1] = LeverageTier(15000, 12500); // 1x: 150% CR (no borrowing), 125% liquidation
+        leverageTiers[2] = LeverageTier(10000, 9000); // 2x: 100% CR (1/1), 90% liquidation
+        leverageTiers[3] = LeverageTier(5000, 4500); // 3x: 50% CR (1/2), 45% liquidation
+        leverageTiers[5] = LeverageTier(2500, 2250); // 5x: 25% CR (1/4), 22.5% liquidation
+        leverageTiers[10] = LeverageTier(1111, 1000); // 10x: 11.1% CR (1/9), 10% liquidation
 
         nextPositionId = 1;
     }
@@ -150,18 +131,19 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
      * @param collateralToken Address of collateral token (USDC or USDT)
      * @return positionId The ID of the newly created position
      */
-    function openPosition(
-        uint256 collateralAmount,
-        uint256 leverage,
-        address collateralToken
-    ) external nonReentrant whenNotPaused returns (uint256 positionId) {
+    function openPosition(uint256 collateralAmount, uint256 leverage, address collateralToken)
+        external
+        nonReentrant
+        whenNotPaused
+        returns (uint256 positionId)
+    {
         require(supportedCollateral[collateralToken], "VaultManager: unsupported collateral");
         require(collateralAmount > 0, "VaultManager: zero collateral");
         require(_isValidLeverage(leverage), "VaultManager: invalid leverage");
 
         // Get current gold price
         // slither-disable-next-line unused-return
-        (uint256 goldPrice, ) = oracle.getGoldPrice();
+        (uint256 goldPrice,) = oracle.getGoldPrice();
         require(goldPrice > 0, "VaultManager: invalid gold price");
 
         // Apply protocol fee first
@@ -182,9 +164,10 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
             totalValue = (effectiveCollateral * BASIS_POINTS) / requiredRatio;
             borrowedAmount = 0;
         } else {
-            // leverage > 1: use original collateral for leverage calculations
-            borrowedAmount = collateralAmount * (leverage - 1);
-            totalValue = collateralAmount * leverage;
+            // leverage > 1: borrow against effective (post-fee) collateral so the
+            // stored collateral actually satisfies the tier's collateral ratio
+            borrowedAmount = effectiveCollateral * (leverage - 1);
+            totalValue = effectiveCollateral * leverage;
         }
 
         uint256 tgauxAmount = (totalValue * 1e20) / goldPrice;
@@ -194,8 +177,8 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
             uint256 actualRatio = _calculateCollateralRatio(effectiveCollateral, tgauxAmount, goldPrice);
             require(actualRatio >= requiredRatio, "VaultManager: insufficient collateral");
         } else {
-            // For leverage > 1, verify CR using original collateral
-            uint256 actualRatio = (collateralAmount * BASIS_POINTS) / borrowedAmount;
+            // For leverage > 1, verify CR using effective (post-fee) collateral
+            uint256 actualRatio = (effectiveCollateral * BASIS_POINTS) / borrowedAmount;
             require(actualRatio >= requiredRatio, "VaultManager: insufficient collateral");
         }
 
@@ -248,7 +231,7 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
 
         // Get current gold price
         // slither-disable-next-line unused-return
-        (uint256 goldPrice, ) = oracle.getGoldPrice();
+        (uint256 goldPrice,) = oracle.getGoldPrice();
         require(goldPrice > 0, "VaultManager: invalid gold price");
 
         // Burn TGAUX from user
@@ -324,8 +307,9 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         uint256 interest = calculateInterest(positionId);
         uint256 totalOwed = position.borrowedAmount + interest;
 
-        // Burn TGAUX (liquidator must have the tokens)
-        tgaux.burnFrom(msg.sender, position.tgauxMinted);
+        // Burn TGAUX from the position owner (no allowance needed), consistent
+        // with liquidatePosition() — liquidators do not need to hold TGAUX
+        tgaux.vaultBurn(position.owner, position.tgauxMinted);
 
         // Repay liquidity pool via repay() to keep pool accounting correct
         if (totalOwed > 0) {
@@ -334,9 +318,7 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         }
 
         // Gross collateral available after repaying debt
-        uint256 grossCollateral = position.collateralAmount > totalOwed
-            ? position.collateralAmount - totalOwed
-            : 0;
+        uint256 grossCollateral = position.collateralAmount > totalOwed ? position.collateralAmount - totalOwed : 0;
 
         // Apply liquidation penalty — accrued as protocol fees, consistent with liquidatePosition()
         uint256 penaltyRate = _calculateLiquidationPenalty(position.leverage);
@@ -426,13 +408,40 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         Position storage position = positions[positionId];
         require(position.isActive, "VaultManager: position not active");
 
+        ratio = _positionHealthRatio(positionId);
+    }
+
+    /**
+     * @dev Current health ratio for a position, matching the leverage tier semantics:
+     *      - 1x (no borrow): collateral / TGAUX value (synthetic backing ratio)
+     *      - leveraged: equity / borrowed (margin ratio), where equity is collateral
+     *        adjusted for unrealized PnL against the open price and accrued interest.
+     *        At open this equals collateral/borrowed = 1/(leverage-1), matching the
+     *        tier table (2x: 100% open / 90% liquidation, 10x: 11.1% / 10%).
+     */
+    function _positionHealthRatio(uint256 positionId) internal view returns (uint256 ratio) {
+        Position storage position = positions[positionId];
+
         // slither-disable-next-line unused-return
-        (uint256 goldPrice, ) = oracle.getGoldPrice();
-        ratio = _calculateCollateralRatio(
-            position.collateralAmount,
-            position.tgauxMinted,
-            goldPrice
-        );
+        (uint256 goldPrice,) = oracle.getGoldPrice();
+
+        if (position.borrowedAmount == 0) {
+            return _calculateCollateralRatio(position.collateralAmount, position.tgauxMinted, goldPrice);
+        }
+
+        // TGAUX liability now vs at open, in collateral (6-decimal) terms
+        uint256 valueNow = (position.tgauxMinted * goldPrice) / 1e20;
+        uint256 valueAtOpen = (position.tgauxMinted * position.openPrice) / 1e20;
+
+        // equity = collateral - (valueNow - valueAtOpen) - interest, computed
+        // without underflow: gains (valueNow < valueAtOpen) increase equity
+        uint256 assets = position.collateralAmount + valueAtOpen;
+        uint256 liabilities = valueNow + calculateInterest(positionId);
+        if (assets <= liabilities) {
+            return 0;
+        }
+
+        ratio = ((assets - liabilities) * BASIS_POINTS) / position.borrowedAmount;
     }
 
     /**
@@ -466,13 +475,7 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
             return false;
         }
 
-        // slither-disable-next-line unused-return
-        (uint256 goldPrice, ) = oracle.getGoldPrice();
-        uint256 currentRatio = _calculateCollateralRatio(
-            position.collateralAmount,
-            position.tgauxMinted,
-            goldPrice
-        );
+        uint256 currentRatio = _positionHealthRatio(positionId);
 
         uint256 liquidationRatio = leverageTiers[position.leverage].liquidationRatio;
         liquidatable = currentRatio < liquidationRatio;
@@ -513,12 +516,15 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         uint256 penaltyRate = _calculateLiquidationPenalty(position.leverage);
         penalty = (position.collateralAmount * percentage * penaltyRate) / (BASIS_POINTS * BASIS_POINTS);
 
-        // Burn TGAUX from owner
-        tgaux.burnFrom(position.owner, tgauxToLiquidate);
+        // Burn TGAUX from owner (no allowance needed — owner cannot block
+        // liquidation by revoking approval)
+        tgaux.vaultBurn(position.owner, tgauxToLiquidate);
 
-        // Repay borrowed amount to liquidity pool
+        // Repay borrowed amount to liquidity pool via repay() so pool accounting
+        // (totalBorrowed / borrowedByToken) is decremented, matching closePosition/liquidate
         if (borrowedToRepay > 0) {
-            IERC20(position.collateralToken).safeTransfer(liquidityPool, borrowedToRepay);
+            IERC20(position.collateralToken).safeIncreaseAllowance(liquidityPool, borrowedToRepay);
+            ILiquidityPool(liquidityPool).repay(borrowedToRepay, position.collateralToken);
         }
 
         // Deduct penalty from collateral
@@ -606,11 +612,11 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
      * @param goldPrice Current gold price (8 decimals)
      * @return ratio Collateralization ratio in basis points
      */
-    function _calculateCollateralRatio(
-        uint256 collateralAmount,
-        uint256 tgauxAmount,
-        uint256 goldPrice
-    ) internal pure returns (uint256 ratio) {
+    function _calculateCollateralRatio(uint256 collateralAmount, uint256 tgauxAmount, uint256 goldPrice)
+        internal
+        pure
+        returns (uint256 ratio)
+    {
         if (tgauxAmount == 0) {
             return type(uint256).max;
         }
