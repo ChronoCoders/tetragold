@@ -11,7 +11,7 @@ import {OracleAggregator} from "./OracleAggregator.sol";
 
 /**
  * @title VaultManager
- * @dev Manages leveraged positions for gold-backed TGAUX tokens
+ * @dev Manages leveraged positions for gold price-tracking TGAUX tokens
  *
  * Features:
  * - Position management with 1x-10x leverage
