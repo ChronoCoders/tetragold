@@ -161,7 +161,7 @@ forge test --gas-report
 forge coverage
 ```
 
-**Test suite:** 244 tests across 7 contract test suites, including unit tests, integration tests, and fuzz tests.
+**Test suite:** 306 tests across 11 contract test suites, including unit tests, integration tests, and fuzz tests.
 
 ## Deployment
 
