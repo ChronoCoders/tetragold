@@ -141,6 +141,14 @@ contract TGAUX is ERC20, ERC20Burnable, ERC20Pausable, AccessControl {
     }
 
     /**
+     * @dev Prevents renouncing DEFAULT_ADMIN_ROLE to avoid bricking access control
+     */
+    function renounceRole(bytes32 role, address callerConfirmation) public override {
+        require(role != DEFAULT_ADMIN_ROLE, "TGAUX: cannot renounce admin role");
+        super.renounceRole(role, callerConfirmation);
+    }
+
+    /**
      * @dev See {IERC165-supportsInterface}
      */
     function supportsInterface(bytes4 interfaceId)

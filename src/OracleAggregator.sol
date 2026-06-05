@@ -43,6 +43,7 @@ contract OracleAggregator is AccessControl, Pausable {
     }
 
     PricePoint[] public priceHistory;
+    uint256 private _historyStartIdx;
     uint256 public lastPrice;
     uint256 public lastUpdateTime;
 
@@ -258,20 +259,11 @@ contract OracleAggregator is AccessControl, Pausable {
      * @param price New price to add
      */
     function _updatePriceHistory(uint256 price) internal {
-        priceHistory.push(PricePoint({
-            price: price,
-            timestamp: block.timestamp
-        }));
-
-        // Remove old entries outside TWAP window
+        priceHistory.push(PricePoint({price: price, timestamp: block.timestamp}));
         if (block.timestamp > TWAP_WINDOW) {
             uint256 cutoffTime = block.timestamp - TWAP_WINDOW;
-            while (priceHistory.length > 0 && priceHistory[0].timestamp < cutoffTime) {
-                // Shift array left
-                for (uint256 i = 0; i < priceHistory.length - 1; i++) {
-                    priceHistory[i] = priceHistory[i + 1];
-                }
-                priceHistory.pop();
+            while (_historyStartIdx < priceHistory.length && priceHistory[_historyStartIdx].timestamp < cutoffTime) {
+                _historyStartIdx++;
             }
         }
     }
@@ -281,26 +273,24 @@ contract OracleAggregator is AccessControl, Pausable {
      * @return twap Time-weighted average price
      */
     function _calculateTwap() internal view returns (uint256) {
-        // slither-disable-next-line incorrect-equality
-        if (priceHistory.length == 0) return 0;  // Intentional: handle empty price history
-        // slither-disable-next-line incorrect-equality
-        if (priceHistory.length == 1) return priceHistory[0].price;  // Intentional: single entry case
+        uint256 len = priceHistory.length;
+        uint256 start = _historyStartIdx;
+        if (start >= len) return lastPrice;
+        if (len - start == 1) return priceHistory[start].price;
 
         uint256 weightedSum = 0;
         uint256 totalTime = 0;
 
-        for (uint256 i = 0; i < priceHistory.length - 1; i++) {
+        for (uint256 i = start; i < len - 1; i++) {
             uint256 timeDelta = priceHistory[i + 1].timestamp - priceHistory[i].timestamp;
             weightedSum += priceHistory[i].price * timeDelta;
             totalTime += timeDelta;
         }
-
-        // Add the last price point weighted by time until now
-        uint256 lastTimeDelta = block.timestamp - priceHistory[priceHistory.length - 1].timestamp;
-        weightedSum += priceHistory[priceHistory.length - 1].price * lastTimeDelta;
+        uint256 lastTimeDelta = block.timestamp - priceHistory[len - 1].timestamp;
+        weightedSum += priceHistory[len - 1].price * lastTimeDelta;
         totalTime += lastTimeDelta;
 
-        return totalTime > 0 ? weightedSum / totalTime : priceHistory[priceHistory.length - 1].price;
+        return totalTime > 0 ? weightedSum / totalTime : priceHistory[len - 1].price;
     }
 
     /**
@@ -395,7 +385,7 @@ contract OracleAggregator is AccessControl, Pausable {
      * @dev Get price history length
      */
     function getPriceHistoryLength() external view returns (uint256) {
-        return priceHistory.length;
+        return priceHistory.length > _historyStartIdx ? priceHistory.length - _historyStartIdx : 0;
     }
 
     /**
@@ -403,8 +393,9 @@ contract OracleAggregator is AccessControl, Pausable {
      * @param index Index in price history
      */
     function getPriceHistory(uint256 index) external view returns (uint256 price, uint256 timestamp) {
-        require(index < priceHistory.length, "OracleAggregator: index out of bounds");
-        PricePoint memory point = priceHistory[index];
+        uint256 actualIndex = _historyStartIdx + index;
+        require(actualIndex < priceHistory.length, "OracleAggregator: index out of bounds");
+        PricePoint memory point = priceHistory[actualIndex];
         return (point.price, point.timestamp);
     }
 }
