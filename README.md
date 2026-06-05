@@ -1,126 +1,180 @@
-# Tetra Gold (TGAUX) Token
+# Tetra Gold Protocol
 
-ERC-20 token implementation for the Tetra Gold protocol, representing ownership of physical gold.
+A decentralized synthetic derivatives protocol that provides leveraged exposure to the gold (XAU/USD) spot price. Users deposit stablecoin collateral to mint TGAUX — a synthetic token that tracks gold price movements — at up to 10x leverage, backed by on-chain liquidity pools, automated liquidations, and a protocol-owned insurance reserve.
 
-## Overview
-
-TGAUX is a gold-backed token where:
-- **1 TGAUX = 1 troy ounce of gold = 31.1035 grams**
-- **Minimum transferable amount: 0.03215 TGAUX** (approximately 1 gram)
-
-## Features
-
-- ✅ ERC-20 standard compliant with 18 decimals
-- ✅ Dynamic supply (minted on-demand by authorized VaultManager)
-- ✅ Burnable (users can burn their own tokens)
-- ✅ Pausable (emergency stop functionality)
-- ✅ Non-upgradeable (immutable for security)
-- ✅ Access control using OpenZeppelin's AccessControl
-- ✅ Custom events for minting and burning
-
-## Technical Specifications
-
-### Token Details
-- **Name**: Tetra Gold
-- **Symbol**: TGAUX
-- **Decimals**: 18
-- **Initial Supply**: 0 (dynamic minting)
-
-### Roles
-- **DEFAULT_ADMIN_ROLE**: Can grant/revoke other roles
-- **MINTER_ROLE**: Can mint new tokens (typically assigned to VaultManager)
-- **PAUSER_ROLE**: Can pause/unpause token transfers
-
-### Key Constants
-- `MINIMUM_TRANSFER_AMOUNT`: 32150000000000000 wei (0.03215 TGAUX)
-
-## Project Structure
+## Architecture
 
 ```
 tetragold/
 ├── src/
-│   └── TGAUX.sol              # Main token contract
+│   ├── TGAUX.sol                           # Synthetic gold price token (ERC-20)
+│   ├── VaultManager.sol                    # Position lifecycle and collateral management
+│   ├── LiquidityPool.sol                   # Two-pool LP system (conservative / aggressive)
+│   ├── LiquidationEngine.sol               # Chainlink Automation-powered liquidations
+│   ├── OracleAggregator.sol                # Multi-source TWAP oracle (Chainlink, Band, API3)
+│   ├── InsuranceFund.sol                   # Bad debt coverage with Aave yield generation
+│   ├── FeeDistributor.sol                  # Protocol revenue distribution
+│   ├── LPToken.sol                         # ERC-20 LP share token
+│   └── interfaces/
+│       └── AutomationCompatibleInterface.sol
 ├── test/
-│   └── TGAUX.t.sol            # Comprehensive test suite
+│   ├── TGAUX.t.sol
+│   ├── VaultManager.t.sol
+│   ├── LiquidityPool.t.sol
+│   ├── LiquidationEngine.t.sol
+│   ├── OracleAggregator.t.sol
+│   ├── InsuranceFund.t.sol
+│   ├── FeeDistributor.t.sol
+│   └── mocks/
 ├── script/
-│   └── DeployTGAUX.s.sol      # Deployment script
-├── lib/                       # Dependencies (OpenZeppelin)
-└── foundry.toml               # Foundry configuration
+│   ├── DeployTGAUX.s.sol
+│   └── DeployLocal.s.sol
+├── foundry.toml
+└── lib/
 ```
+
+## Protocol Overview
+
+### TGAUX Token
+
+TGAUX is a synthetic ERC-20 token where 1 TGAUX represents 1 troy ounce of gold at the current XAU/USD spot price. It is not backed by or redeemable for physical gold; it tracks the gold price through the oracle system. Token supply is dynamic — minted when positions are opened and burned when positions are closed.
+
+| Property | Value |
+|---|---|
+| Name | Tetra Gold |
+| Symbol | TGAUX |
+| Decimals | 18 |
+| Minimum transfer | 0.03215 TGAUX |
+| Initial supply | 0 (dynamic) |
+
+### VaultManager
+
+The core contract for opening and managing leveraged positions. Users deposit USDC or USDT as collateral, select a leverage tier, and receive TGAUX proportional to the notional value of their position.
+
+**Supported leverage tiers:**
+
+| Leverage | Min Collateral Ratio | Liquidation Ratio |
+|---|---|---|
+| 1x | 150% | 125% |
+| 2x | 100% | 90% |
+| 3x | 50% | 45% |
+| 5x | 25% | 22.5% |
+| 10x | 11.1% | 10% |
+
+**Protocol fees:**
+- Opening fee (no leverage): 0.1%
+- Opening fee (leveraged): 0.2%
+- Closing fee: 0.15%
+- Borrowing rate: 0.05% per day (18.25% APR)
+
+### LiquidityPool
+
+A dual-pool system that funds leveraged positions by lending collateral to the VaultManager.
+
+- **Conservative pool** — lower-risk LP exposure, preferred for borrow selection
+- **Aggressive pool** — higher-risk/reward LP exposure, secondary borrow source
+
+LP token price appreciates as borrowing interest accrues. The interest rate model uses a kinked curve with an 80% optimal utilization target.
+
+### OracleAggregator
+
+Aggregates gold price data from three independent oracle sources with manipulation resistance:
+
+- **Chainlink** AggregatorV3 (XAU/USD)
+- **Band Protocol** reference data
+- **API3** data feed
+
+Price logic:
+- Prices normalized to 8 decimal precision
+- If deviation between sources exceeds 2%, the median is used instead of the average
+- TWAP calculated over a 10-minute rolling window
+- Prices older than 2 hours are treated as stale and rejected
+- Circuit breaker pauses the system if any single update moves price more than 5%
+
+### LiquidationEngine
+
+Automates partial liquidations of undercollateralized positions using Chainlink Automation.
+
+- Positions are liquidated in 25% tranches (up to 4 tranches = full liquidation)
+- A 10-minute grace period follows marking before liquidation can execute
+- Penalty distribution: 50% liquidator, 30% insurance fund, 20% treasury
+- `checkUpkeep` / `performUpkeep` implement the Chainlink Automation interface
+
+### InsuranceFund
+
+Accumulates protocol reserves to cover bad debt from failed liquidations and other loss events.
+
+- Funded by 30% of protocol fees and 30% of liquidation penalties
+- Idle reserves deployed to Aave v3 for yield generation
+- Default target: 50% of reserves deployed, 50% liquid
+- Target reserve size: 1.5% of protocol TVL; minimum: 0.5%
+- Coverage events recorded on-chain with reason classification
+
+### FeeDistributor
+
+Collects fees from the VaultManager and distributes them according to fixed allocations:
+
+| Recipient | Share |
+|---|---|
+| Insurance Fund | 30% |
+| Treasury | 40% |
+| TGX Stakers | 30% |
+
+TGX stakers earn a pro-rata share of staker fees using a MasterChef-style reward accounting model. Rewards accumulate per supported token and can be claimed at any time.
 
 ## Dependencies
 
-- **OpenZeppelin Contracts v5.0.0**
-  - ERC20
-  - ERC20Burnable
-  - ERC20Pausable
-  - AccessControl
-- **Foundry** (Forge, Cast, Anvil)
+- **[OpenZeppelin Contracts v5](https://github.com/OpenZeppelin/openzeppelin-contracts)** — ERC-20, AccessControl, Pausable, ReentrancyGuard, SafeERC20
+- **[Foundry](https://github.com/foundry-rs/foundry)** — Forge, Cast, Anvil
+- **Solidity 0.8.30**
 
 ## Installation
 
-1. Clone the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/ChronoCoders/tetragold.git
 cd tetragold
-```
 
-2. Install Foundry (if not already installed):
-```bash
+# Install Foundry if needed
 curl -L https://foundry.paradigm.xyz | bash
 foundryup
-```
 
-3. Install dependencies:
-```bash
+# Install dependencies
 forge install
 ```
 
 ## Testing
 
-The test suite includes comprehensive coverage of:
-- ✅ Constructor and initialization
-- ✅ Minting by authorized addresses
-- ✅ Burning by token holders
-- ✅ Transfer restrictions (minimum amount, pause)
-- ✅ Access control enforcement
-- ✅ Decimal precision handling
-- ✅ ERC-20 standard compliance
-- ✅ Integration workflows
-- ✅ Fuzz testing
-
-Run tests:
 ```bash
+# Run full test suite
 forge test
-```
 
-Run tests with verbosity:
-```bash
+# Run with verbose output
 forge test -vvv
-```
 
-Run tests with gas reporting:
-```bash
+# Run a specific contract's tests
+forge test --match-contract VaultManagerTest
+
+# Gas report
 forge test --gas-report
-```
 
-Run coverage:
-```bash
+# Coverage
 forge coverage
 ```
 
+**Test suite:** 244 tests across 7 contract test suites, including unit tests, integration tests, and fuzz tests.
+
 ## Deployment
 
-### Local/Testnet Deployment
+### Environment Variables
 
-1. Set environment variables:
 ```bash
-export DEPLOYER_PRIVATE_KEY=<your-private-key>
-export DEFAULT_ADMIN=<admin-address>
-export VAULT_MANAGER=<vault-manager-address>  # Optional
+export DEPLOYER_PRIVATE_KEY=<deployer-private-key>
+export DEFAULT_ADMIN=<admin-multisig-address>
+export VAULT_MANAGER=<vault-manager-address>   # optional — grants MINTER_ROLE at deploy
 ```
 
-2. Deploy to testnet:
+### Deploy TGAUX Token
+
 ```bash
 forge script script/DeployTGAUX.s.sol:DeployTGAUX \
     --rpc-url <RPC_URL> \
@@ -128,130 +182,50 @@ forge script script/DeployTGAUX.s.sol:DeployTGAUX \
     --verify
 ```
 
-### Mainnet Deployment
+### Post-Deployment Role Setup
 
-For mainnet deployment, ensure:
-- Thorough testing on testnets
-- Security audit completion
-- Multi-sig setup for admin roles
-- Proper key management
+After deploying all contracts, the following roles must be configured:
 
-```bash
-forge script script/DeployTGAUX.s.sol:DeployTGAUX \
-    --rpc-url <MAINNET_RPC_URL> \
-    --broadcast \
-    --verify \
-    --slow
-```
+| Contract | Role | Grantee |
+|---|---|---|
+| TGAUX | `MINTER_ROLE` | VaultManager |
+| LiquidityPool | `VAULT_MANAGER_ROLE` | VaultManager |
+| VaultManager | `LIQUIDATOR_ROLE` | LiquidationEngine |
+| InsuranceFund | `VAULT_MANAGER_ROLE` | FeeDistributor |
+| InsuranceFund | `LIQUIDATION_ENGINE_ROLE` | LiquidationEngine |
+| InsuranceFund | `COVERAGE_MANAGER_ROLE` | Admin multisig |
 
-## Usage
+## Access Control
 
-### Minting Tokens (VaultManager only)
+All contracts use OpenZeppelin's `AccessControl`. The `DEFAULT_ADMIN_ROLE` cannot be renounced — a guard prevents it to avoid permanently locking out governance.
 
-```solidity
-// After deployment, grant MINTER_ROLE to VaultManager
-token.grantRole(MINTER_ROLE, vaultManagerAddress);
+| Role | Holder | Permissions |
+|---|---|---|
+| `DEFAULT_ADMIN_ROLE` | Admin multisig | Grant/revoke all roles |
+| `MINTER_ROLE` | VaultManager | Mint TGAUX |
+| `PAUSER_ROLE` | Admin multisig | Pause token transfers |
+| `LIQUIDATOR_ROLE` | LiquidationEngine | Execute liquidations |
+| `FEE_COLLECTOR_ROLE` | FeeDistributor | Withdraw collected fees |
+| `VAULT_MANAGER_ROLE` | VaultManager | Borrow/repay from LiquidityPool |
 
-// Mint tokens
-token.mint(userAddress, amount);  // amount >= 0.03215 TGAUX
-```
+## Security Properties
 
-### Burning Tokens
+- **Non-upgradeable** — all contracts are immutable once deployed
+- **Reentrancy protection** — `ReentrancyGuard` on all state-mutating external functions
+- **Emergency pause** — all critical paths respect the `whenNotPaused` modifier
+- **Oracle circuit breaker** — system pauses automatically on abnormal price movement
+- **Partial liquidations** — 25% tranches reduce the impact of sudden position closures
+- **Grace period** — 10-minute window between marking and liquidation, allowing self-remediation
+- **SafeERC20** — all token transfers use OZ's safe wrappers
 
-```solidity
-// Users can burn their own tokens
-token.burn(amount);
+## Build
 
-// Or burn with allowance
-token.burnFrom(account, amount);
-```
-
-### Pausing (Emergency)
-
-```solidity
-// Pause all transfers
-token.pause();
-
-// Unpause when safe
-token.unpause();
-```
-
-## Security Considerations
-
-1. **Non-Upgradeable**: Contract is immutable once deployed
-2. **Access Control**: Critical functions protected by role-based access
-3. **Pausable**: Emergency stop mechanism for security incidents
-4. **Minimum Transfer**: Enforced to maintain gold gram equivalency
-5. **OpenZeppelin**: Battle-tested implementations
-
-## Contract Verification
-
-After deployment, verify the contract on block explorers:
-
-```bash
-forge verify-contract \
-    --chain-id <CHAIN_ID> \
-    --compiler-version v0.8.20 \
-    <CONTRACT_ADDRESS> \
-    src/TGAUX.sol:TGAUX
-```
-
-## Gas Optimization
-
-The contract is optimized with:
-- Compiler optimization enabled (200 runs)
-- Efficient storage layout
-- Minimal external calls
-- OpenZeppelin's gas-optimized implementations
-
-## License
-
-MIT License - See LICENSE file for details
-
-## Audit Status
-
-⚠️ **This contract should be audited before mainnet deployment**
-
-Recommended audit focus areas:
-- Access control implementation
-- Mint/burn mechanics
-- Pause functionality
-- Minimum transfer enforcement
-- Integration with VaultManager
-
-## Development
-
-### Build
 ```bash
 forge build
-```
-
-### Test
-```bash
-forge test
-```
-
-### Format
-```bash
 forge fmt
-```
-
-### Gas Snapshots
-```bash
 forge snapshot
 ```
 
-### Static Analysis
-```bash
-slither src/TGAUX.sol
-```
+## License
 
-## Support
-
-For issues, questions, or contributions, please open an issue or pull request on the repository.
-
-## Additional Resources
-
-- [OpenZeppelin Documentation](https://docs.openzeppelin.com/)
-- [Foundry Book](https://book.getfoundry.sh/)
-- [ERC-20 Token Standard](https://eips.ethereum.org/EIPS/eip-20)
+MIT
