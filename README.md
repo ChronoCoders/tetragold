@@ -1,6 +1,6 @@
 # Tetra Gold Protocol
 
-A decentralized synthetic derivatives protocol that provides leveraged exposure to the gold (XAU/USD) spot price. Users deposit stablecoin collateral to mint TGAUX — a synthetic token that tracks gold price movements — at up to 10x leverage, backed by on-chain liquidity pools, automated liquidations, and a protocol-owned insurance reserve.
+A decentralized synthetic derivatives protocol that provides leveraged exposure to the gold (XAU/USD) spot price. Users deposit stablecoin collateral to mint TGAUX - a synthetic token that tracks gold price movements - at up to 10x leverage, backed by on-chain liquidity pools, automated liquidations, and a protocol-owned insurance reserve.
 
 ## Architecture
 
@@ -37,7 +37,7 @@ tetragold/
 
 ### TGAUX Token
 
-TGAUX is a synthetic ERC-20 token where 1 TGAUX represents 1 troy ounce of gold at the current XAU/USD spot price. It is not backed by or redeemable for physical gold; it tracks the gold price through the oracle system. Token supply is dynamic — minted when positions are opened and burned when positions are closed.
+TGAUX is a synthetic ERC-20 token where 1 TGAUX represents 1 troy ounce of gold at the current XAU/USD spot price. It is not backed by or redeemable for physical gold; it tracks the gold price through the oracle system. Token supply is dynamic - minted when positions are opened and burned when positions are closed.
 
 | Property | Value |
 |---|---|
@@ -71,8 +71,8 @@ The core contract for opening and managing leveraged positions. Users deposit US
 
 A dual-pool system that funds leveraged positions by lending collateral to the VaultManager.
 
-- **Conservative pool** — lower-risk LP exposure, preferred for borrow selection
-- **Aggressive pool** — higher-risk/reward LP exposure, secondary borrow source
+- **Conservative pool** - lower-risk LP exposure, preferred for borrow selection
+- **Aggressive pool** - higher-risk/reward LP exposure, secondary borrow source
 
 LP token price appreciates as borrowing interest accrues. The interest rate model uses a kinked curve with an 80% optimal utilization target.
 
@@ -124,8 +124,8 @@ TGX stakers earn a pro-rata share of staker fees using a MasterChef-style reward
 
 ## Dependencies
 
-- **[OpenZeppelin Contracts v5](https://github.com/OpenZeppelin/openzeppelin-contracts)** — ERC-20, AccessControl, Pausable, ReentrancyGuard, SafeERC20
-- **[Foundry](https://github.com/foundry-rs/foundry)** — Forge, Cast, Anvil
+- **[OpenZeppelin Contracts v5](https://github.com/OpenZeppelin/openzeppelin-contracts)** - ERC-20, AccessControl, Pausable, ReentrancyGuard, SafeERC20
+- **[Foundry](https://github.com/foundry-rs/foundry)** - Forge, Cast, Anvil
 - **Solidity 0.8.30**
 
 ## Installation
@@ -170,7 +170,7 @@ forge coverage
 ```bash
 export DEPLOYER_PRIVATE_KEY=<deployer-private-key>
 export DEFAULT_ADMIN=<admin-multisig-address>
-export VAULT_MANAGER=<vault-manager-address>   # optional — grants MINTER_ROLE at deploy
+export VAULT_MANAGER=<vault-manager-address>   # optional - grants MINTER_ROLE at deploy
 ```
 
 ### Deploy TGAUX Token
@@ -197,7 +197,7 @@ After deploying all contracts, the following roles must be configured:
 
 ## Access Control
 
-All contracts use OpenZeppelin's `AccessControl`. The `DEFAULT_ADMIN_ROLE` cannot be renounced — a guard prevents it to avoid permanently locking out governance.
+All contracts use OpenZeppelin's `AccessControl`. The `DEFAULT_ADMIN_ROLE` cannot be renounced - a guard prevents it to avoid permanently locking out governance.
 
 | Role | Holder | Permissions |
 |---|---|---|
@@ -210,13 +210,13 @@ All contracts use OpenZeppelin's `AccessControl`. The `DEFAULT_ADMIN_ROLE` canno
 
 ## Security Properties
 
-- **Non-upgradeable** — all contracts are immutable once deployed
-- **Reentrancy protection** — `ReentrancyGuard` on all state-mutating external functions
-- **Emergency pause** — all critical paths respect the `whenNotPaused` modifier
-- **Oracle circuit breaker** — system pauses automatically on abnormal price movement
-- **Partial liquidations** — 25% tranches reduce the impact of sudden position closures
-- **Grace period** — 10-minute window between marking and liquidation, allowing self-remediation
-- **SafeERC20** — all token transfers use OZ's safe wrappers
+- **Non-upgradeable** - all contracts are immutable once deployed
+- **Reentrancy protection** - `ReentrancyGuard` on all state-mutating external functions
+- **Emergency pause** - all critical paths respect the `whenNotPaused` modifier
+- **Oracle circuit breaker** - system pauses automatically on abnormal price movement
+- **Partial liquidations** - 25% tranches reduce the impact of sudden position closures
+- **Grace period** - 10-minute window between marking and liquidation, allowing self-remediation
+- **SafeERC20** - all token transfers use OZ's safe wrappers
 
 ## Build
 
