@@ -5,6 +5,7 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /**
@@ -87,6 +88,7 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
     // Token list for getTotalReserves
     address[] private _tokenList;
     mapping(address => bool) private _inTokenList;
+    mapping(address => uint8) public tokenDecimals;
 
     // Funding tracking (per token)
     mapping(address => FundingSources) public fundingSources;
@@ -170,6 +172,7 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
         if (!_inTokenList[token]) {
             _tokenList.push(token);
             _inTokenList[token] = true;
+            tokenDecimals[token] = IERC20Metadata(token).decimals();
         }
 
         reserves[token] += amount;
@@ -197,6 +200,7 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
         if (!_inTokenList[token]) {
             _tokenList.push(token);
             _inTokenList[token] = true;
+            tokenDecimals[token] = IERC20Metadata(token).decimals();
         }
 
         reserves[token] += amount;
@@ -389,12 +393,21 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
     // ============ Query Functions ============
 
     /**
-     * @notice Get total reserves in USD equivalent (USDC + USDT, both 6 decimals)
-     * @return total Total reserves in USD (6 decimals)
+     * @notice Get total reserves normalised to 6 decimals (matching USDC/USDT TVL basis)
+     * @return total Total reserves in 6-decimal USD equivalent
      */
     function getTotalReserves() public view returns (uint256 total) {
         for (uint256 i = 0; i < _tokenList.length; i++) {
-            total += reserves[_tokenList[i]] + deployed[_tokenList[i]];
+            address token = _tokenList[i];
+            uint256 raw = reserves[token] + deployed[token];
+            uint8 dec = tokenDecimals[token];
+            if (dec < 6) {
+                total += raw * 10 ** (6 - dec);
+            } else if (dec > 6) {
+                total += raw / 10 ** (dec - 6);
+            } else {
+                total += raw;
+            }
         }
     }
 
@@ -546,6 +559,7 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
         if (!_inTokenList[token]) {
             _tokenList.push(token);
             _inTokenList[token] = true;
+            tokenDecimals[token] = IERC20Metadata(token).decimals();
         }
     }
 

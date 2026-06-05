@@ -470,7 +470,10 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
         pendingTokenRewards[liquidator][token] += liquidatorReward;
         liquidators[liquidator].pendingRewards += liquidatorReward;
 
-        if (insuranceAmount > 0) IERC20(token).safeTransfer(insuranceFund, insuranceAmount);
+        if (insuranceAmount > 0) {
+            IERC20(token).safeIncreaseAllowance(insuranceFund, insuranceAmount);
+            IInsuranceFund(insuranceFund).depositFromLiquidation(insuranceAmount, token);
+        }
         if (treasuryAmount > 0) IERC20(token).safeTransfer(treasury, treasuryAmount);
     }
 
@@ -598,4 +601,8 @@ interface IVaultManager {
     function liquidatePosition(uint256 positionId, uint256 percentage) external returns (uint256);
     function isLiquidatable(uint256 positionId) external view returns (bool);
     function getActivePositionIds() external view returns (uint256[] memory);
+}
+
+interface IInsuranceFund {
+    function depositFromLiquidation(uint256 amount, address token) external;
 }

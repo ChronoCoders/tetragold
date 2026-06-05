@@ -228,6 +228,17 @@ contract DeployLocal is Script {
         InsuranceFund(insuranceFund).addSupportedToken(usdc);
         InsuranceFund(insuranceFund).addSupportedToken(usdt);
         console.log("- Supported tokens registered in InsuranceFund");
+
+        // Wire VaultManager -> FeeDistributor fee push path
+        FeeDistributor(feeDistributor).grantRole(
+            FeeDistributor(feeDistributor).VAULT_MANAGER_ROLE(), vaultManager
+        );
+        VaultManager(vaultManager).grantRole(
+            VaultManager(vaultManager).FEE_COLLECTOR_ROLE(), vaultManager
+        );
+        VaultManager(vaultManager).setFeeDistributor(feeDistributor);
+        console.log("- VAULT_MANAGER_ROLE     -> VaultManager (FeeDistributor)");
+        console.log("- feeDistributor set in VaultManager");
     }
 
     function _mintTestTokens(address deployer) internal {

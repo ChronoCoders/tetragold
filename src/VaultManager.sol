@@ -56,6 +56,8 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
     mapping(uint256 => Position) public positions;
     mapping(uint256 => LeverageTier) public leverageTiers;
 
+    address public feeDistributor;
+
     uint256 public nextPositionId;
     uint256 public totalValueLocked;
     uint256 public constant BASIS_POINTS = 10000;
@@ -362,6 +364,23 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         emit FeesCollected(amount, token);
     }
 
+    function setFeeDistributor(address _feeDistributor) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(_feeDistributor != address(0), "VaultManager: zero address");
+        feeDistributor = _feeDistributor;
+    }
+
+    function pushFeesToDistributor(address token) external onlyRole(FEE_COLLECTOR_ROLE) {
+        require(feeDistributor != address(0), "VaultManager: fee distributor not set");
+        uint256 amount = collectedFees[token];
+        require(amount > 0, "VaultManager: no fees to collect");
+
+        collectedFees[token] = 0;
+        IERC20(token).safeIncreaseAllowance(feeDistributor, amount);
+        IFeeDistributor(feeDistributor).collectFees(token, amount);
+
+        emit FeesCollected(amount, token);
+    }
+
     /**
      * @dev Pauses the contract
      */
@@ -606,4 +625,11 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
 interface ILiquidityPool {
     function borrow(uint256 amount, address token) external;
     function repay(uint256 amount, address token) external returns (bool);
+}
+
+/**
+ * @dev Interface for FeeDistributor
+ */
+interface IFeeDistributor {
+    function collectFees(address token, uint256 amount) external returns (uint256);
 }
