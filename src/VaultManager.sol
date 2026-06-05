@@ -241,10 +241,11 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         uint256 burnFee = (position.collateralAmount * FEE_BURN) / BASIS_POINTS;
         collectedFees[position.collateralToken] += burnFee;
 
-        // Repay borrowed amount and interest to liquidity pool
+        // Repay borrowed amount and interest to liquidity pool with an explicit
+        // principal/interest split so pool accounting stays exact
         if (totalOwed > 0) {
             IERC20(position.collateralToken).safeIncreaseAllowance(liquidityPool, totalOwed);
-            ILiquidityPool(liquidityPool).repay(totalOwed, position.collateralToken);
+            ILiquidityPool(liquidityPool).repay(position.borrowedAmount, interest, position.collateralToken);
         }
 
         // Track TVL and active set
@@ -284,9 +285,10 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         IERC20(position.collateralToken).safeTransferFrom(msg.sender, address(this), amount);
 
         // slither-disable-next-line reentrancy-eth
-        // Update position
+        // Update position. Do NOT reset lastUpdateTimestamp here: calculateInterest
+        // accrues from it, and resetting would let owners wipe accrued interest by
+        // adding dust collateral before closing.
         position.collateralAmount += amount;
-        position.lastUpdateTimestamp = block.timestamp;
 
         // Track TVL
         totalValueLocked += amount;
@@ -311,19 +313,21 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         // with liquidatePosition() — liquidators do not need to hold TGAUX
         tgaux.vaultBurn(position.owner, position.tgauxMinted);
 
-        // Repay liquidity pool via repay() to keep pool accounting correct
+        // Repay liquidity pool via repay() to keep pool accounting correct.
+        // Principal is funded by the borrowed tokens the vault already holds;
+        // only the interest portion comes out of the position's collateral.
         if (totalOwed > 0) {
             IERC20(position.collateralToken).safeIncreaseAllowance(liquidityPool, totalOwed);
-            ILiquidityPool(liquidityPool).repay(totalOwed, position.collateralToken);
+            ILiquidityPool(liquidityPool).repay(position.borrowedAmount, interest, position.collateralToken);
         }
 
-        // Gross collateral available after repaying debt
-        uint256 grossCollateral = position.collateralAmount > totalOwed ? position.collateralAmount - totalOwed : 0;
+        // Collateral remaining after the interest deduction
+        uint256 remainingCollateral = position.collateralAmount > interest ? position.collateralAmount - interest : 0;
 
         // Apply liquidation penalty — accrued as protocol fees, consistent with liquidatePosition()
         uint256 penaltyRate = _calculateLiquidationPenalty(position.leverage);
-        uint256 penalty = (grossCollateral * penaltyRate) / BASIS_POINTS;
-        uint256 collateralSeized = grossCollateral - penalty;
+        uint256 penalty = (remainingCollateral * penaltyRate) / BASIS_POINTS;
+        uint256 returnToOwner = remainingCollateral - penalty;
 
         if (penalty > 0) {
             collectedFees[position.collateralToken] += penalty;
@@ -336,12 +340,14 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         // Mark position as inactive
         position.isActive = false;
 
-        // Transfer net collateral to liquidator
-        if (collateralSeized > 0) {
-            IERC20(position.collateralToken).safeTransfer(msg.sender, collateralSeized);
+        // Return remaining collateral (after interest + penalty) to the position
+        // owner, consistent with liquidatePosition(). The liquidator commits no
+        // capital and must not receive the owner's residual equity.
+        if (returnToOwner > 0) {
+            IERC20(position.collateralToken).safeTransfer(position.owner, returnToOwner);
         }
 
-        emit PositionLiquidated(positionId, msg.sender, collateralSeized);
+        emit PositionLiquidated(positionId, msg.sender, returnToOwner);
     }
 
     /**
@@ -524,7 +530,7 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         // (totalBorrowed / borrowedByToken) is decremented, matching closePosition/liquidate
         if (borrowedToRepay > 0) {
             IERC20(position.collateralToken).safeIncreaseAllowance(liquidityPool, borrowedToRepay);
-            ILiquidityPool(liquidityPool).repay(borrowedToRepay, position.collateralToken);
+            ILiquidityPool(liquidityPool).repay(borrowedToRepay, 0, position.collateralToken);
         }
 
         // Deduct penalty from collateral
@@ -662,7 +668,7 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
  */
 interface ILiquidityPool {
     function borrow(uint256 amount, address token) external;
-    function repay(uint256 amount, address token) external returns (bool);
+    function repay(uint256 principal, uint256 interest, address token) external returns (bool);
 }
 
 /**

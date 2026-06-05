@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.30;
 
 import {Test} from "forge-std/Test.sol";
 import {VaultManager} from "../src/VaultManager.sol";
@@ -718,6 +718,60 @@ contract VaultManagerTest is Test {
         assertTrue(position.isActive);
     }
 
+    /// @dev liquidate() distribution regression: remaining collateral (after
+    ///      interest + penalty) goes to the position owner, not the liquidator;
+    ///      the penalty accrues to protocol fees
+    function test_LiquidateReturnsRemainderToOwner() public {
+        uint256 collateral = 4000e6;
+
+        vm.startPrank(user1);
+        usdc.approve(address(vault), collateral);
+        uint256 positionId = vault.openPosition(collateral, 2, address(usdc));
+        vm.stopPrank();
+
+        VaultManager.Position memory position = vault.getPosition(positionId);
+        _make2xLiquidatable();
+
+        uint256 interest = vault.calculateInterest(positionId);
+        uint256 ownerBefore = usdc.balanceOf(user1);
+        uint256 liquidatorBefore = usdc.balanceOf(liquidator);
+        uint256 feesBefore = vault.collectedFees(address(usdc));
+        uint256 poolBorrowedBefore = pool.totalBorrowed(address(usdc));
+
+        vm.prank(liquidator);
+        vault.liquidate(positionId);
+
+        uint256 remaining = position.collateralAmount - interest;
+        uint256 penalty = (remaining * 500) / BASIS_POINTS; // 2x penalty rate = 5%
+
+        // Owner receives the residual equity; liquidator receives nothing
+        assertEq(usdc.balanceOf(user1), ownerBefore + remaining - penalty);
+        assertEq(usdc.balanceOf(liquidator), liquidatorBefore);
+        // Penalty accrued as protocol fees
+        assertEq(vault.collectedFees(address(usdc)), feesBefore + penalty);
+        // Pool principal fully repaid
+        assertEq(pool.totalBorrowed(address(usdc)), poolBorrowedBefore - position.borrowedAmount);
+        assertFalse(vault.getPosition(positionId).isActive);
+    }
+
+    /// @dev addCollateral regression: adding collateral must not reset the
+    ///      interest clock (previously wiped all accrued interest)
+    function test_AddCollateralDoesNotResetInterest() public {
+        vm.startPrank(user1);
+        usdc.approve(address(vault), 5000e6);
+        uint256 positionId = vault.openPosition(4000e6, 2, address(usdc));
+
+        vm.warp(block.timestamp + 5 days);
+        uint256 interestBefore = vault.calculateInterest(positionId);
+        assertGt(interestBefore, 0);
+
+        vault.addCollateral(positionId, 1000e6);
+
+        // Accrued interest survives the collateral top-up
+        assertEq(vault.calculateInterest(positionId), interestBefore);
+        vm.stopPrank();
+    }
+
     /// @dev Leveraged health ratio regression: a freshly opened leveraged position
     ///      must be healthy (equity/borrowed at the tier's open ratio), not
     ///      instantly liquidatable as under the old collateral/notional formula
@@ -902,5 +956,88 @@ contract VaultManagerTest is Test {
         assertEq(pos2.owner, user2);
         assertTrue(pos1.isActive);
         assertTrue(pos2.isActive);
+    }
+
+    /* ============ Fuzz Tests ============ */
+
+    /// @dev openPosition arithmetic must hold for any collateral and leverage tier:
+    ///      borrow = effective * (L-1), TGAUX = effective * L at oracle price,
+    ///      fee accounting and TVL all consistent
+    function testFuzz_OpenPositionArithmetic(uint256 collateral, uint8 leverageSeed) public {
+        uint256[4] memory tiers = [uint256(2), 3, 5, 10];
+        uint256 leverage = tiers[leverageSeed % 4];
+        collateral = bound(collateral, 100e6, 10_000e6);
+
+        uint256 feesBefore = vault.collectedFees(address(usdc));
+        uint256 tvlBefore = vault.totalValueLocked();
+
+        vm.startPrank(user1);
+        usdc.approve(address(vault), collateral);
+        uint256 positionId = vault.openPosition(collateral, leverage, address(usdc));
+        vm.stopPrank();
+
+        VaultManager.Position memory position = vault.getPosition(positionId);
+        uint256 fee = (collateral * 20) / BASIS_POINTS;
+        uint256 effective = collateral - fee;
+
+        assertEq(position.collateralAmount, effective);
+        assertEq(position.borrowedAmount, effective * (leverage - 1));
+        assertEq(position.tgauxMinted, (effective * leverage * 1e20) / GOLD_PRICE);
+        assertEq(vault.collectedFees(address(usdc)), feesBefore + fee);
+        assertEq(vault.totalValueLocked(), tvlBefore + effective);
+        assertEq(pool.totalBorrowed(address(usdc)), effective * (leverage - 1));
+
+        // Health at open matches the tier's minimum CR (within rounding)
+        uint256 expectedRatio = BASIS_POINTS / (leverage - 1);
+        assertApproxEqAbs(vault.getPositionHealth(positionId), expectedRatio, 5);
+        assertFalse(vault.isLiquidatable(positionId));
+    }
+
+    /// @dev Interest accrual must be linear in time and principal with no
+    ///      rounding surprises across durations
+    function testFuzz_InterestAccrual(uint256 daysElapsed, uint256 collateral) public {
+        daysElapsed = bound(daysElapsed, 1, 365);
+        collateral = bound(collateral, 100e6, 10_000e6);
+
+        vm.startPrank(user1);
+        usdc.approve(address(vault), collateral);
+        uint256 positionId = vault.openPosition(collateral, 2, address(usdc));
+        vm.stopPrank();
+
+        VaultManager.Position memory position = vault.getPosition(positionId);
+        vm.warp(block.timestamp + daysElapsed * 1 days);
+
+        uint256 expected = (position.borrowedAmount * 5 * daysElapsed * 86400) / (BASIS_POINTS * 86400);
+        assertEq(vault.calculateInterest(positionId), expected);
+    }
+
+    /// @dev Open + immediate close must round-trip: user pays exactly the open
+    ///      and burn fees, the pool is fully repaid, and the vault keeps only fees
+    function testFuzz_OpenCloseRoundtrip(uint256 collateral, uint8 leverageSeed) public {
+        uint256[4] memory tiers = [uint256(2), 3, 5, 10];
+        uint256 leverage = tiers[leverageSeed % 4];
+        collateral = bound(collateral, 100e6, 10_000e6);
+
+        uint256 balanceBefore = usdc.balanceOf(user1);
+
+        vm.startPrank(user1);
+        usdc.approve(address(vault), collateral);
+        uint256 positionId = vault.openPosition(collateral, leverage, address(usdc));
+
+        tgaux.approve(address(vault), type(uint256).max);
+        vault.closePosition(positionId);
+        vm.stopPrank();
+
+        uint256 openFee = (collateral * 20) / BASIS_POINTS;
+        uint256 effective = collateral - openFee;
+        uint256 burnFee = (effective * 15) / BASIS_POINTS;
+
+        // User paid exactly openFee + burnFee (no interest in same block)
+        assertEq(usdc.balanceOf(user1), balanceBefore - openFee - burnFee);
+        // Pool fully repaid
+        assertEq(pool.totalBorrowed(address(usdc)), 0);
+        // All user TGAUX burned
+        assertEq(tgaux.balanceOf(user1), 0);
+        assertEq(vault.totalValueLocked(), 0);
     }
 }
