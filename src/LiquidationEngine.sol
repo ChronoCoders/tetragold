@@ -71,6 +71,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
     mapping(uint256 => uint256) public liquidationWarningTime;
     mapping(uint256 => PartialLiquidation) public partialLiquidations;
     mapping(address => LiquidatorStats) public liquidators;
+    mapping(address => mapping(address => uint256)) public pendingTokenRewards;
 
     uint256 public totalLiquidations;
     uint256 public totalPenaltiesCollected;
@@ -182,21 +183,16 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
     }
 
     /**
-     * @dev Claim liquidation rewards
+     * @dev Claim liquidation rewards for a specific token
+     * @param token Token address to claim rewards in
      * @return amount Amount claimed
      */
-    function claimRewards() external nonReentrant returns (uint256 amount) {
-        LiquidatorStats storage stats = liquidators[msg.sender];
-
-        amount = stats.pendingRewards;
+    function claimRewards(address token) external nonReentrant returns (uint256 amount) {
+        amount = pendingTokenRewards[msg.sender][token];
         if (amount == 0) revert LiquidationEngine__NoRewardsToClaim();
-
-        stats.pendingRewards = 0;
-
-        // Transfer rewards (implementation depends on how rewards are stored)
-        // For now, emit event
+        pendingTokenRewards[msg.sender][token] = 0;
+        IERC20(token).safeTransfer(msg.sender, amount);
         emit LiquidationRewardPaid(msg.sender, amount);
-
         return amount;
     }
 
@@ -443,7 +439,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
         partialLiq.totalPenalty += penalty;
 
         // Distribute penalty
-        _distributePenalty(penalty, liquidator);
+        _distributePenalty(penalty, liquidator, position.collateralToken);
 
         // Update stats
         totalLiquidations++;
@@ -463,17 +459,19 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
      * @dev Distribute liquidation penalty
      * @param penalty Total penalty amount
      * @param liquidator Liquidator address
+     * @param token Collateral token address
      */
-    function _distributePenalty(uint256 penalty, address liquidator) internal {
+    function _distributePenalty(uint256 penalty, address liquidator, address token) internal {
+        if (penalty == 0) return;
         uint256 liquidatorReward = (penalty * LIQUIDATOR_SHARE) / BASIS_POINTS;
+        uint256 insuranceAmount = (penalty * INSURANCE_SHARE) / BASIS_POINTS;
+        uint256 treasuryAmount = penalty - liquidatorReward - insuranceAmount;
 
-        // Credit liquidator (pending rewards)
+        pendingTokenRewards[liquidator][token] += liquidatorReward;
         liquidators[liquidator].pendingRewards += liquidatorReward;
 
-        // Note: Insurance fund and treasury shares calculated but not transferred yet
-        // uint256 insuranceAmount = (penalty * INSURANCE_SHARE) / BASIS_POINTS;
-        // uint256 treasuryAmount = (penalty * TREASURY_SHARE) / BASIS_POINTS;
-        // Actual token transfers to insurance fund and treasury would happen here in production
+        if (insuranceAmount > 0) IERC20(token).safeTransfer(insuranceFund, insuranceAmount);
+        if (treasuryAmount > 0) IERC20(token).safeTransfer(treasury, treasuryAmount);
     }
 
     /**

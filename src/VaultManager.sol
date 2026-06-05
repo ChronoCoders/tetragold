@@ -57,6 +57,7 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
     mapping(uint256 => LeverageTier) public leverageTiers;
 
     uint256 public nextPositionId;
+    uint256 public totalValueLocked;
     uint256 public constant BASIS_POINTS = 10000;
     uint256 public constant DAILY_BORROW_RATE = 5; // 0.05% = 5 basis points
     uint256 public constant SECONDS_PER_DAY = 86400;
@@ -216,6 +217,9 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
             isActive: true
         });
 
+        // Track TVL
+        totalValueLocked += effectiveCollateral;
+
         // Mint TGAUX to user
         tgaux.mint(msg.sender, tgauxAmount);
 
@@ -249,8 +253,12 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
 
         // Repay borrowed amount and interest to liquidity pool
         if (totalOwed > 0) {
-            IERC20(position.collateralToken).safeTransfer(liquidityPool, totalOwed);
+            IERC20(position.collateralToken).safeIncreaseAllowance(liquidityPool, totalOwed);
+            ILiquidityPool(liquidityPool).repay(totalOwed, position.collateralToken);
         }
+
+        // Track TVL
+        totalValueLocked -= position.collateralAmount;
 
         // Mark position as inactive
         position.isActive = false;
@@ -284,6 +292,9 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         position.collateralAmount += amount;
         position.lastUpdateTimestamp = block.timestamp;
 
+        // Track TVL
+        totalValueLocked += amount;
+
         emit CollateralAdded(positionId, amount);
     }
 
@@ -316,6 +327,9 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         if (collateralSeized > 0) {
             IERC20(position.collateralToken).safeTransfer(msg.sender, collateralSeized);
         }
+
+        // Track TVL
+        totalValueLocked -= position.collateralAmount;
 
         // Mark position as inactive
         position.isActive = false;
@@ -465,6 +479,14 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
             IERC20(position.collateralToken).safeTransfer(position.owner, returnToOwner);
         }
 
+        // Transfer penalty to caller
+        if (penalty > 0) {
+            IERC20(position.collateralToken).safeTransfer(msg.sender, penalty);
+        }
+
+        // Track TVL
+        totalValueLocked -= collateralToReturn;
+
         // slither-disable-next-line reentrancy-eth
         // Update position
         position.tgauxMinted -= tgauxToLiquidate;
@@ -479,6 +501,14 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         emit PositionLiquidated(positionId, msg.sender, penalty);
 
         return penalty;
+    }
+
+    /**
+     * @dev Returns the total value locked in the vault
+     * @return Total value locked (sum of all active position collateral amounts)
+     */
+    function getTotalValueLocked() external view returns (uint256) {
+        return totalValueLocked;
     }
 
     /**
@@ -564,4 +594,5 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
  */
 interface ILiquidityPool {
     function borrow(uint256 amount, address token) external;
+    function repay(uint256 amount, address token) external returns (bool);
 }

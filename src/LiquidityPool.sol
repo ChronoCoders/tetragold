@@ -181,7 +181,14 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
         LPToken(pool.lpToken).burn(msg.sender, lpTokenAmount);
 
         // Determine which token to return (prioritize USDC)
-        address tokenToReturn = poolBalances[poolType][usdc] >= amount ? usdc : usdt;
+        address tokenToReturn;
+        if (poolBalances[poolType][usdc] >= amount) {
+            tokenToReturn = usdc;
+        } else if (poolBalances[poolType][usdt] >= amount) {
+            tokenToReturn = usdt;
+        } else {
+            revert LiquidityPool__InsufficientLiquidity();
+        }
 
         // slither-disable-next-line reentrancy-eth
         // Update pool state
@@ -274,7 +281,8 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
         // Add interest to total deposits (makes it available for withdrawal)
         if (interest > 0) {
             pool.totalDeposits += interest;
-            pool.accruedInterest -= interest; // Reduce accrued since it's now paid
+            uint256 reduce = interest > pool.accruedInterest ? pool.accruedInterest : interest;
+            pool.accruedInterest -= reduce; // Reduce accrued since it's now paid
         }
 
         // Update utilization

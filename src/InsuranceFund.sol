@@ -84,6 +84,10 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
     mapping(address => uint256) public totalCoverage; // Lifetime coverage paid
     mapping(address => address) public aTokens; // token => aToken mapping
 
+    // Token list for getTotalReserves
+    address[] private _tokenList;
+    mapping(address => bool) private _inTokenList;
+
     // Funding tracking (per token)
     mapping(address => FundingSources) public fundingSources;
 
@@ -163,6 +167,11 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
 
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
 
+        if (!_inTokenList[token]) {
+            _tokenList.push(token);
+            _inTokenList[token] = true;
+        }
+
         reserves[token] += amount;
         fundingSources[token].fromProtocolFees += amount;
         fundingSources[token].totalCollected += amount;
@@ -184,6 +193,11 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
         if (token == address(0)) revert InsuranceFund__InvalidToken();
 
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+
+        if (!_inTokenList[token]) {
+            _tokenList.push(token);
+            _inTokenList[token] = true;
+        }
 
         reserves[token] += amount;
         fundingSources[token].fromLiquidations += amount;
@@ -376,15 +390,12 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
 
     /**
      * @notice Get total reserves in USD equivalent (USDC + USDT, both 6 decimals)
-     * @return Total reserves in USD (6 decimals)
+     * @return total Total reserves in USD (6 decimals)
      */
-    function getTotalReserves() public pure returns (uint256) {
-        // Assuming USDC and USDT addresses are known
-        // For simplicity, we'll sum all token reserves
-        // In production, you'd iterate through supported tokens
-        // This would need to be implemented based on supported tokens
-        // For now, return 0 as placeholder
-        return 0;
+    function getTotalReserves() public view returns (uint256 total) {
+        for (uint256 i = 0; i < _tokenList.length; i++) {
+            total += reserves[_tokenList[i]] + deployed[_tokenList[i]];
+        }
     }
 
     /**

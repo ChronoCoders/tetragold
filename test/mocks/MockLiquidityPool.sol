@@ -47,6 +47,18 @@ contract MockLiquidityPool {
     }
 
     /**
+     * @dev Repays borrowed tokens (pulls tokens from caller)
+     * @param amount Amount to repay
+     * @param token Token address
+     */
+    function repay(uint256 amount, address token) external returns (bool) {
+        totalBorrowed[token] -= amount > totalBorrowed[token] ? totalBorrowed[token] : amount;
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+        emit Repaid(amount, token);
+        return true;
+    }
+
+    /**
      * @dev Receives repayment (automatically called when tokens are transferred)
      */
     receive() external payable {}

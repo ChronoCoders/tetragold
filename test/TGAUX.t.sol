@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.30;
 
 import {Test} from "forge-std/Test.sol";
 import {TGAUX} from "../src/TGAUX.sol";
@@ -384,6 +384,20 @@ contract TGAUXTest is Test {
         vm.prank(minter);
         vm.expectRevert();
         token.mint(user1, 1 ether);
+    }
+
+    function test_AdminCannotRenounceAdminRole() public {
+        bytes32 adminRole = token.DEFAULT_ADMIN_ROLE();
+        vm.prank(admin);
+        vm.expectRevert("TGAUX: cannot renounce admin role");
+        token.renounceRole(adminRole, admin);
+    }
+
+    function test_NonAdminRoleCanBeRenounced() public {
+        bytes32 pauserRole = token.PAUSER_ROLE();
+        vm.prank(pauser);
+        token.renounceRole(pauserRole, pauser);
+        assertFalse(token.hasRole(pauserRole, pauser));
     }
 
     /* ============ Decimal Precision Tests ============ */
