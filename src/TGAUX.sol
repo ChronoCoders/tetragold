@@ -10,9 +10,9 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
  * @title TGAUX
  * @dev Tetra Gold token implementation
  *
- * Token represents ownership of physical gold:
- * - 1 TGAUX = 1 troy ounce of gold = 31.1035 grams
- * - Minimum transferable amount: 0.03215 TGAUX (approximately 1 gram)
+ * Token tracks the gold (XAU/USD) spot price synthetically:
+ * - 1 TGAUX = 1 troy ounce of gold (price unit, not physical delivery)
+ * - Minimum transferable amount: 0.03215 TGAUX
  *
  * Features:
  * - ERC-20 standard with 18 decimals
@@ -27,9 +27,7 @@ contract TGAUX is ERC20, ERC20Burnable, ERC20Pausable, AccessControl {
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
-    // Minimum transfer amount: 0.03215 TGAUX (1 gram equivalent)
-    // 1 troy ounce = 31.1035 grams
-    // 1 gram = 1/31.1035 troy ounce = 0.03215 TGAUX
+    // Minimum transfer amount: 0.03215 TGAUX (protocol minimum unit)
     uint256 public constant MINIMUM_TRANSFER_AMOUNT = 32_150_000_000_000_000; // 0.03215 * 10^18
 
     // Custom events

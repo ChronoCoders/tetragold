@@ -411,24 +411,24 @@ contract TGAUXTest is Test {
         assertEq(token.MINIMUM_TRANSFER_AMOUNT(), 32150000000000000);
     }
 
-    function test_OneGramEquivalent() public {
-        // 1 gram = 0.03215 TGAUX (1/31.1035)
-        uint256 oneGram = token.MINIMUM_TRANSFER_AMOUNT();
+    function test_MinimumUnit() public {
+        // Minimum transfer unit = 0.03215 TGAUX
+        uint256 minimumUnit = token.MINIMUM_TRANSFER_AMOUNT();
 
         vm.prank(minter);
-        token.mint(user1, oneGram);
+        token.mint(user1, minimumUnit);
 
-        assertEq(token.balanceOf(user1), oneGram);
+        assertEq(token.balanceOf(user1), minimumUnit);
     }
 
-    function test_OneTroyOunce() public {
-        // 1 troy ounce = 1 TGAUX = 31.1035 grams
-        uint256 oneTroyOunce = 1 ether;
+    function test_OneFullUnit() public {
+        // 1 TGAUX = 1 troy ounce of gold (price unit)
+        uint256 oneUnit = 1 ether;
 
         vm.prank(minter);
-        token.mint(user1, oneTroyOunce);
+        token.mint(user1, oneUnit);
 
-        assertEq(token.balanceOf(user1), oneTroyOunce);
+        assertEq(token.balanceOf(user1), oneUnit);
     }
 
     /* ============ ERC20 Standard Tests ============ */
