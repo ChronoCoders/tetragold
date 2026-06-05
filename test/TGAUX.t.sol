@@ -127,6 +127,38 @@ contract TGAUXTest is Test {
 
     /* ============ Burning Tests ============ */
 
+    function test_VaultBurnByMinterWithoutAllowance() public {
+        uint256 mintAmount = 10 ether;
+        uint256 burnAmount = 3 ether;
+
+        vm.prank(minter);
+        token.mint(user1, mintAmount);
+
+        // user1 grants no allowance to anyone
+        vm.expectEmit(true, false, false, true);
+        emit Burned(user1, burnAmount);
+
+        vm.prank(minter);
+        token.vaultBurn(user1, burnAmount);
+
+        assertEq(token.balanceOf(user1), mintAmount - burnAmount);
+        assertEq(token.totalSupply(), mintAmount - burnAmount);
+    }
+
+    function test_VaultBurnRevertsWhenNotMinter() public {
+        vm.prank(minter);
+        token.mint(user1, 10 ether);
+
+        vm.prank(user2);
+        vm.expectRevert();
+        token.vaultBurn(user1, 1 ether);
+
+        // Even the admin cannot vaultBurn without MINTER_ROLE
+        vm.prank(admin);
+        vm.expectRevert();
+        token.vaultBurn(user1, 1 ether);
+    }
+
     function test_BurnOwnTokens() public {
         uint256 mintAmount = 10 ether;
         uint256 burnAmount = 3 ether;

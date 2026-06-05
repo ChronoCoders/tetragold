@@ -38,12 +38,7 @@ contract OracleAggregatorTest is Test {
 
         // Deploy aggregator
         vm.prank(admin);
-        aggregator = new OracleAggregator(
-            admin,
-            address(chainlinkOracle),
-            address(bandOracle),
-            address(api3Oracle)
-        );
+        aggregator = new OracleAggregator(admin, address(chainlinkOracle), address(bandOracle), address(api3Oracle));
 
         // Set initial prices (all $2000)
         chainlinkOracle.setLatestAnswer(SafeCast.toInt256(GOLD_PRICE)); // 8 decimals
@@ -63,12 +58,7 @@ contract OracleAggregatorTest is Test {
 
     function test_ConstructorRevertsWithZeroAdmin() public {
         vm.expectRevert("OracleAggregator: admin cannot be zero");
-        new OracleAggregator(
-            address(0),
-            address(chainlinkOracle),
-            address(bandOracle),
-            address(api3Oracle)
-        );
+        new OracleAggregator(address(0), address(chainlinkOracle), address(bandOracle), address(api3Oracle));
     }
 
     /* ============ Price Aggregation Tests ============ */
@@ -174,6 +164,7 @@ contract OracleAggregatorTest is Test {
         bandOracle.setReferenceData(newPrice * 1e10);
         api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
 
+        vm.warp(block.timestamp + 60);
         vm.expectEmit(true, true, true, false);
         emit CircuitBreakerTriggered(GOLD_PRICE, newPrice, 0);
 
@@ -193,6 +184,7 @@ contract OracleAggregatorTest is Test {
         bandOracle.setReferenceData(newPrice * 1e10);
         api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
 
+        vm.warp(block.timestamp + 60);
         vm.expectEmit(true, true, true, false);
         emit CircuitBreakerTriggered(GOLD_PRICE, newPrice, 0);
 
@@ -212,10 +204,52 @@ contract OracleAggregatorTest is Test {
         bandOracle.setReferenceData(newPrice * 1e10);
         api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
 
+        vm.warp(block.timestamp + 60);
         aggregator.updateTwap();
 
         // Should not be paused
         assertFalse(aggregator.paused());
+    }
+
+    /* ============ Staleness / Rate-limit Tests ============ */
+
+    /// @dev H-01 regression: getGoldPrice must revert once the cached TWAP
+    ///      is older than MAX_PRICE_AGE
+    function test_GetGoldPriceRevertsWhenStale() public {
+        aggregator.updateTwap();
+
+        vm.warp(block.timestamp + aggregator.MAX_PRICE_AGE() + 1);
+
+        vm.expectRevert("OracleAggregator: price is stale");
+        aggregator.getGoldPrice();
+    }
+
+    function test_GetGoldPriceWorksAtMaxAgeBoundary() public {
+        aggregator.updateTwap();
+
+        vm.warp(block.timestamp + aggregator.MAX_PRICE_AGE());
+
+        (uint256 price,) = aggregator.getGoldPrice();
+        assertEq(price, GOLD_PRICE);
+    }
+
+    /// @dev L-01 regression: updateTwap must enforce a minimum interval between calls
+    function test_UpdateTwapRevertsWhenTooFrequent() public {
+        aggregator.updateTwap();
+
+        vm.warp(block.timestamp + aggregator.MIN_UPDATE_INTERVAL() - 1);
+
+        vm.expectRevert("OracleAggregator: update too frequent");
+        aggregator.updateTwap();
+    }
+
+    function test_UpdateTwapWorksAtMinIntervalBoundary() public {
+        aggregator.updateTwap();
+
+        vm.warp(block.timestamp + aggregator.MIN_UPDATE_INTERVAL());
+
+        aggregator.updateTwap();
+        assertEq(aggregator.lastUpdateTime(), block.timestamp);
     }
 
     /* ============ Price Deviation Tests ============ */

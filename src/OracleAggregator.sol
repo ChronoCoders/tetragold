@@ -30,6 +30,7 @@ contract OracleAggregator is AccessControl, Pausable {
     // TWAP configuration
     uint256 public constant TWAP_WINDOW = 600; // 10 minutes
     uint256 public constant MAX_PRICE_AGE = 7200; // 2 hours
+    uint256 public constant MIN_UPDATE_INTERVAL = 60; // 1 minute between TWAP updates
     uint256 public constant DECIMALS = 8; // Price precision (8 decimals)
 
     // Thresholds (in basis points: 1% = 100 bp)
@@ -61,12 +62,7 @@ contract OracleAggregator is AccessControl, Pausable {
      * @param _bandOracle Band Protocol gold price feed address
      * @param _api3Oracle API3 gold price feed address
      */
-    constructor(
-        address _admin,
-        address _chainlinkOracle,
-        address _bandOracle,
-        address _api3Oracle
-    ) {
+    constructor(address _admin, address _chainlinkOracle, address _bandOracle, address _api3Oracle) {
         require(_admin != address(0), "OracleAggregator: admin cannot be zero");
 
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
@@ -84,6 +80,7 @@ contract OracleAggregator is AccessControl, Pausable {
      */
     function getGoldPrice() external view whenNotPaused returns (uint256 price, uint256 timestamp) {
         require(lastPrice > 0, "OracleAggregator: no price data available");
+        require(block.timestamp - lastUpdateTime <= MAX_PRICE_AGE, "OracleAggregator: price is stale");
         return (lastPrice, lastUpdateTime);
     }
 
@@ -92,6 +89,13 @@ contract OracleAggregator is AccessControl, Pausable {
      * @notice Must have at least 2 working oracles to succeed
      */
     function updateTwap() external whenNotPaused {
+        // Rate-limit updates so high-frequency calls cannot overweight recent
+        // prices in the TWAP or grow priceHistory unboundedly (first update exempt)
+        require(
+            lastUpdateTime == 0 || block.timestamp >= lastUpdateTime + MIN_UPDATE_INTERVAL,
+            "OracleAggregator: update too frequent"
+        );
+
         // Fetch prices from all oracles
         (uint256[] memory prices, bool[] memory validity) = _fetchOraclePrices();
 
@@ -139,7 +143,7 @@ contract OracleAggregator is AccessControl, Pausable {
             uint80,
             int256 price,
             uint256,
-            uint256 updatedAt,  // updatedAt used in validation
+            uint256 updatedAt, // updatedAt used in validation
             uint80
         ) {
             if (price > 0 && block.timestamp - updatedAt <= MAX_PRICE_AGE) {
@@ -155,7 +159,9 @@ contract OracleAggregator is AccessControl, Pausable {
         }
 
         // Band Protocol
-        try bandOracle.getReferenceData("XAU", "USD") returns (uint256 rate, uint256 lastUpdatedBase, uint256 lastUpdatedQuote) {
+        try bandOracle.getReferenceData("XAU", "USD") returns (
+            uint256 rate, uint256 lastUpdatedBase, uint256 lastUpdatedQuote
+        ) {
             uint256 lastUpdated = lastUpdatedBase < lastUpdatedQuote ? lastUpdatedBase : lastUpdatedQuote;
             if (rate > 0 && block.timestamp - lastUpdated <= MAX_PRICE_AGE) {
                 prices[1] = _normalizePrice(rate, 18); // Band uses 18 decimals
@@ -405,24 +411,20 @@ contract OracleAggregator is AccessControl, Pausable {
  */
 interface IAggregatorV3 {
     function decimals() external view returns (uint8);
-    function latestRoundData() external view returns (
-        uint80 roundId,
-        int256 answer,
-        uint256 startedAt,
-        uint256 updatedAt,
-        uint80 answeredInRound
-    );
+    function latestRoundData()
+        external
+        view
+        returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound);
 }
 
 /**
  * @dev Band Protocol Oracle Interface
  */
 interface IBandOracle {
-    function getReferenceData(string memory base, string memory quote) external view returns (
-        uint256 rate,
-        uint256 lastUpdatedBase,
-        uint256 lastUpdatedQuote
-    );
+    function getReferenceData(string memory base, string memory quote)
+        external
+        view
+        returns (uint256 rate, uint256 lastUpdatedBase, uint256 lastUpdatedQuote);
 }
 
 /**

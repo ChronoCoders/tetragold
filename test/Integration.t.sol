@@ -19,7 +19,10 @@ import {MockAPI3Oracle} from "./mocks/MockAPI3Oracle.sol";
 
 contract MockAavePool {
     function supply(address, uint256, address, uint16) external {}
-    function withdraw(address, uint256 amount, address) external returns (uint256) { return amount; }
+
+    function withdraw(address, uint256 amount, address) external returns (uint256) {
+        return amount;
+    }
 }
 
 /**
@@ -28,13 +31,13 @@ contract MockAavePool {
  */
 contract IntegrationTest is Test {
     // Protocol contracts
-    TGAUX            public tgaux;
-    VaultManager     public vault;
-    LiquidityPool    public pool;
+    TGAUX public tgaux;
+    VaultManager public vault;
+    LiquidityPool public pool;
     LiquidationEngine public engine;
     OracleAggregator public oracle;
-    InsuranceFund    public insurance;
-    FeeDistributor   public distributor;
+    InsuranceFund public insurance;
+    FeeDistributor public distributor;
 
     // Tokens
     MockERC20 public usdc;
@@ -43,16 +46,16 @@ contract IntegrationTest is Test {
 
     // Oracles
     MockChainlinkOracle public chainlink;
-    MockBandOracle      public band;
-    MockAPI3Oracle      public api3;
+    MockBandOracle public band;
+    MockAPI3Oracle public api3;
 
     // Actors
-    address public admin     = makeAddr("admin");
-    address public treasury  = makeAddr("treasury");
-    address public user1     = makeAddr("user1");
-    address public user2     = makeAddr("user2");
+    address public admin = makeAddr("admin");
+    address public treasury = makeAddr("treasury");
+    address public user1 = makeAddr("user1");
+    address public user2 = makeAddr("user2");
     address public liquidator = makeAddr("liquidator");
-    address public staker    = makeAddr("staker");
+    address public staker = makeAddr("staker");
 
     uint256 public constant GOLD_PRICE = 200_000_000_000; // $2,000 with 8 decimals
 
@@ -60,12 +63,12 @@ contract IntegrationTest is Test {
         // Tokens
         usdc = new MockERC20("USD Coin", "USDC", 6);
         usdt = new MockERC20("Tether USD", "USDT", 6);
-        tgx  = new MockERC20("TGX", "TGX", 18);
+        tgx = new MockERC20("TGX", "TGX", 18);
 
         // Oracles
         chainlink = new MockChainlinkOracle(8);
-        band      = new MockBandOracle();
-        api3      = new MockAPI3Oracle();
+        band = new MockBandOracle();
+        api3 = new MockAPI3Oracle();
         chainlink.setLatestAnswer(SafeCast.toInt256(GOLD_PRICE));
         band.setReferenceData(GOLD_PRICE * 1e10);
         api3.setValue(SafeCast.toInt224(SafeCast.toInt256(GOLD_PRICE * 1e10)));
@@ -75,6 +78,7 @@ contract IntegrationTest is Test {
         // Core contracts
         tgaux = new TGAUX(admin);
         oracle = new OracleAggregator(admin, address(chainlink), address(band), address(api3));
+        vm.warp(block.timestamp + 601);
         oracle.updateTwap();
 
         pool = new LiquidityPool(address(usdc), address(usdt));
@@ -127,6 +131,7 @@ contract IntegrationTest is Test {
         chainlink.setLatestAnswer(SafeCast.toInt256(newPrice));
         band.setReferenceData(newPrice * 1e10);
         api3.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+        vm.warp(block.timestamp + 601);
         oracle.updateTwap();
     }
 
@@ -159,6 +164,12 @@ contract IntegrationTest is Test {
         vm.warp(block.timestamp + 30 days);
         uint256 interest = vault.calculateInterest(positionId);
         assertGt(interest, 0);
+
+        // Re-seed mock feeds and refresh oracle so the price is not stale after the warp
+        chainlink.setLatestAnswer(SafeCast.toInt256(GOLD_PRICE));
+        band.setReferenceData(GOLD_PRICE * 1e10);
+        api3.setValue(SafeCast.toInt224(SafeCast.toInt256(GOLD_PRICE * 1e10)));
+        oracle.updateTwap();
 
         // Close position
         uint256 tgauxBal = tgaux.balanceOf(user1);
@@ -295,7 +306,7 @@ contract IntegrationTest is Test {
         assertEq(total, 3);
         assertEq(page1.length, 2);
 
-        (uint256[] memory page2, ) = vault.getActivePositionIds(2, 2);
+        (uint256[] memory page2,) = vault.getActivePositionIds(2, 2);
         assertEq(page2.length, 1);
 
         // Close one, count drops
@@ -363,19 +374,19 @@ contract IntegrationTest is Test {
         vm.warp(block.timestamp + 11 minutes);
 
         uint256 insuranceBefore = usdc.balanceOf(address(insurance));
-        uint256 treasuryBefore  = usdc.balanceOf(treasury);
+        uint256 treasuryBefore = usdc.balanceOf(treasury);
 
         vm.prank(liquidator);
         uint256 penalty = engine.liquidatePosition(positionId);
         assertGt(penalty, 0);
 
-        uint256 liquidatorReward  = engine.pendingTokenRewards(liquidator, address(usdc));
+        uint256 liquidatorReward = engine.pendingTokenRewards(liquidator, address(usdc));
         uint256 insuranceReceived = usdc.balanceOf(address(insurance)) - insuranceBefore;
-        uint256 treasuryReceived  = usdc.balanceOf(treasury) - treasuryBefore;
+        uint256 treasuryReceived = usdc.balanceOf(treasury) - treasuryBefore;
 
         // 50/30/20 split
-        assertEq(liquidatorReward,  (penalty * 5000) / 10000);
+        assertEq(liquidatorReward, (penalty * 5000) / 10000);
         assertEq(insuranceReceived, (penalty * 3000) / 10000);
-        assertEq(treasuryReceived,  penalty - liquidatorReward - insuranceReceived);
+        assertEq(treasuryReceived, penalty - liquidatorReward - insuranceReceived);
     }
 }
