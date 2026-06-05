@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.30;
 
 import {Test} from "forge-std/Test.sol";
 import {OracleAggregator} from "../src/OracleAggregator.sol";
@@ -618,6 +618,67 @@ contract OracleAggregatorTest is Test {
         chainlinkOracle.setShouldFail(true);
 
         aggregator.updateTwap();
+        (uint256 price,) = aggregator.getGoldPrice();
+        assertEq(price, GOLD_PRICE);
+    }
+
+    /* ============ Fuzz Tests ============ */
+
+    function _setAllFeeds(uint256 p1, uint256 p2, uint256 p3) internal {
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(p1));
+        bandOracle.setReferenceData(p2 * 1e10);
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(p3 * 1e10)));
+    }
+
+    /// @dev With all sources within the 2% deviation threshold, the aggregated
+    ///      price must be the arithmetic mean of the three normalized feeds
+    function testFuzz_AggregationIsAverageWithinDeviation(uint256 base, uint256 d1, uint256 d2) public {
+        base = bound(base, 1_000e8, 5_000e8);
+        // Keep total spread well under the 2% deviation threshold
+        d1 = bound(d1, 0, base / 200); // +0.5% max
+        d2 = bound(d2, 0, base / 200);
+
+        _setAllFeeds(base, base + d1, base + d2);
+        aggregator.updateTwap();
+
+        (uint256 price,) = aggregator.getGoldPrice();
+        assertEq(price, (base + (base + d1) + (base + d2)) / 3);
+    }
+
+    /// @dev Any single-update move strictly above the 5% circuit breaker
+    ///      threshold must pause the aggregator; moves at or below must not
+    function testFuzz_CircuitBreakerBoundary(uint256 movePctBps, bool up) public {
+        // 0..2000 bps (0-20%) move
+        movePctBps = bound(movePctBps, 0, 2000);
+
+        aggregator.updateTwap(); // seed at GOLD_PRICE
+
+        uint256 newPrice =
+            up ? GOLD_PRICE * (10_000 + movePctBps) / 10_000 : GOLD_PRICE * (10_000 - movePctBps) / 10_000;
+
+        _setAllFeeds(newPrice, newPrice, newPrice);
+        vm.warp(block.timestamp + 601);
+        aggregator.updateTwap();
+
+        if (movePctBps > 500) {
+            assertTrue(aggregator.paused());
+        } else {
+            assertFalse(aggregator.paused());
+        }
+    }
+
+    /// @dev A constant price across any sequence of update intervals must leave
+    ///      the TWAP exactly at that price (no drift from window maintenance)
+    function testFuzz_TwapStableUnderConstantPrice(uint256 interval, uint8 updates) public {
+        interval = bound(interval, 60, 2 hours);
+        uint256 n = bound(updates, 1, 10);
+
+        for (uint256 i = 0; i < n; i++) {
+            vm.warp(block.timestamp + interval);
+            _setAllFeeds(GOLD_PRICE, GOLD_PRICE, GOLD_PRICE);
+            aggregator.updateTwap();
+        }
+
         (uint256 price,) = aggregator.getGoldPrice();
         assertEq(price, GOLD_PRICE);
     }

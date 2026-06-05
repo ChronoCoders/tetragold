@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.30;
 
 import {Test} from "forge-std/Test.sol";
 import {LiquidationEngine} from "../src/LiquidationEngine.sol";
@@ -201,6 +201,59 @@ contract LiquidationEngineTest is Test {
         LiquidationEngine.LiquidatorStats memory stats = liquidationEngine.getLiquidatorStats(liquidator);
         assertEq(stats.totalLiquidations, 1);
         assertTrue(stats.totalRewards > 0);
+    }
+
+    /// @dev Stale mark regression: a mark past its validity window no longer
+    ///      authorizes liquidation — the position is re-marked with a fresh
+    ///      grace period (covers recover-then-relapse scenarios)
+    function test_StaleMarkRequiresRemark() public {
+        uint256 positionId = _createLiquidatablePosition();
+
+        vm.prank(liquidator);
+        liquidationEngine.markForLiquidation(positionId);
+        uint256 firstMark = block.timestamp;
+
+        // Warp past grace period AND mark validity (10 min + 1 h)
+        vm.warp(block.timestamp + liquidationEngine.GRACE_PERIOD() + liquidationEngine.MARK_VALIDITY() + 1);
+
+        // Attempting to liquidate re-marks instead of liquidating instantly
+        vm.prank(liquidator);
+        uint256 penalty = liquidationEngine.liquidatePosition(positionId);
+        assertEq(penalty, 0);
+
+        LiquidationEngine.LiquidationInfo memory info = liquidationEngine.getPositionLiquidationInfo(positionId);
+        assertGt(info.markedTime, firstMark);
+        assertEq(info.tranchesLiquidated, 0);
+
+        // Fresh grace period applies from the new mark
+        vm.prank(liquidator);
+        vm.expectRevert(LiquidationEngine.LiquidationEngine__GracePeriodActive.selector);
+        liquidationEngine.liquidatePosition(positionId);
+
+        vm.warp(block.timestamp + 11 minutes);
+        vm.prank(liquidator);
+        penalty = liquidationEngine.liquidatePosition(positionId);
+        assertGt(penalty, 0);
+    }
+
+    /// @dev Mark overwrite guard: a live mark cannot be re-marked, so an owner
+    ///      cannot reset their own grace period to dodge liquidation
+    function test_MarkForLiquidationRevertsWhenAlreadyMarked() public {
+        uint256 positionId = _createLiquidatablePosition();
+
+        vm.prank(liquidator);
+        liquidationEngine.markForLiquidation(positionId);
+
+        // Immediate re-mark (e.g., by the position owner) is rejected
+        vm.prank(user1);
+        vm.expectRevert(LiquidationEngine.LiquidationEngine__AlreadyMarked.selector);
+        liquidationEngine.markForLiquidation(positionId);
+
+        // Still rejected inside the liquidation window after grace expiry
+        vm.warp(block.timestamp + 11 minutes);
+        vm.prank(user1);
+        vm.expectRevert(LiquidationEngine.LiquidationEngine__AlreadyMarked.selector);
+        liquidationEngine.markForLiquidation(positionId);
     }
 
     /// @dev M-01 regression: an unmarked liquidatable position must be auto-marked

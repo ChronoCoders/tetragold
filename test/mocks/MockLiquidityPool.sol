@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.30;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -47,14 +47,15 @@ contract MockLiquidityPool {
     }
 
     /**
-     * @dev Repays borrowed tokens (pulls tokens from caller)
-     * @param amount Amount to repay
+     * @dev Repays borrowed tokens (pulls principal + interest from caller)
+     * @param principal Principal amount (reduces totalBorrowed)
+     * @param interest Interest amount (kept by the pool)
      * @param token Token address
      */
-    function repay(uint256 amount, address token) external returns (bool) {
-        totalBorrowed[token] -= amount > totalBorrowed[token] ? totalBorrowed[token] : amount;
-        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-        emit Repaid(amount, token);
+    function repay(uint256 principal, uint256 interest, address token) external returns (bool) {
+        totalBorrowed[token] -= principal > totalBorrowed[token] ? totalBorrowed[token] : principal;
+        IERC20(token).safeTransferFrom(msg.sender, address(this), principal + interest);
+        emit Repaid(principal + interest, token);
         return true;
     }
 

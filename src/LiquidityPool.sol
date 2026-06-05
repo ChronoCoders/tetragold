@@ -247,18 +247,25 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
 
     /**
      * @dev Repay borrowed tokens (only VaultManager)
-     * @param amount Amount to repay
+     * @param principal Principal amount being repaid (reduces totalBorrowed)
+     * @param interest Interest amount being paid (credited to depositors)
      * @param token Token address
      * @return success True if repay succeeded
+     *
+     * The caller declares the principal/interest split explicitly. Inferring it
+     * from pool.totalBorrowed (as previously done) misclassified one position's
+     * interest as another position's principal whenever other borrows were
+     * outstanding, draining totalBorrowed and silently denying LPs their
+     * interest credit.
      */
-    function repay(uint256 amount, address token)
+    function repay(uint256 principal, uint256 interest, address token)
         external
         onlyRole(VAULT_MANAGER_ROLE)
         nonReentrant
         whenNotPaused
         returns (bool success)
     {
-        if (amount == 0) revert LiquidityPool__InvalidAmount();
+        if (principal == 0) revert LiquidityPool__InvalidAmount();
 
         // Find which pool has the borrow
         PoolType poolType = _findPoolWithBorrow(token);
@@ -268,12 +275,9 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
         // Accrue interest before repay
         _accrueInterest(poolType);
 
-        // Transfer tokens from VaultManager
+        // Transfer principal + interest from VaultManager
+        uint256 amount = principal + interest;
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-
-        // Determine principal vs interest
-        uint256 principal = amount > pool.totalBorrowed ? pool.totalBorrowed : amount;
-        uint256 interest = amount - principal;
 
         // slither-disable-next-line reentrancy-eth
         // Update pool state

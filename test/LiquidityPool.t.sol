@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.30;
 
 import {Test} from "forge-std/Test.sol";
 import {LiquidityPool} from "../src/LiquidityPool.sol";
@@ -17,10 +17,10 @@ contract MockVaultManager {
         return pool.borrow(amount, token);
     }
 
-    function repay(uint256 amount, address token) external returns (bool) {
+    function repay(uint256 principal, uint256 interest, address token) external returns (bool) {
         // Approve first
-        IERC20(token).approve(address(pool), amount);
-        return pool.repay(amount, token);
+        IERC20(token).approve(address(pool), principal + interest);
+        return pool.repay(principal, interest, token);
     }
 }
 
@@ -324,7 +324,7 @@ contract LiquidityPoolTest is Test {
         emit Repaid(borrowAmount, address(usdc), LiquidityPool.PoolType.CONSERVATIVE);
 
         vm.prank(address(vaultManager));
-        bool success = vaultManager.repay(borrowAmount, address(usdc));
+        bool success = vaultManager.repay(borrowAmount, 0, address(usdc));
 
         assertTrue(success);
 
@@ -337,7 +337,45 @@ contract LiquidityPoolTest is Test {
 
     function test_RepayRevertsWhenNotVaultManager() public {
         vm.expectRevert();
-        pool.repay(1000e6, address(usdc));
+        pool.repay(1000e6, 0, address(usdc));
+    }
+
+    /// @dev Repay accounting regression: with multiple borrows outstanding, one
+    ///      position's interest payment must NOT be misclassified as another
+    ///      position's principal — totalBorrowed decreases only by the declared
+    ///      principal, and the interest is credited to depositors
+    function test_RepayWithInterestCreditsDepositorsNotPrincipal() public {
+        uint256 depositAmount = 50_000e6;
+        uint256 borrowA = 5_000e6;
+        uint256 borrowB = 7_000e6;
+        uint256 interest = 25e6;
+
+        vm.startPrank(lp1);
+        usdc.approve(address(pool), depositAmount);
+        pool.depositLP(depositAmount, LiquidityPool.PoolType.CONSERVATIVE, address(usdc));
+        vm.stopPrank();
+
+        // Two outstanding borrows (e.g., two positions)
+        vm.startPrank(address(vaultManager));
+        pool.borrow(borrowA, address(usdc));
+        pool.borrow(borrowB, address(usdc));
+        vm.stopPrank();
+
+        (uint256 depositsBefore, uint256 borrowedBefore,,,) = pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
+        assertEq(borrowedBefore, borrowA + borrowB);
+
+        // Repay position A's principal plus interest
+        usdc.mint(address(vaultManager), interest); // fund the interest portion
+        vm.prank(address(vaultManager));
+        vaultManager.repay(borrowA, interest, address(usdc));
+
+        (uint256 depositsAfter, uint256 borrowedAfter,,,) = pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
+
+        // Only the declared principal reduces totalBorrowed — position B's
+        // debt record is untouched
+        assertEq(borrowedAfter, borrowB);
+        // The interest is credited to depositors
+        assertEq(depositsAfter, depositsBefore + interest);
     }
 
     /* ============ APY Calculation Tests ============ */
@@ -363,7 +401,7 @@ contract LiquidityPoolTest is Test {
 
         // Repay and borrow to 80% utilization: 15% APY
         vm.prank(address(vaultManager));
-        vaultManager.repay(4000e6, address(usdc));
+        vaultManager.repay(4000e6, 0, address(usdc));
 
         vm.prank(address(vaultManager));
         pool.borrow(8000e6, address(usdc));
@@ -373,7 +411,7 @@ contract LiquidityPoolTest is Test {
 
         // 90% utilization: 40% APY
         vm.prank(address(vaultManager));
-        vaultManager.repay(8000e6, address(usdc));
+        vaultManager.repay(8000e6, 0, address(usdc));
 
         vm.prank(address(vaultManager));
         pool.borrow(9000e6, address(usdc));
@@ -563,7 +601,7 @@ contract LiquidityPoolTest is Test {
 
         // 3. Repay immediately (no interest)
         vm.prank(address(vaultManager));
-        vaultManager.repay(borrowAmount, address(usdc));
+        vaultManager.repay(borrowAmount, 0, address(usdc));
 
         // 4. Withdraw
         vm.startPrank(lp1);

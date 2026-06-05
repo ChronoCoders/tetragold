@@ -19,6 +19,10 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
 
     uint256 public constant BASIS_POINTS = 10000;
     uint256 public constant GRACE_PERIOD = 10 minutes;
+    // A mark only authorizes liquidation for this long after the grace period
+    // expires. Stale marks (e.g., the position recovered and later relapsed)
+    // are re-marked, granting a fresh grace period instead of instant liquidation.
+    uint256 public constant MARK_VALIDITY = 1 hours;
     uint256 public constant LIQUIDATION_TRANCHE = 2500; // 25% in basis points
     uint256 public constant MAX_TRANCHES = 4;
     uint256 public constant MIN_LIQUIDATION_VALUE = 100e6; // $100 minimum
@@ -95,6 +99,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
     error LiquidationEngine__InsufficientValue();
     error LiquidationEngine__NoRewardsToClaim();
     error LiquidationEngine__InvalidPercentage();
+    error LiquidationEngine__AlreadyMarked();
 
     /* ============ Constructor ============ */
 
@@ -120,6 +125,13 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
         // Check if position is liquidatable
         if (!_isPositionLiquidatable(positionId)) {
             revert LiquidationEngine__PositionNotLiquidatable();
+        }
+
+        // A live mark cannot be overwritten — otherwise the owner could re-mark
+        // repeatedly to reset their own grace period and never be liquidatable.
+        // Only unmarked positions or stale marks can be (re-)marked.
+        if (!_needsMark(positionId)) {
+            revert LiquidationEngine__AlreadyMarked();
         }
 
         // Mark position
@@ -389,10 +401,11 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
      */
     // slither-disable-start reentrancy-eth
     function _liquidatePosition(uint256 positionId, address liquidator) internal returns (uint256 penalty) {
-        // Auto-mark: the first time a position is seen liquidatable, start the
+        // Auto-mark: when a liquidatable position is unmarked OR its mark has
+        // gone stale (it may have recovered and relapsed since), start a fresh
         // grace period instead of liquidating. The user always gets GRACE_PERIOD
         // to self-remediate before any tranche is taken.
-        if (liquidationWarningTime[positionId] == 0 && _isPositionLiquidatable(positionId)) {
+        if (_needsMark(positionId) && _isPositionLiquidatable(positionId)) {
             liquidationWarningTime[positionId] = block.timestamp;
             emit PositionMarkedForLiquidation(positionId, block.timestamp);
             return 0;
@@ -497,8 +510,11 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
             return false;
         }
 
-        // Check if grace period has expired
-        return block.timestamp >= markedTime + GRACE_PERIOD;
+        // Liquidation is only authorized inside the mark's validity window:
+        // after the grace period and before the mark goes stale. A stale mark
+        // (position may have recovered and relapsed since) requires re-marking.
+        return
+            block.timestamp >= markedTime + GRACE_PERIOD && block.timestamp <= markedTime + GRACE_PERIOD + MARK_VALIDITY;
     }
 
     /**
@@ -512,7 +528,18 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
             return false;
         }
         uint256 markedTime = liquidationWarningTime[positionId];
+        // Action needed when unmarked, mark gone stale (re-mark), or inside
+        // the liquidation window (liquidate)
         return markedTime == 0 || block.timestamp >= markedTime + GRACE_PERIOD;
+    }
+
+    /**
+     * @dev True when a position's mark is missing or has expired and a fresh
+     *      mark (and grace period) is required before liquidation
+     */
+    function _needsMark(uint256 positionId) internal view returns (bool) {
+        uint256 markedTime = liquidationWarningTime[positionId];
+        return markedTime == 0 || block.timestamp > markedTime + GRACE_PERIOD + MARK_VALIDITY;
     }
 
     /**
