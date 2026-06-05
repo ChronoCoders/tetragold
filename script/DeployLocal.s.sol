@@ -223,6 +223,11 @@ contract DeployLocal is Script {
         );
         console.log("- VAULT_MANAGER_ROLE     -> FeeDistributor (InsuranceFund)");
         console.log("- LIQUIDATION_ENGINE_ROLE -> LiquidationEngine (InsuranceFund)");
+
+        // Pre-register tokens so getTotalReserves() is accurate before first deposit
+        InsuranceFund(insuranceFund).addSupportedToken(usdc);
+        InsuranceFund(insuranceFund).addSupportedToken(usdt);
+        console.log("- Supported tokens registered in InsuranceFund");
     }
 
     function _mintTestTokens(address deployer) internal {

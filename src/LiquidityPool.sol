@@ -47,7 +47,8 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
     /* ============ State Variables ============ */
 
     mapping(PoolType => Pool) public pools;
-    mapping(PoolType => mapping(address => uint256)) public poolBalances; // poolType => token => balance
+    mapping(PoolType => mapping(address => uint256)) public poolBalances;   // poolType => token => balance
+    mapping(PoolType => mapping(address => uint256)) public borrowedByToken; // poolType => token => borrowed
 
     address public immutable usdc;
     address public immutable usdt;
@@ -234,6 +235,7 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
         // Update pool state
         pool.totalBorrowed += amount;
         poolBalances[poolType][token] -= amount;
+        borrowedByToken[poolType][token] += amount;
 
         // Transfer tokens to VaultManager
         IERC20(token).safeTransfer(msg.sender, amount);
@@ -276,6 +278,7 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
         // slither-disable-next-line reentrancy-eth
         // Update pool state
         pool.totalBorrowed -= principal;
+        borrowedByToken[poolType][token] -= principal;
         poolBalances[poolType][token] += amount;
 
         // Add interest to total deposits (makes it available for withdrawal)
@@ -457,8 +460,7 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
      * @return poolType Pool type with borrows
      */
     function _findPoolWithBorrow(address token) internal view returns (PoolType poolType) {
-        // Check which pool has borrowed amount
-        if (pools[PoolType.CONSERVATIVE].totalBorrowed > 0 && pools[PoolType.CONSERVATIVE].supportedTokens[token]) {
+        if (borrowedByToken[PoolType.CONSERVATIVE][token] > 0) {
             return PoolType.CONSERVATIVE;
         }
         return PoolType.AGGRESSIVE;

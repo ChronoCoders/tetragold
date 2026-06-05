@@ -538,6 +538,18 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
     }
 
     /**
+     * @notice Register a token so it is included in getTotalReserves() before any deposits occur
+     * @param token Token address to register
+     */
+    function addSupportedToken(address token) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (token == address(0)) revert InsuranceFund__InvalidToken();
+        if (!_inTokenList[token]) {
+            _tokenList.push(token);
+            _inTokenList[token] = true;
+        }
+    }
+
+    /**
      * @notice Set aToken mapping for a token
      * @param token Token address
      * @param aToken Corresponding aToken address
