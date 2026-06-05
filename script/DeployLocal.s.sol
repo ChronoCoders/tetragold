@@ -4,7 +4,6 @@ pragma solidity 0.8.30;
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
 
-// Import all production contracts
 import {TGAUX} from "../src/TGAUX.sol";
 import {VaultManager} from "../src/VaultManager.sol";
 import {OracleAggregator} from "../src/OracleAggregator.sol";
@@ -13,10 +12,8 @@ import {LiquidationEngine} from "../src/LiquidationEngine.sol";
 import {InsuranceFund} from "../src/InsuranceFund.sol";
 import {FeeDistributor} from "../src/FeeDistributor.sol";
 
-/**
- * @title MockERC20
- * @notice Simple ERC20 mock for testing
- */
+// ============ Inline Mocks (local deployment only) ============
+
 contract MockERC20 {
     string public name;
     string public symbol;
@@ -29,239 +26,227 @@ contract MockERC20 {
     event Approval(address indexed owner, address indexed spender, uint256 value);
 
     constructor(string memory _name, string memory _symbol, uint8 _decimals) {
-        name = _name;
-        symbol = _symbol;
-        decimals = _decimals;
+        name = _name; symbol = _symbol; decimals = _decimals;
     }
 
     function mint(address to, uint256 amount) external {
-        totalSupply += amount;
-        balanceOf[to] += amount;
+        totalSupply += amount; balanceOf[to] += amount;
         emit Transfer(address(0), to, amount);
     }
 
     function transfer(address to, uint256 amount) external returns (bool) {
-        balanceOf[msg.sender] -= amount;
-        balanceOf[to] += amount;
-        emit Transfer(msg.sender, to, amount);
-        return true;
+        balanceOf[msg.sender] -= amount; balanceOf[to] += amount;
+        emit Transfer(msg.sender, to, amount); return true;
     }
 
     function approve(address spender, uint256 amount) external returns (bool) {
         allowance[msg.sender][spender] = amount;
-        emit Approval(msg.sender, spender, amount);
-        return true;
+        emit Approval(msg.sender, spender, amount); return true;
     }
 
     function transferFrom(address from, address to, uint256 amount) external returns (bool) {
         allowance[from][msg.sender] -= amount;
-        balanceOf[from] -= amount;
-        balanceOf[to] += amount;
-        emit Transfer(from, to, amount);
-        return true;
+        balanceOf[from] -= amount; balanceOf[to] += amount;
+        emit Transfer(from, to, amount); return true;
     }
 }
 
+contract MockChainlinkOracle {
+    int256 private _price;
+    uint256 private _updatedAt;
+
+    constructor(int256 initialPrice) { _price = initialPrice; _updatedAt = block.timestamp; }
+
+    function decimals() external pure returns (uint8) { return 8; }
+
+    function latestRoundData() external view returns (
+        uint80, int256 answer, uint256, uint256 updatedAt, uint80
+    ) {
+        return (1, _price, _updatedAt, _updatedAt, 1);
+    }
+}
+
+contract MockBandOracle {
+    uint256 private _rate;
+    uint256 private _updatedAt;
+
+    constructor(uint256 initialRate) { _rate = initialRate; _updatedAt = block.timestamp; }
+
+    function getReferenceData(string memory, string memory) external view returns (
+        uint256 rate, uint256 lastUpdatedBase, uint256 lastUpdatedQuote
+    ) {
+        return (_rate, _updatedAt, _updatedAt);
+    }
+}
+
+contract MockAPI3Oracle {
+    int224 private _value;
+    uint32 private _timestamp;
+
+    constructor(int224 initialValue) { _value = initialValue; _timestamp = uint32(block.timestamp); }
+
+    function read() external view returns (int224 value, uint32 timestamp) {
+        return (_value, _timestamp);
+    }
+}
+
+contract MockAavePool {
+    function supply(address, uint256, address, uint16) external {}
+    function withdraw(address, uint256 amount, address) external returns (uint256) { return amount; }
+}
+
+// ============ Deployment Script ============
+
 /**
  * @title DeployLocal
- * @notice Deployment script for Tetra Gold protocol on local Anvil testnet
- * @dev Deploys all contracts in correct order and configures them for testing
+ * @notice Deploys the full Tetra Gold protocol stack on a local Anvil node.
+ * @dev Run with: forge script script/DeployLocal.s.sol --rpc-url http://localhost:8545 --broadcast
  */
 contract DeployLocal is Script {
-    // Anvil default account #0 private key
-    uint256 private constant DEPLOYER_PRIVATE_KEY = 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
+    // Anvil default account #0
+    uint256 private constant DEPLOYER_PRIVATE_KEY =
+        0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
 
-    // Gold price: $2,847.00 (8 decimals)
-    uint256 private constant GOLD_PRICE = 284700000000;
+    // Gold price: $2,847.00
+    int256  private constant GOLD_PRICE_8DEC  = 284700000000;
+    uint256 private constant GOLD_PRICE_18DEC = 284700000000 * 1e10;
 
-    // Test token amounts
-    uint256 private constant USDC_MINT_AMOUNT = 1_000_000 * 10**6;  // 1M USDC (6 decimals)
-    uint256 private constant USDT_MINT_AMOUNT = 1_000_000 * 10**6;  // 1M USDT (6 decimals)
-    uint256 private constant TGX_MINT_AMOUNT = 1_000_000 * 10**18;  // 1M TGX (18 decimals)
+    uint256 private constant MINT_STABLE = 1_000_000 * 10 ** 6;
+    uint256 private constant MINT_TGX    = 1_000_000 * 10 ** 18;
+
+    // Deployed addresses passed between helpers via storage
+    address private usdc;
+    address private usdt;
+    address private tgx;
+    address private tgaux;
+    address private oracle;
+    address private liquidityPool;
+    address private vaultManager;
+    address private insuranceFund;
+    address private feeDistributor;
+    address private liquidationEngine;
 
     function run() external {
-        // Start broadcasting transactions
         vm.startBroadcast(DEPLOYER_PRIVATE_KEY);
-
         address deployer = vm.addr(DEPLOYER_PRIVATE_KEY);
 
-        console.log("=== TETRA GOLD DEPLOYMENT ===");
-        console.log("");
-        console.log("Network: Anvil Local Testnet");
-        console.log("Chain ID: 31337");
+        console.log("=== TETRA GOLD LOCAL DEPLOYMENT ===");
         console.log("Deployer:", deployer);
         console.log("");
 
-        // ============ STEP 1: Deploy Mock Tokens ============
-        console.log("Deploying Mock Tokens...");
+        _deployTokensAndOracle(deployer);
+        _deployCore(deployer);
+        _configureRoles();
+        _mintTestTokens(deployer);
+        _printSummary();
 
-        MockERC20 usdc = new MockERC20("USD Coin", "USDC", 6);
-        MockERC20 usdt = new MockERC20("Tether USD", "USDT", 6);
-        MockERC20 tgx = new MockERC20("Tetra Gold Governance", "TGX", 18);
-
-        console.log("Mock tokens deployed!");
-        console.log("");
-
-        // ============ STEP 2: Deploy TGAUX Token ============
-        console.log("Deploying TGAUX...");
-
-        TGAUX tgaux = new TGAUX(deployer);
-
-        console.log("TGAUX deployed!");
-        console.log("");
-
-        // ============ STEP 3: Deploy OracleAggregator ============
-        console.log("Deploying OracleAggregator...");
-
-        OracleAggregator oracle = new OracleAggregator(
-            address(0), // chainlink (mock mode)
-            address(0), // band (mock mode)
-            address(0), // api3 (mock mode)
-            deployer    // admin
-        );
-
-        // Set mock gold price: $2,847.00
-        oracle.setMockPrice(GOLD_PRICE);
-
-        console.log("OracleAggregator deployed and configured!");
-        console.log("");
-
-        // ============ STEP 4: Deploy LiquidityPool ============
-        console.log("Deploying LiquidityPool...");
-
-        LiquidityPool liquidityPool = new LiquidityPool(
-            address(usdc),
-            address(usdt)
-        );
-
-        console.log("LiquidityPool deployed!");
-        console.log("");
-
-        // ============ STEP 5: Deploy InsuranceFund ============
-        console.log("Deploying InsuranceFund...");
-
-        InsuranceFund insuranceFund = new InsuranceFund(
-            address(0),              // vaultManager (set later)
-            address(liquidityPool)
-        );
-
-        console.log("InsuranceFund deployed!");
-        console.log("");
-
-        // ============ STEP 6: Deploy FeeDistributor ============
-        console.log("Deploying FeeDistributor...");
-
-        FeeDistributor feeDistributor = new FeeDistributor(
-            address(insuranceFund),
-            deployer,          // treasury
-            address(tgx),      // TGX token
-            address(usdc)      // reward token
-        );
-
-        console.log("FeeDistributor deployed!");
-        console.log("");
-
-        // ============ STEP 7: Deploy VaultManager ============
-        console.log("Deploying VaultManager...");
-
-        VaultManager vaultManager = new VaultManager(
-            address(tgaux),
-            address(oracle),
-            address(liquidityPool),
-            address(feeDistributor),
-            address(insuranceFund),
-            deployer  // treasury
-        );
-
-        console.log("VaultManager deployed!");
-        console.log("");
-
-        // ============ STEP 8: Deploy LiquidationEngine ============
-        console.log("Deploying LiquidationEngine...");
-
-        LiquidationEngine liquidationEngine = new LiquidationEngine(
-            address(vaultManager),
-            address(oracle),
-            address(insuranceFund)
-        );
-
-        console.log("LiquidationEngine deployed!");
-        console.log("");
-
-        // ============ POST-DEPLOYMENT CONFIGURATION ============
-        console.log("Configuring contracts...");
-        console.log("");
-
-        // 1. Grant MINTER_ROLE to VaultManager
-        bytes32 MINTER_ROLE = tgaux.MINTER_ROLE();
-        tgaux.grantRole(MINTER_ROLE, address(vaultManager));
-        console.log("- MINTER_ROLE granted to VaultManager");
-
-        // 2. Update InsuranceFund with VaultManager address
-        insuranceFund.updateVaultManager(address(vaultManager));
-        console.log("- VaultManager set in InsuranceFund");
-
-        // 3. Add supported tokens to InsuranceFund
-        insuranceFund.addSupportedToken(address(usdc));
-        insuranceFund.addSupportedToken(address(usdt));
-        console.log("- Supported tokens added to InsuranceFund");
-
-        // 4. Add reward tokens to FeeDistributor
-        feeDistributor.addSupportedToken(address(usdc));
-        feeDistributor.addSupportedToken(address(usdt));
-        console.log("- Reward tokens added to FeeDistributor");
-
-        // 5. Grant VAULT_MANAGER_ROLE to VaultManager in LiquidityPool
-        bytes32 VAULT_MANAGER_ROLE = liquidityPool.VAULT_MANAGER_ROLE();
-        liquidityPool.grantRole(VAULT_MANAGER_ROLE, address(vaultManager));
-        console.log("- VAULT_MANAGER_ROLE granted in LiquidityPool");
-
-        // 6. Grant LIQUIDATOR_ROLE to LiquidationEngine in VaultManager
-        bytes32 LIQUIDATOR_ROLE = vaultManager.LIQUIDATOR_ROLE();
-        vaultManager.grantRole(LIQUIDATOR_ROLE, address(liquidationEngine));
-        console.log("- LIQUIDATOR_ROLE granted to LiquidationEngine");
-
-        // 7. Mint test tokens to deployer
-        usdc.mint(deployer, USDC_MINT_AMOUNT);
-        usdt.mint(deployer, USDT_MINT_AMOUNT);
-        tgx.mint(deployer, TGX_MINT_AMOUNT);
-        console.log("- Test tokens minted to deployer");
-
-        console.log("");
-        console.log("Configuration complete!");
-        console.log("");
-
-        // ============ FINAL OUTPUT ============
-        console.log("=== MOCK TOKENS ===");
-        console.log("USDC:", address(usdc));
-        console.log("USDT:", address(usdt));
-        console.log("TGX:", address(tgx));
-        console.log("");
-        console.log("=== CORE CONTRACTS ===");
-        console.log("TGAUX:", address(tgaux));
-        console.log("OracleAggregator:", address(oracle));
-        console.log("LiquidityPool:", address(liquidityPool));
-        console.log("InsuranceFund:", address(insuranceFund));
-        console.log("FeeDistributor:", address(feeDistributor));
-        console.log("VaultManager:", address(vaultManager));
-        console.log("LiquidationEngine:", address(liquidationEngine));
-        console.log("");
-        console.log("=== CONFIGURATION ===");
-        console.log("Gold Price: $2,847.00");
-        console.log("MINTER_ROLE granted: YES");
-        console.log("VAULT_MANAGER_ROLE granted: YES");
-        console.log("LIQUIDATOR_ROLE granted: YES");
-        console.log("Test tokens minted: YES");
-        console.log("Deployer USDC balance: 1,000,000 USDC");
-        console.log("Deployer USDT balance: 1,000,000 USDT");
-        console.log("Deployer TGX balance: 1,000,000 TGX");
-        console.log("");
-        console.log("=== DEPLOYMENT COMPLETE ===");
-        console.log("");
-        console.log("Ready for testing!");
-        console.log("");
-
-        // Stop broadcasting
         vm.stopBroadcast();
+    }
+
+    function _deployTokensAndOracle(address deployer) internal {
+        console.log("[1/4] Deploying mock tokens...");
+        usdc = address(new MockERC20("USD Coin",              "USDC", 6));
+        usdt = address(new MockERC20("Tether USD",            "USDT", 6));
+        tgx  = address(new MockERC20("Tetra Gold Governance", "TGX",  18));
+
+        console.log("[2/4] Deploying mock oracles and TGAUX...");
+        address chainlink = address(new MockChainlinkOracle(GOLD_PRICE_8DEC));
+        address band      = address(new MockBandOracle(GOLD_PRICE_18DEC));
+        address api3      = address(new MockAPI3Oracle(int224(int256(GOLD_PRICE_18DEC))));
+
+        tgaux  = address(new TGAUX(deployer));
+        oracle = address(new OracleAggregator(deployer, chainlink, band, api3));
+
+        // Seed TWAP with initial gold price
+        OracleAggregator(oracle).updateTwap();
+    }
+
+    function _deployCore(address deployer) internal {
+        console.log("[3/4] Deploying core protocol contracts...");
+
+        liquidityPool = address(new LiquidityPool(usdc, usdt));
+
+        vaultManager = address(new VaultManager(
+            deployer,
+            tgaux,
+            oracle,
+            liquidityPool,
+            usdc,
+            usdt
+        ));
+
+        address aavePool = address(new MockAavePool());
+        insuranceFund = address(new InsuranceFund(
+            deployer,
+            vaultManager,
+            liquidityPool,
+            aavePool
+        ));
+
+        feeDistributor = address(new FeeDistributor(
+            deployer,
+            tgx,
+            insuranceFund,
+            deployer
+        ));
+        FeeDistributor(feeDistributor).addSupportedToken(usdc);
+        FeeDistributor(feeDistributor).addSupportedToken(usdt);
+
+        liquidationEngine = address(new LiquidationEngine(
+            vaultManager,
+            insuranceFund,
+            deployer
+        ));
+    }
+
+    function _configureRoles() internal {
+        console.log("[4/4] Configuring roles...");
+
+        TGAUX(tgaux).grantRole(TGAUX(tgaux).MINTER_ROLE(), vaultManager);
+        console.log("- MINTER_ROLE            -> VaultManager");
+
+        LiquidityPool(liquidityPool).grantRole(
+            LiquidityPool(liquidityPool).VAULT_MANAGER_ROLE(), vaultManager
+        );
+        console.log("- VAULT_MANAGER_ROLE     -> VaultManager (LiquidityPool)");
+
+        VaultManager(vaultManager).grantRole(
+            VaultManager(vaultManager).LIQUIDATOR_ROLE(), liquidationEngine
+        );
+        console.log("- LIQUIDATOR_ROLE        -> LiquidationEngine");
+
+        InsuranceFund(insuranceFund).grantRole(
+            InsuranceFund(insuranceFund).VAULT_MANAGER_ROLE(), feeDistributor
+        );
+        InsuranceFund(insuranceFund).grantRole(
+            InsuranceFund(insuranceFund).LIQUIDATION_ENGINE_ROLE(), liquidationEngine
+        );
+        console.log("- VAULT_MANAGER_ROLE     -> FeeDistributor (InsuranceFund)");
+        console.log("- LIQUIDATION_ENGINE_ROLE -> LiquidationEngine (InsuranceFund)");
+    }
+
+    function _mintTestTokens(address deployer) internal {
+        MockERC20(usdc).mint(deployer, MINT_STABLE);
+        MockERC20(usdt).mint(deployer, MINT_STABLE);
+        MockERC20(tgx).mint(deployer, MINT_TGX);
+    }
+
+    function _printSummary() internal view {
+        console.log("");
+        console.log("=== DEPLOYED ADDRESSES ===");
+        console.log("USDC:               ", usdc);
+        console.log("USDT:               ", usdt);
+        console.log("TGX:                ", tgx);
+        console.log("TGAUX:              ", tgaux);
+        console.log("OracleAggregator:   ", oracle);
+        console.log("LiquidityPool:      ", liquidityPool);
+        console.log("VaultManager:       ", vaultManager);
+        console.log("InsuranceFund:      ", insuranceFund);
+        console.log("FeeDistributor:     ", feeDistributor);
+        console.log("LiquidationEngine:  ", liquidationEngine);
+        console.log("");
+        console.log("Gold price seed:     $2,847.00");
+        console.log("Deployer balance:    1,000,000 USDC / USDT / TGX");
+        console.log("=== DEPLOYMENT COMPLETE ===");
     }
 }
