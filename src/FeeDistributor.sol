@@ -73,11 +73,7 @@ contract FeeDistributor is AccessControl, Pausable, ReentrancyGuard {
     // ============ Events ============
 
     event FeesCollected(
-        address indexed token,
-        uint256 total,
-        uint256 toInsurance,
-        uint256 toTreasury,
-        uint256 toStakers
+        address indexed token, uint256 total, uint256 toInsurance, uint256 toTreasury, uint256 toStakers
     );
     event Staked(address indexed user, uint256 amount);
     event Unstaked(address indexed user, uint256 amount);
@@ -96,12 +92,7 @@ contract FeeDistributor is AccessControl, Pausable, ReentrancyGuard {
 
     // ============ Constructor ============
 
-    constructor(
-        address _admin,
-        address _tgxToken,
-        address _insuranceFund,
-        address _treasury
-    ) {
+    constructor(address _admin, address _tgxToken, address _insuranceFund, address _treasury) {
         if (_admin == address(0)) revert FeeDistributor__ZeroAddress();
         if (_tgxToken == address(0)) revert FeeDistributor__ZeroAddress();
         if (_insuranceFund == address(0)) revert FeeDistributor__ZeroAddress();
@@ -272,12 +263,7 @@ contract FeeDistributor is AccessControl, Pausable, ReentrancyGuard {
      * @param token Token to claim rewards for
      * @return amount Amount claimed
      */
-    function claimRewards(address token)
-        external
-        nonReentrant
-        whenNotPaused
-        returns (uint256 amount)
-    {
+    function claimRewards(address token) external nonReentrant whenNotPaused returns (uint256 amount) {
         if (!isTokenSupported[token]) revert FeeDistributor__TokenNotSupported();
 
         uint256 userStake = stakedTGX[msg.sender];
@@ -367,9 +353,7 @@ contract FeeDistributor is AccessControl, Pausable, ReentrancyGuard {
      */
     function getStakerInfo(address user) external view returns (StakerInfo memory info) {
         info.staked = stakedTGX[user];
-        info.sharePercentage = totalStakedTGX > 0
-            ? (stakedTGX[user] * BASIS_POINTS) / totalStakedTGX
-            : 0;
+        info.sharePercentage = totalStakedTGX > 0 ? (stakedTGX[user] * BASIS_POINTS) / totalStakedTGX : 0;
     }
 
     /**

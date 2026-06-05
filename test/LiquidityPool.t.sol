@@ -97,8 +97,8 @@ contract LiquidityPoolTest is Test {
         assertEq(pool.usdt(), address(usdt));
 
         // Check LP tokens created
-        (,, , address conservativeLpToken,) = pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
-        (,, , address aggressiveLpToken,) = pool.getPoolInfo(LiquidityPool.PoolType.AGGRESSIVE);
+        (,,, address conservativeLpToken,) = pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
+        (,,, address aggressiveLpToken,) = pool.getPoolInfo(LiquidityPool.PoolType.AGGRESSIVE);
 
         assertTrue(conservativeLpToken != address(0));
         assertTrue(aggressiveLpToken != address(0));
@@ -134,7 +134,7 @@ contract LiquidityPoolTest is Test {
         assertEq(utilizationRate, 0);
 
         // Check LP token balance
-        (, , , address lpToken,) = pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
+        (,,, address lpToken,) = pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
         assertEq(IERC20(lpToken).balanceOf(lp1), lpTokens);
     }
 
@@ -329,8 +329,7 @@ contract LiquidityPoolTest is Test {
         assertTrue(success);
 
         // Check pool state
-        (, uint256 totalBorrowed, uint256 utilizationRate,,) =
-            pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
+        (, uint256 totalBorrowed, uint256 utilizationRate,,) = pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
 
         assertEq(totalBorrowed, 0);
         assertEq(utilizationRate, 0);
@@ -486,7 +485,7 @@ contract LiquidityPoolTest is Test {
         vm.prank(address(vaultManager));
         pool.borrow(5000e6, address(usdc));
 
-        (, , uint256 utilization,,) = pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
+        (,, uint256 utilization,,) = pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
         assertEq(utilization, 5000); // 50%
     }
 
@@ -540,8 +539,7 @@ contract LiquidityPoolTest is Test {
         vm.prank(address(vaultManager));
         pool.borrow(2000e6, address(usdt));
 
-        (uint256 totalDeposits, uint256 totalBorrowed,,, ) =
-            pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
+        (uint256 totalDeposits, uint256 totalBorrowed,,,) = pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
 
         assertEq(totalDeposits, 10000e6);
         assertEq(totalBorrowed, 4000e6);
@@ -589,7 +587,7 @@ contract LiquidityPoolTest is Test {
         assertEq(totalDeposits, 3000e6);
 
         // Get LP token balance
-        (, , , address lpToken,) = pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
+        (,,, address lpToken,) = pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
         uint256 lpBalance = IERC20(lpToken).balanceOf(lp1);
 
         // Withdraw in parts

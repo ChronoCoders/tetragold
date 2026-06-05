@@ -15,11 +15,11 @@ contract MockBandOracle {
         _lastUpdatedQuote = block.timestamp;
     }
 
-    function getReferenceData(string memory, string memory) external view returns (
-        uint256 rate,
-        uint256 lastUpdatedBase,
-        uint256 lastUpdatedQuote
-    ) {
+    function getReferenceData(string memory, string memory)
+        external
+        view
+        returns (uint256 rate, uint256 lastUpdatedBase, uint256 lastUpdatedQuote)
+    {
         require(!_shouldFail, "Mock: Oracle failure");
         return (_rate, _lastUpdatedBase, _lastUpdatedQuote);
     }

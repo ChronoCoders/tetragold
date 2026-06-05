@@ -46,12 +46,7 @@ contract InsuranceFundTest is Test {
 
         // Deploy InsuranceFund
         vm.prank(admin);
-        fund = new InsuranceFund(
-            admin,
-            address(vaultManager),
-            address(liquidityPool),
-            address(aavePool)
-        );
+        fund = new InsuranceFund(admin, address(vaultManager), address(liquidityPool), address(aavePool));
 
         // Grant roles
         vm.startPrank(admin);
@@ -184,12 +179,8 @@ contract InsuranceFundTest is Test {
         uint256 positionId = 123;
 
         vm.prank(coverageManager);
-        uint256 eventId = fund.coverLoss(
-            positionId,
-            coverageAmount,
-            address(usdc),
-            InsuranceFund.CoverageReason.FAILED_LIQUIDATION
-        );
+        uint256 eventId =
+            fund.coverLoss(positionId, coverageAmount, address(usdc), InsuranceFund.CoverageReason.FAILED_LIQUIDATION);
 
         assertEq(eventId, 1);
         assertEq(fund.reserves(address(usdc)), depositAmount - coverageAmount);

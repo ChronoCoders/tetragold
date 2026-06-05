@@ -23,7 +23,12 @@ contract MockAavePool {
      * @param amount Amount to supply
      * @param onBehalfOf Address that will receive the aTokens
      */
-    function supply(address asset, uint256 amount, address onBehalfOf, uint16 /* referralCode */)
+    function supply(
+        address asset,
+        uint256 amount,
+        address onBehalfOf,
+        uint16 /* referralCode */
+    )
         external
     {
         IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
