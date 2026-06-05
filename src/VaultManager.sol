@@ -314,18 +314,24 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         // Burn TGAUX (liquidator must have the tokens)
         tgaux.burnFrom(msg.sender, position.tgauxMinted);
 
-        // Repay liquidity pool if borrowed
+        // Repay liquidity pool via repay() to keep pool accounting correct
         if (totalOwed > 0) {
-            IERC20(position.collateralToken).safeTransfer(liquidityPool, totalOwed);
+            IERC20(position.collateralToken).safeIncreaseAllowance(liquidityPool, totalOwed);
+            ILiquidityPool(liquidityPool).repay(totalOwed, position.collateralToken);
         }
 
-        // Remaining collateral goes to liquidator as reward
-        uint256 collateralSeized = position.collateralAmount > totalOwed
+        // Gross collateral available after repaying debt
+        uint256 grossCollateral = position.collateralAmount > totalOwed
             ? position.collateralAmount - totalOwed
             : 0;
 
-        if (collateralSeized > 0) {
-            IERC20(position.collateralToken).safeTransfer(msg.sender, collateralSeized);
+        // Apply liquidation penalty — accrued as protocol fees, consistent with liquidatePosition()
+        uint256 penaltyRate = _calculateLiquidationPenalty(position.leverage);
+        uint256 penalty = (grossCollateral * penaltyRate) / BASIS_POINTS;
+        uint256 collateralSeized = grossCollateral - penalty;
+
+        if (penalty > 0) {
+            collectedFees[position.collateralToken] += penalty;
         }
 
         // Track TVL
@@ -333,6 +339,11 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
 
         // Mark position as inactive
         position.isActive = false;
+
+        // Transfer net collateral to liquidator
+        if (collateralSeized > 0) {
+            IERC20(position.collateralToken).safeTransfer(msg.sender, collateralSeized);
+        }
 
         emit PositionLiquidated(positionId, msg.sender, collateralSeized);
     }
