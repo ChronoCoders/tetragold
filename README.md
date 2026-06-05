@@ -161,7 +161,7 @@ forge test --gas-report
 forge coverage
 ```
 
-**Test suite:** 318 tests across 11 contract test suites, including unit tests, integration tests, and fuzz tests.
+**Test suite:** 333 tests across 12 contract test suites, including unit tests, integration tests, and fuzz tests.
 
 ## Deployment
 
@@ -215,8 +215,35 @@ All contracts use OpenZeppelin's `AccessControl`. The `DEFAULT_ADMIN_ROLE` canno
 - **Emergency pause** - all critical paths respect the `whenNotPaused` modifier
 - **Oracle circuit breaker** - system pauses automatically on abnormal price movement
 - **Partial liquidations** - 25% tranches reduce the impact of sudden position closures
-- **Grace period** - 10-minute window between marking and liquidation, allowing self-remediation
+- **Grace period** - 10-minute window between marking and liquidation, allowing self-remediation; marks expire after 1 hour and require re-marking (fresh grace period) so recovered-then-relapsed positions are never liquidated instantly
 - **SafeERC20** - all token transfers use OZ's safe wrappers
+
+## Operations Runbook: Oracle Liveness
+
+The protocol deliberately chooses safety over liveness: positions are never priced against stale or untrusted data, which means oracle disruptions halt user flows. Operators must understand and monitor the following:
+
+### Halt conditions
+
+| Condition | Trigger | Effect |
+|---|---|---|
+| Circuit breaker | Any single `updateTwap()` moves the price > 5% | OracleAggregator pauses itself; `getGoldPrice()` reverts; **all** open/close/liquidation flows halt |
+| Stale price | No successful `updateTwap()` for 2 hours (`MAX_PRICE_AGE`) | `getGoldPrice()` reverts; same system-wide halt |
+| Insufficient sources | Fewer than 2 of 3 oracle feeds valid | `updateTwap()` reverts; price ages toward staleness |
+
+Note: a halt blocks `closePosition()` too - users cannot exit positions until the oracle recovers. Interest continues to accrue during a halt. Minimize downtime.
+
+### Keeper requirements
+
+- `updateTwap()` must be called at least every 2 hours; recommended cadence is every 5-10 minutes (minimum interval between updates is 60 seconds)
+- Run at least two independent keepers (e.g., Chainlink Automation + an in-house bot) so a single keeper failure cannot stale the price
+- Alert if `block.timestamp - lastUpdateTime` exceeds 30 minutes - that leaves 90 minutes to remediate before the protocol halts
+
+### Recovery procedure (circuit breaker pause)
+
+1. Verify the price movement was genuine (compare Chainlink/Band/API3 against off-chain reference prices)
+2. If genuine: admin multisig calls `unpause()` on OracleAggregator; the next `updateTwap()` re-seeds from current feeds. Expect a wave of liquidations - the auto-mark pass grants every affected position a 10-minute grace period first
+3. If a feed malfunctioned: call `updateOracleAddress()` to replace the faulty feed before unpausing
+4. After unpausing, confirm `updateTwap()` succeeds and `getGoldPrice()` returns a fresh price before announcing recovery
 
 ## Build
 
