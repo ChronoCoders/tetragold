@@ -23,31 +23,34 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
     uint256 public constant MIN_DEPOSIT = 100e6; // 100 USDC/USDT (6 decimals)
 
     // Interest rate model parameters (in basis points)
-    uint256 public constant BASE_RATE = 500;        // 5%
-    uint256 public constant SLOPE1 = 1000;          // 10%
-    uint256 public constant SLOPE2 = 5000;          // 50%
+    uint256 public constant BASE_RATE = 500; // 5%
+    uint256 public constant SLOPE1 = 1000; // 10%
+    uint256 public constant SLOPE2 = 5000; // 50%
     uint256 public constant OPTIMAL_UTILIZATION = 8000; // 80%
 
     /* ============ Enums ============ */
 
-    enum PoolType { CONSERVATIVE, AGGRESSIVE }
+    enum PoolType {
+        CONSERVATIVE,
+        AGGRESSIVE
+    }
 
     /* ============ Structs ============ */
 
     struct Pool {
-        uint256 totalDeposits;        // Total LP deposits in underlying token
-        uint256 totalBorrowed;        // Currently borrowed amount
-        uint256 utilizationRate;      // Borrowed / Deposits (basis points)
-        uint256 lastUpdateTimestamp;  // Last time interest was accrued
-        uint256 accruedInterest;      // Total interest accrued
-        address lpToken;              // LP token address
+        uint256 totalDeposits; // Total LP deposits in underlying token
+        uint256 totalBorrowed; // Currently borrowed amount
+        uint256 utilizationRate; // Borrowed / Deposits (basis points)
+        uint256 lastUpdateTimestamp; // Last time interest was accrued
+        uint256 accruedInterest; // Total interest accrued
+        address lpToken; // LP token address
         mapping(address => bool) supportedTokens; // Supported collateral tokens
     }
 
     /* ============ State Variables ============ */
 
     mapping(PoolType => Pool) public pools;
-    mapping(PoolType => mapping(address => uint256)) public poolBalances;   // poolType => token => balance
+    mapping(PoolType => mapping(address => uint256)) public poolBalances; // poolType => token => balance
     mapping(PoolType => mapping(address => uint256)) public borrowedByToken; // poolType => token => borrowed
 
     address public immutable usdc;
@@ -56,19 +59,11 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
     /* ============ Events ============ */
 
     event LPDeposit(
-        address indexed user,
-        uint256 amount,
-        PoolType indexed poolType,
-        uint256 lpTokens,
-        address indexed token
+        address indexed user, uint256 amount, PoolType indexed poolType, uint256 lpTokens, address indexed token
     );
 
     event LPWithdrawal(
-        address indexed user,
-        uint256 amount,
-        PoolType indexed poolType,
-        uint256 lpTokens,
-        address indexed token
+        address indexed user, uint256 amount, PoolType indexed poolType, uint256 lpTokens, address indexed token
     );
 
     event Borrowed(uint256 amount, address indexed token, PoolType indexed poolType);
@@ -94,17 +89,13 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
 
         // Initialize Conservative Pool
-        pools[PoolType.CONSERVATIVE].lpToken = address(
-            new LPToken("Tetra Gold LP Conservative", "TGLP-C")
-        );
+        pools[PoolType.CONSERVATIVE].lpToken = address(new LPToken("Tetra Gold LP Conservative", "TGLP-C"));
         pools[PoolType.CONSERVATIVE].supportedTokens[_usdc] = true;
         pools[PoolType.CONSERVATIVE].supportedTokens[_usdt] = true;
         pools[PoolType.CONSERVATIVE].lastUpdateTimestamp = block.timestamp;
 
         // Initialize Aggressive Pool
-        pools[PoolType.AGGRESSIVE].lpToken = address(
-            new LPToken("Tetra Gold LP Aggressive", "TGLP-A")
-        );
+        pools[PoolType.AGGRESSIVE].lpToken = address(new LPToken("Tetra Gold LP Aggressive", "TGLP-A"));
         pools[PoolType.AGGRESSIVE].supportedTokens[_usdc] = true;
         pools[PoolType.AGGRESSIVE].supportedTokens[_usdt] = true;
         pools[PoolType.AGGRESSIVE].lastUpdateTimestamp = block.timestamp;
@@ -119,11 +110,12 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
      * @param token Token address (USDC or USDT)
      * @return lpTokens Amount of LP tokens minted
      */
-    function depositLP(
-        uint256 amount,
-        PoolType poolType,
-        address token
-    ) external nonReentrant whenNotPaused returns (uint256 lpTokens) {
+    function depositLP(uint256 amount, PoolType poolType, address token)
+        external
+        nonReentrant
+        whenNotPaused
+        returns (uint256 lpTokens)
+    {
         if (amount < MIN_DEPOSIT) revert LiquidityPool__InsufficientDeposit();
         if (!pools[poolType].supportedTokens[token]) revert LiquidityPool__UnsupportedToken();
 
@@ -159,10 +151,12 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
      * @param poolType Type of pool
      * @return amount Amount of underlying tokens returned
      */
-    function withdrawLP(
-        uint256 lpTokenAmount,
-        PoolType poolType
-    ) external nonReentrant whenNotPaused returns (uint256 amount) {
+    function withdrawLP(uint256 lpTokenAmount, PoolType poolType)
+        external
+        nonReentrant
+        whenNotPaused
+        returns (uint256 amount)
+    {
         if (lpTokenAmount == 0) revert LiquidityPool__InvalidAmount();
 
         Pool storage pool = pools[poolType];
@@ -211,10 +205,13 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
      * @param token Token address
      * @return success True if borrow succeeded
      */
-    function borrow(
-        uint256 amount,
-        address token
-    ) external onlyRole(VAULT_MANAGER_ROLE) nonReentrant whenNotPaused returns (bool success) {
+    function borrow(uint256 amount, address token)
+        external
+        onlyRole(VAULT_MANAGER_ROLE)
+        nonReentrant
+        whenNotPaused
+        returns (bool success)
+    {
         if (amount == 0) revert LiquidityPool__InvalidAmount();
 
         // Determine pool type based on caller's context
@@ -254,10 +251,13 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
      * @param token Token address
      * @return success True if repay succeeded
      */
-    function repay(
-        uint256 amount,
-        address token
-    ) external onlyRole(VAULT_MANAGER_ROLE) nonReentrant whenNotPaused returns (bool success) {
+    function repay(uint256 amount, address token)
+        external
+        onlyRole(VAULT_MANAGER_ROLE)
+        nonReentrant
+        whenNotPaused
+        returns (bool success)
+    {
         if (amount == 0) revert LiquidityPool__InvalidAmount();
 
         // Find which pool has the borrow
@@ -382,21 +382,19 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
      * @return lpToken LP token address
      * @return accruedInterest Accrued interest
      */
-    function getPoolInfo(PoolType poolType) external view returns (
-        uint256 totalDeposits,
-        uint256 totalBorrowed,
-        uint256 utilizationRate,
-        address lpToken,
-        uint256 accruedInterest
-    ) {
+    function getPoolInfo(PoolType poolType)
+        external
+        view
+        returns (
+            uint256 totalDeposits,
+            uint256 totalBorrowed,
+            uint256 utilizationRate,
+            address lpToken,
+            uint256 accruedInterest
+        )
+    {
         Pool storage pool = pools[poolType];
-        return (
-            pool.totalDeposits,
-            pool.totalBorrowed,
-            pool.utilizationRate,
-            pool.lpToken,
-            pool.accruedInterest
-        );
+        return (pool.totalDeposits, pool.totalBorrowed, pool.utilizationRate, pool.lpToken, pool.accruedInterest);
     }
 
     /* ============ Internal Functions ============ */
@@ -427,7 +425,8 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
         uint256 timeDelta = block.timestamp - pool.lastUpdateTimestamp;
 
         // slither-disable-next-line incorrect-equality
-        if (timeDelta == 0 || pool.totalBorrowed == 0) {  // Intentional: early exit for edge cases
+        if (timeDelta == 0 || pool.totalBorrowed == 0) {
+            // Intentional: early exit for edge cases
             pool.lastUpdateTimestamp = block.timestamp;
             return;
         }

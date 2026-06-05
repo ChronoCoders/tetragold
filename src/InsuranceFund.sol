@@ -98,24 +98,13 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
 
     // ============ Events ============
 
-    event FundsDeposited(
-        address indexed from, uint256 amount, address indexed token, string source
-    );
-    event CoverageProvided(
-        uint256 indexed eventId,
-        uint256 indexed positionId,
-        uint256 amount,
-        CoverageReason reason
-    );
+    event FundsDeposited(address indexed from, uint256 amount, address indexed token, string source);
+    event CoverageProvided(uint256 indexed eventId, uint256 indexed positionId, uint256 amount, CoverageReason reason);
     event DeployedToYield(address indexed token, uint256 amount, address indexed protocol);
-    event WithdrawnFromYield(
-        address indexed token, uint256 amount, uint256 yieldEarned
-    );
+    event WithdrawnFromYield(address indexed token, uint256 amount, uint256 yieldEarned);
     event Rebalanced(address indexed token, uint256 deployed, uint256 available);
     event FundHealthUpdated(FundHealth oldHealth, FundHealth newHealth);
-    event EmergencyWithdrawal(
-        address indexed token, uint256 amount, address indexed to, string reason
-    );
+    event EmergencyWithdrawal(address indexed token, uint256 amount, address indexed to, string reason);
     event AavePoolUpdated(address indexed oldPool, address indexed newPool);
     event ATokenUpdated(address indexed token, address indexed aToken);
     event TargetPercentageUpdated(uint256 oldPercentage, uint256 newPercentage);
@@ -131,12 +120,7 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
 
     // ============ Constructor ============
 
-    constructor(
-        address _admin,
-        address _vaultManager,
-        address _liquidityPool,
-        address _aavePool
-    ) {
+    constructor(address _admin, address _vaultManager, address _liquidityPool, address _aavePool) {
         if (_admin == address(0)) revert InsuranceFund__ZeroAddress();
         if (_vaultManager == address(0)) revert InsuranceFund__ZeroAddress();
         if (_liquidityPool == address(0)) revert InsuranceFund__ZeroAddress();
@@ -159,11 +143,7 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
      * @param amount Amount to deposit
      * @param token Token address
      */
-    function depositFromFees(uint256 amount, address token)
-        external
-        onlyRole(VAULT_MANAGER_ROLE)
-        whenNotPaused
-    {
+    function depositFromFees(uint256 amount, address token) external onlyRole(VAULT_MANAGER_ROLE) whenNotPaused {
         if (amount == 0) revert InsuranceFund__ZeroAmount();
         if (token == address(0)) revert InsuranceFund__InvalidToken();
 
@@ -220,12 +200,13 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
      * @param reason Coverage reason
      * @return eventId Coverage event ID
      */
-    function coverLoss(
-        uint256 positionId,
-        uint256 amount,
-        address token,
-        CoverageReason reason
-    ) external onlyRole(COVERAGE_MANAGER_ROLE) nonReentrant whenNotPaused returns (uint256 eventId) {
+    function coverLoss(uint256 positionId, uint256 amount, address token, CoverageReason reason)
+        external
+        onlyRole(COVERAGE_MANAGER_ROLE)
+        nonReentrant
+        whenNotPaused
+        returns (uint256 eventId)
+    {
         if (amount == 0) revert InsuranceFund__ZeroAmount();
         if (token == address(0)) revert InsuranceFund__InvalidToken();
 
@@ -271,11 +252,7 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
      * @param amount Amount to deploy
      * @param token Token address
      */
-    function deployToAave(uint256 amount, address token)
-        external
-        onlyRole(DEFAULT_ADMIN_ROLE)
-        whenNotPaused
-    {
+    function deployToAave(uint256 amount, address token) external onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused {
         if (amount == 0) revert InsuranceFund__ZeroAmount();
         if (token == address(0)) revert InsuranceFund__InvalidToken();
         if (reserves[token] < amount) revert InsuranceFund__InsufficientFunds();
@@ -295,11 +272,7 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
      * @param token Token address
      */
     // slither-disable-next-line reentrancy-eth
-    function withdrawFromAave(uint256 amount, address token)
-        external
-        onlyRole(DEFAULT_ADMIN_ROLE)
-        whenNotPaused
-    {
+    function withdrawFromAave(uint256 amount, address token) external onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused {
         _withdrawFromAave(amount, token);
     }
 
@@ -342,11 +315,7 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
      * @param token Token to rebalance
      */
     // slither-disable-next-line reentrancy-eth
-    function rebalanceToken(address token)
-        external
-        onlyRole(DEFAULT_ADMIN_ROLE)
-        whenNotPaused
-    {
+    function rebalanceToken(address token) external onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused {
         _rebalanceToken(token);
     }
 
@@ -515,12 +484,11 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
      * @param to Recipient address
      * @param reason Reason for withdrawal
      */
-    function emergencyWithdraw(
-        address token,
-        uint256 amount,
-        address to,
-        string calldata reason
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
+    function emergencyWithdraw(address token, uint256 amount, address to, string calldata reason)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+        nonReentrant
+    {
         if (amount == 0) revert InsuranceFund__ZeroAmount();
         if (to == address(0)) revert InsuranceFund__ZeroAddress();
         if (token == address(0)) revert InsuranceFund__InvalidToken();
@@ -581,10 +549,7 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
      * @notice Update target reserve percentage
      * @param newPercentage New target percentage (in basis points)
      */
-    function updateTargetPercentage(uint256 newPercentage)
-        external
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
+    function updateTargetPercentage(uint256 newPercentage) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (newPercentage == 0 || newPercentage > 1000) {
             revert InsuranceFund__InvalidPercentage();
         } // Max 10%
@@ -611,8 +576,7 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
 // ============ Interfaces ============
 
 interface IAavePool {
-    function supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode)
-        external;
+    function supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode) external;
     function withdraw(address asset, uint256 amount, address to) external returns (uint256);
 }
 

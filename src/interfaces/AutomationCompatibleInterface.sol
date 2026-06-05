@@ -12,10 +12,7 @@ interface AutomationCompatibleInterface {
      * @return upkeepNeeded Boolean indicating if upkeep is needed
      * @return performData Data to be passed to performUpkeep
      */
-    function checkUpkeep(bytes calldata checkData)
-        external
-        view
-        returns (bool upkeepNeeded, bytes memory performData);
+    function checkUpkeep(bytes calldata checkData) external view returns (bool upkeepNeeded, bytes memory performData);
 
     /**
      * @notice Performs the upkeep

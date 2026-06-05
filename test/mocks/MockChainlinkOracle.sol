@@ -21,13 +21,11 @@ contract MockChainlinkOracle {
         return _decimals;
     }
 
-    function latestRoundData() external view returns (
-        uint80 roundId,
-        int256 answer,
-        uint256 startedAt,
-        uint256 updatedAt,
-        uint80 answeredInRound
-    ) {
+    function latestRoundData()
+        external
+        view
+        returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)
+    {
         require(!_shouldFail, "Mock: Oracle failure");
         return (_roundId, _answer, _updatedAt, _updatedAt, _roundId);
     }

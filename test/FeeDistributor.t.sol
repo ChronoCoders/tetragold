@@ -43,12 +43,7 @@ contract FeeDistributorTest is Test {
 
         // Deploy FeeDistributor
         vm.prank(admin);
-        distributor = new FeeDistributor(
-            admin,
-            address(tgx),
-            address(insuranceFund),
-            treasury
-        );
+        distributor = new FeeDistributor(admin, address(tgx), address(insuranceFund), treasury);
 
         // Setup roles and tokens
         vm.startPrank(admin);
