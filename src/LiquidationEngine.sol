@@ -20,8 +20,12 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
     uint256 public constant BASIS_POINTS = 10000;
     uint256 public constant GRACE_PERIOD = 10 minutes;
     // A mark only authorizes liquidation for this long after the grace period
-    // expires. Stale marks (e.g., the position recovered and later relapsed)
-    // are re-marked, granting a fresh grace period instead of instant liquidation.
+    // expires. A stale mark on a still-liquidatable position is re-marked
+    // WITHOUT a fresh grace period: the owner already received a full grace
+    // from the original mark, and granting another on every keeper-downtime
+    // cycle would let bad debt grow unboundedly. Positions that recover should
+    // have their mark cleared via clearMark() — a relapse after that gets a
+    // fresh mark and a fresh grace period.
     uint256 public constant MARK_VALIDITY = 1 hours;
     uint256 public constant LIQUIDATION_TRANCHE = 2500; // 25% in basis points
     uint256 public constant MAX_TRANCHES = 4;
@@ -83,6 +87,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
     /* ============ Events ============ */
 
     event PositionMarkedForLiquidation(uint256 indexed positionId, uint256 timestamp);
+    event LiquidationMarkCleared(uint256 indexed positionId);
     event PositionLiquidated(uint256 indexed positionId, address indexed liquidator, uint256 penalty, uint256 portion);
     event LiquidationRewardPaid(address indexed liquidator, uint256 amount);
     event GracePeriodExpired(uint256 indexed positionId);
@@ -100,6 +105,8 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
     error LiquidationEngine__NoRewardsToClaim();
     error LiquidationEngine__InvalidPercentage();
     error LiquidationEngine__AlreadyMarked();
+    error LiquidationEngine__StillLiquidatable();
+    error LiquidationEngine__NotMarked();
 
     /* ============ Constructor ============ */
 
@@ -134,10 +141,35 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
             revert LiquidationEngine__AlreadyMarked();
         }
 
-        // Mark position
-        liquidationWarningTime[positionId] = block.timestamp;
+        // Mark position. A stale re-mark grants no fresh grace period (the
+        // owner already received one and never cleared the mark while healthy),
+        // so the owner cannot front-run keeper recovery to buy another grace.
+        uint256 markTime = _remarkTime(positionId);
+        liquidationWarningTime[positionId] = markTime;
 
-        emit PositionMarkedForLiquidation(positionId, block.timestamp);
+        emit PositionMarkedForLiquidation(positionId, markTime);
+    }
+
+    /**
+     * @dev Clear the liquidation mark of a position that is no longer
+     *      liquidatable. Callable by anyone (typically the owner after
+     *      self-remediating, or a keeper sweep). A later relapse then
+     *      requires a fresh mark with a full grace period — without this,
+     *      a recovered-then-relapsed position would be re-marked with no
+     *      grace once its old mark went stale.
+     * @param positionId ID of the position to clear
+     */
+    function clearMark(uint256 positionId) external {
+        if (liquidationWarningTime[positionId] == 0) {
+            revert LiquidationEngine__NotMarked();
+        }
+        if (_isPositionLiquidatable(positionId)) {
+            revert LiquidationEngine__StillLiquidatable();
+        }
+
+        delete liquidationWarningTime[positionId];
+
+        emit LiquidationMarkCleared(positionId);
     }
 
     /**
@@ -401,14 +433,22 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
      */
     // slither-disable-start reentrancy-eth
     function _liquidatePosition(uint256 positionId, address liquidator) internal returns (uint256 penalty) {
-        // Auto-mark: when a liquidatable position is unmarked OR its mark has
-        // gone stale (it may have recovered and relapsed since), start a fresh
-        // grace period instead of liquidating. The user always gets GRACE_PERIOD
-        // to self-remediate before any tranche is taken.
+        // Auto-mark: a liquidatable position that is unmarked gets a fresh
+        // grace period before any tranche is taken. A STALE mark (set, but
+        // older than GRACE_PERIOD + MARK_VALIDITY) is re-marked with the grace
+        // already elapsed — the owner received a full grace from the original
+        // mark and could have cleared it via clearMark() while healthy, so
+        // keeper downtime must not keep granting new grace periods while bad
+        // debt grows. Liquidation then proceeds in this same call.
         if (_needsMark(positionId) && _isPositionLiquidatable(positionId)) {
-            liquidationWarningTime[positionId] = block.timestamp;
-            emit PositionMarkedForLiquidation(positionId, block.timestamp);
-            return 0;
+            uint256 markTime = _remarkTime(positionId);
+            liquidationWarningTime[positionId] = markTime;
+            emit PositionMarkedForLiquidation(positionId, markTime);
+            if (markTime == block.timestamp) {
+                // Fresh mark: grant the grace period and stop here
+                return 0;
+            }
+            // Stale re-mark: fall through and liquidate now
         }
 
         // Check if can liquidate
@@ -534,12 +574,22 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
     }
 
     /**
-     * @dev True when a position's mark is missing or has expired and a fresh
-     *      mark (and grace period) is required before liquidation
+     * @dev True when a position's mark is missing or has expired and a
+     *      re-mark is required before liquidation
      */
     function _needsMark(uint256 positionId) internal view returns (bool) {
         uint256 markedTime = liquidationWarningTime[positionId];
         return markedTime == 0 || block.timestamp > markedTime + GRACE_PERIOD + MARK_VALIDITY;
+    }
+
+    /**
+     * @dev Timestamp to record for a (re-)mark: a first mark starts the grace
+     *      period now; a stale re-mark is backdated by GRACE_PERIOD so the
+     *      position is immediately liquidatable (the owner already had a full
+     *      grace from the original mark and never cleared it while healthy)
+     */
+    function _remarkTime(uint256 positionId) internal view returns (uint256) {
+        return liquidationWarningTime[positionId] == 0 ? block.timestamp : block.timestamp - GRACE_PERIOD;
     }
 
     /**
