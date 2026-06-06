@@ -203,10 +203,11 @@ contract LiquidationEngineTest is Test {
         assertTrue(stats.totalRewards > 0);
     }
 
-    /// @dev Stale mark regression: a mark past its validity window no longer
-    ///      authorizes liquidation — the position is re-marked with a fresh
-    ///      grace period (covers recover-then-relapse scenarios)
-    function test_StaleMarkRequiresRemark() public {
+    /// @dev Stale mark policy: a mark past its validity window is re-marked
+    ///      WITHOUT a fresh grace period — the owner already received a full
+    ///      grace from the original mark and never cleared it while healthy,
+    ///      so keeper downtime must not repeatedly delay liquidation
+    function test_StaleMarkLiquidatesWithoutFreshGrace() public {
         uint256 positionId = _createLiquidatablePosition();
 
         vm.prank(liquidator);
@@ -216,24 +217,90 @@ contract LiquidationEngineTest is Test {
         // Warp past grace period AND mark validity (10 min + 1 h)
         vm.warp(block.timestamp + liquidationEngine.GRACE_PERIOD() + liquidationEngine.MARK_VALIDITY() + 1);
 
-        // Attempting to liquidate re-marks instead of liquidating instantly
+        // The stale mark is refreshed and liquidation proceeds in the same call
+        vm.prank(liquidator);
+        uint256 penalty = liquidationEngine.liquidatePosition(positionId);
+        assertGt(penalty, 0);
+
+        LiquidationEngine.LiquidationInfo memory info = liquidationEngine.getPositionLiquidationInfo(positionId);
+        assertGt(info.markedTime, firstMark);
+        assertEq(info.tranchesLiquidated, 1);
+    }
+
+    /// @dev An owner cannot use markForLiquidation on their own stale mark to
+    ///      buy a fresh grace period: a stale re-mark is backdated so the
+    ///      position remains immediately liquidatable
+    function test_ManualRemarkOfStaleMarkGrantsNoGrace() public {
+        uint256 positionId = _createLiquidatablePosition();
+
+        vm.prank(liquidator);
+        liquidationEngine.markForLiquidation(positionId);
+
+        vm.warp(block.timestamp + liquidationEngine.GRACE_PERIOD() + liquidationEngine.MARK_VALIDITY() + 1);
+
+        // Owner front-runs the keeper with a manual re-mark
+        vm.prank(user1);
+        liquidationEngine.markForLiquidation(positionId);
+
+        // No new grace: liquidation still proceeds immediately
+        vm.prank(liquidator);
+        uint256 penalty = liquidationEngine.liquidatePosition(positionId);
+        assertGt(penalty, 0);
+    }
+
+    /// @dev clearMark: a recovered position can clear its mark, and a later
+    ///      relapse gets a fresh mark with a full grace period
+    function test_ClearMarkRestoresFreshGraceAfterRecovery() public {
+        uint256 positionId = _createLiquidatablePosition();
+
+        vm.prank(liquidator);
+        liquidationEngine.markForLiquidation(positionId);
+
+        // Cannot clear while still liquidatable
+        vm.prank(user1);
+        vm.expectRevert(LiquidationEngine.LiquidationEngine__StillLiquidatable.selector);
+        liquidationEngine.clearMark(positionId);
+
+        // Owner self-remediates with extra collateral, then clears the mark
+        vm.startPrank(user1);
+        usdc.approve(address(vaultManager), 1500e6);
+        vaultManager.addCollateral(positionId, 1500e6);
+        liquidationEngine.clearMark(positionId);
+        vm.stopPrank();
+
+        LiquidationEngine.LiquidationInfo memory info = liquidationEngine.getPositionLiquidationInfo(positionId);
+        assertFalse(info.isMarked);
+
+        // Position relapses much later (well past the old mark's validity):
+        // walk the price up in 4% steps (inside the 5% circuit breaker) until
+        // the topped-up position is undercollateralized again
+        vm.warp(block.timestamp + 2 hours);
+        uint256 stepPrice = GOLD_PRICE * 125 / 100; // current price after helper
+        for (uint256 i = 0; i < 10; i++) {
+            stepPrice = stepPrice * 104 / 100;
+            chainlinkOracle.setLatestAnswer(SafeCast.toInt256(stepPrice));
+            bandOracle.setReferenceData(stepPrice * 1e10);
+            api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(stepPrice * 1e10)));
+            vm.warp(block.timestamp + 601);
+            oracle.updateTwap();
+        }
+        assertTrue(vaultManager.isLiquidatable(positionId));
+
+        // Fresh mark with a FULL grace period — not instant liquidation
         vm.prank(liquidator);
         uint256 penalty = liquidationEngine.liquidatePosition(positionId);
         assertEq(penalty, 0);
 
-        LiquidationEngine.LiquidationInfo memory info = liquidationEngine.getPositionLiquidationInfo(positionId);
-        assertGt(info.markedTime, firstMark);
-        assertEq(info.tranchesLiquidated, 0);
-
-        // Fresh grace period applies from the new mark
         vm.prank(liquidator);
         vm.expectRevert(LiquidationEngine.LiquidationEngine__GracePeriodActive.selector);
         liquidationEngine.liquidatePosition(positionId);
+    }
 
-        vm.warp(block.timestamp + 11 minutes);
-        vm.prank(liquidator);
-        penalty = liquidationEngine.liquidatePosition(positionId);
-        assertGt(penalty, 0);
+    function test_ClearMarkRevertsWhenNotMarked() public {
+        uint256 positionId = _createLiquidatablePosition();
+
+        vm.expectRevert(LiquidationEngine.LiquidationEngine__NotMarked.selector);
+        liquidationEngine.clearMark(positionId);
     }
 
     /// @dev Mark overwrite guard: a live mark cannot be re-marked, so an owner

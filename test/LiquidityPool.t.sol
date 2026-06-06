@@ -13,14 +13,17 @@ contract MockVaultManager {
         pool = LiquidityPool(_pool);
     }
 
-    function borrow(uint256 amount, address token) external returns (bool) {
+    function borrow(uint256 amount, address token) external returns (LiquidityPool.PoolType) {
         return pool.borrow(amount, token);
     }
 
-    function repay(uint256 principal, uint256 interest, address token) external returns (bool) {
+    function repay(uint256 principal, uint256 interest, address token, LiquidityPool.PoolType poolType)
+        external
+        returns (bool)
+    {
         // Approve first
         IERC20(token).approve(address(pool), principal + interest);
-        return pool.repay(principal, interest, token);
+        return pool.repay(principal, interest, token, poolType);
     }
 }
 
@@ -275,9 +278,9 @@ contract LiquidityPoolTest is Test {
         emit Borrowed(borrowAmount, address(usdc), LiquidityPool.PoolType.CONSERVATIVE);
 
         vm.prank(address(vaultManager));
-        bool success = pool.borrow(borrowAmount, address(usdc));
+        LiquidityPool.PoolType poolType = pool.borrow(borrowAmount, address(usdc));
 
-        assertTrue(success);
+        assertEq(uint8(poolType), uint8(LiquidityPool.PoolType.CONSERVATIVE));
 
         // Check pool state
         (uint256 totalDeposits, uint256 totalBorrowed, uint256 utilizationRate,,) =
@@ -324,7 +327,7 @@ contract LiquidityPoolTest is Test {
         emit Repaid(borrowAmount, address(usdc), LiquidityPool.PoolType.CONSERVATIVE);
 
         vm.prank(address(vaultManager));
-        bool success = vaultManager.repay(borrowAmount, 0, address(usdc));
+        bool success = vaultManager.repay(borrowAmount, 0, address(usdc), LiquidityPool.PoolType.CONSERVATIVE);
 
         assertTrue(success);
 
@@ -337,7 +340,7 @@ contract LiquidityPoolTest is Test {
 
     function test_RepayRevertsWhenNotVaultManager() public {
         vm.expectRevert();
-        pool.repay(1000e6, 0, address(usdc));
+        pool.repay(1000e6, 0, address(usdc), LiquidityPool.PoolType.CONSERVATIVE);
     }
 
     /// @dev Repay accounting regression: with multiple borrows outstanding, one
@@ -367,7 +370,7 @@ contract LiquidityPoolTest is Test {
         // Repay position A's principal plus interest
         usdc.mint(address(vaultManager), interest); // fund the interest portion
         vm.prank(address(vaultManager));
-        vaultManager.repay(borrowA, interest, address(usdc));
+        vaultManager.repay(borrowA, interest, address(usdc), LiquidityPool.PoolType.CONSERVATIVE);
 
         (uint256 depositsAfter, uint256 borrowedAfter,,,) = pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
 
@@ -376,6 +379,70 @@ contract LiquidityPoolTest is Test {
         assertEq(borrowedAfter, borrowB);
         // The interest is credited to depositors
         assertEq(depositsAfter, depositsBefore + interest);
+    }
+
+    /// @dev Cross-pool routing regression: when the same token is borrowed from
+    ///      BOTH pools, repaying the AGGRESSIVE borrow must decrement AGGRESSIVE
+    ///      accounting and credit AGGRESSIVE depositors — not CONSERVATIVE
+    ///      (the old scan-by-order lookup always hit CONSERVATIVE first)
+    function test_RepayRoutesToOriginPoolWhenBothPoolsHaveBorrows() public {
+        // Seed CONSERVATIVE with little liquidity, AGGRESSIVE with plenty
+        vm.startPrank(lp1);
+        usdc.approve(address(pool), 1_000e6);
+        pool.depositLP(1_000e6, LiquidityPool.PoolType.CONSERVATIVE, address(usdc));
+        vm.stopPrank();
+
+        vm.startPrank(lp2);
+        usdc.approve(address(pool), 20_000e6);
+        pool.depositLP(20_000e6, LiquidityPool.PoolType.AGGRESSIVE, address(usdc));
+        vm.stopPrank();
+
+        // First borrow drains CONSERVATIVE, second spills into AGGRESSIVE
+        vm.startPrank(address(vaultManager));
+        LiquidityPool.PoolType poolA = pool.borrow(1_000e6, address(usdc));
+        LiquidityPool.PoolType poolB = pool.borrow(5_000e6, address(usdc));
+        vm.stopPrank();
+
+        assertEq(uint8(poolA), uint8(LiquidityPool.PoolType.CONSERVATIVE));
+        assertEq(uint8(poolB), uint8(LiquidityPool.PoolType.AGGRESSIVE));
+
+        uint256 interest = 50e6;
+        usdc.mint(address(vaultManager), interest);
+        (uint256 aggDepositsBefore,,,,) = pool.getPoolInfo(LiquidityPool.PoolType.AGGRESSIVE);
+
+        // Repay the AGGRESSIVE borrow with interest
+        vm.prank(address(vaultManager));
+        vaultManager.repay(5_000e6, interest, address(usdc), poolB);
+
+        // AGGRESSIVE accounting cleared and its depositors got the interest
+        (uint256 aggDepositsAfter, uint256 aggBorrowed,,,) = pool.getPoolInfo(LiquidityPool.PoolType.AGGRESSIVE);
+        assertEq(aggBorrowed, 0);
+        assertEq(pool.borrowedByToken(LiquidityPool.PoolType.AGGRESSIVE, address(usdc)), 0);
+        assertEq(aggDepositsAfter, aggDepositsBefore + interest);
+
+        // CONSERVATIVE untouched
+        (, uint256 consBorrowed,,,) = pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
+        assertEq(consBorrowed, 1_000e6);
+        assertEq(pool.borrowedByToken(LiquidityPool.PoolType.CONSERVATIVE, address(usdc)), 1_000e6);
+    }
+
+    /// @dev Repaying more principal than the declared pool has outstanding must
+    ///      revert instead of silently corrupting another pool's accounting
+    function test_RepayRevertsWhenPrincipalExceedsPoolBorrow() public {
+        vm.startPrank(lp1);
+        usdc.approve(address(pool), 10_000e6);
+        pool.depositLP(10_000e6, LiquidityPool.PoolType.CONSERVATIVE, address(usdc));
+        vm.stopPrank();
+
+        vm.prank(address(vaultManager));
+        pool.borrow(1_000e6, address(usdc));
+
+        // AGGRESSIVE has no borrow of this token
+        vm.startPrank(address(vaultManager));
+        usdc.approve(address(pool), 1_000e6);
+        vm.expectRevert(LiquidityPool.LiquidityPool__RepayExceedsBorrowed.selector);
+        pool.repay(1_000e6, 0, address(usdc), LiquidityPool.PoolType.AGGRESSIVE);
+        vm.stopPrank();
     }
 
     /* ============ APY Calculation Tests ============ */
@@ -401,7 +468,7 @@ contract LiquidityPoolTest is Test {
 
         // Repay and borrow to 80% utilization: 15% APY
         vm.prank(address(vaultManager));
-        vaultManager.repay(4000e6, 0, address(usdc));
+        vaultManager.repay(4000e6, 0, address(usdc), LiquidityPool.PoolType.CONSERVATIVE);
 
         vm.prank(address(vaultManager));
         pool.borrow(8000e6, address(usdc));
@@ -411,7 +478,7 @@ contract LiquidityPoolTest is Test {
 
         // 90% utilization: 40% APY
         vm.prank(address(vaultManager));
-        vaultManager.repay(8000e6, 0, address(usdc));
+        vaultManager.repay(8000e6, 0, address(usdc), LiquidityPool.PoolType.CONSERVATIVE);
 
         vm.prank(address(vaultManager));
         pool.borrow(9000e6, address(usdc));
@@ -601,7 +668,7 @@ contract LiquidityPoolTest is Test {
 
         // 3. Repay immediately (no interest)
         vm.prank(address(vaultManager));
-        vaultManager.repay(borrowAmount, 0, address(usdc));
+        vaultManager.repay(borrowAmount, 0, address(usdc), LiquidityPool.PoolType.CONSERVATIVE);
 
         // 4. Withdraw
         vm.startPrank(lp1);

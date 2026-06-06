@@ -22,11 +22,12 @@ contract MockLiquidityPool {
      * @param amount Amount to borrow
      * @param token Token address
      */
-    function borrow(uint256 amount, address token) external {
+    function borrow(uint256 amount, address token) external returns (uint8 poolType) {
         require(!shouldFailBorrow, "MockLiquidityPool: borrow failed");
         totalBorrowed[token] += amount;
         IERC20(token).safeTransfer(msg.sender, amount);
         emit Borrowed(amount, token);
+        return 0; // CONSERVATIVE
     }
 
     /**
@@ -52,7 +53,15 @@ contract MockLiquidityPool {
      * @param interest Interest amount (kept by the pool)
      * @param token Token address
      */
-    function repay(uint256 principal, uint256 interest, address token) external returns (bool) {
+    function repay(
+        uint256 principal,
+        uint256 interest,
+        address token,
+        uint8 /* poolType */
+    )
+        external
+        returns (bool)
+    {
         totalBorrowed[token] -= principal > totalBorrowed[token] ? totalBorrowed[token] : principal;
         IERC20(token).safeTransferFrom(msg.sender, address(this), principal + interest);
         emit Repaid(principal + interest, token);

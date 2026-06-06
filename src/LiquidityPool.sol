@@ -76,6 +76,7 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
     error LiquidityPool__InsufficientLiquidity();
     error LiquidityPool__UnsupportedToken();
     error LiquidityPool__InvalidAmount();
+    error LiquidityPool__RepayExceedsBorrowed();
 
     /* ============ Constructor ============ */
 
@@ -203,20 +204,22 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
      * @dev Borrow tokens from the pool (only VaultManager)
      * @param amount Amount to borrow
      * @param token Token address
-     * @return success True if borrow succeeded
+     * @return poolType The pool the borrow was drawn from. The caller must
+     *         record it and pass it back on repay() so the repayment is routed
+     *         to the pool that actually funded the borrow.
      */
     function borrow(uint256 amount, address token)
         external
         onlyRole(VAULT_MANAGER_ROLE)
         nonReentrant
         whenNotPaused
-        returns (bool success)
+        returns (PoolType poolType)
     {
         if (amount == 0) revert LiquidityPool__InvalidAmount();
 
         // Determine pool type based on caller's context
         // For now, check both pools for availability
-        PoolType poolType = _selectPoolForBorrow(amount, token);
+        poolType = _selectPoolForBorrow(amount, token);
 
         Pool storage pool = pools[poolType];
 
@@ -241,8 +244,6 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
         _updateUtilization(poolType);
 
         emit Borrowed(amount, token, poolType);
-
-        return true;
     }
 
     /**
@@ -250,6 +251,12 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
      * @param principal Principal amount being repaid (reduces totalBorrowed)
      * @param interest Interest amount being paid (credited to depositors)
      * @param token Token address
+     * @param poolType The pool the borrow was originally drawn from, as
+     *        returned by borrow(). Scanning for "the pool with a borrow"
+     *        (as previously done) misrouted repayments whenever the same
+     *        token was borrowed from both pools: an AGGRESSIVE borrow would
+     *        decrement CONSERVATIVE's accounting and credit CONSERVATIVE's
+     *        depositors with the interest.
      * @return success True if repay succeeded
      *
      * The caller declares the principal/interest split explicitly. Inferring it
@@ -258,7 +265,7 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
      * outstanding, draining totalBorrowed and silently denying LPs their
      * interest credit.
      */
-    function repay(uint256 principal, uint256 interest, address token)
+    function repay(uint256 principal, uint256 interest, address token, PoolType poolType)
         external
         onlyRole(VAULT_MANAGER_ROLE)
         nonReentrant
@@ -266,9 +273,7 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
         returns (bool success)
     {
         if (principal == 0) revert LiquidityPool__InvalidAmount();
-
-        // Find which pool has the borrow
-        PoolType poolType = _findPoolWithBorrow(token);
+        if (borrowedByToken[poolType][token] < principal) revert LiquidityPool__RepayExceedsBorrowed();
 
         Pool storage pool = pools[poolType];
 
@@ -452,18 +457,6 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
     function _selectPoolForBorrow(uint256 amount, address token) internal view returns (PoolType poolType) {
         // Check conservative pool first
         if (poolBalances[PoolType.CONSERVATIVE][token] >= amount) {
-            return PoolType.CONSERVATIVE;
-        }
-        return PoolType.AGGRESSIVE;
-    }
-
-    /**
-     * @dev Find which pool has active borrows
-     * @param token Token address
-     * @return poolType Pool type with borrows
-     */
-    function _findPoolWithBorrow(address token) internal view returns (PoolType poolType) {
-        if (borrowedByToken[PoolType.CONSERVATIVE][token] > 0) {
             return PoolType.CONSERVATIVE;
         }
         return PoolType.AGGRESSIVE;

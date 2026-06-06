@@ -754,6 +754,94 @@ contract VaultManagerTest is Test {
         assertFalse(vault.getPosition(positionId).isActive);
     }
 
+    /// @dev Bad-debt cap regression: when accrued interest exceeds the position's
+    ///      collateral, liquidation must still succeed — interest paid to the pool
+    ///      is capped at the collateral and the shortfall is surfaced as bad debt,
+    ///      instead of reverting or draining other positions' funds
+    function test_LiquidateCapsInterestAtCollateralAndRealizesBadDebt() public {
+        uint256 collateral = 12_000e6;
+
+        vm.startPrank(user1);
+        usdc.approve(address(vault), collateral);
+        uint256 positionId = vault.openPosition(collateral, 10, address(usdc));
+        vm.stopPrank();
+
+        VaultManager.Position memory position = vault.getPosition(positionId);
+
+        // 10x: borrowed = 9x effective collateral; at 0.05%/day the interest
+        // overtakes the collateral after ~222 days
+        vm.warp(block.timestamp + 300 days);
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(GOLD_PRICE));
+        bandOracle.setReferenceData(GOLD_PRICE * 1e10);
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(GOLD_PRICE * 1e10)));
+        oracle.updateTwap();
+
+        uint256 interest = vault.calculateInterest(positionId);
+        assertGt(interest, position.collateralAmount);
+        assertTrue(vault.isLiquidatable(positionId));
+
+        uint256 vaultBefore = usdc.balanceOf(address(vault));
+        uint256 poolBalBefore = usdc.balanceOf(address(pool));
+        uint256 ownerBefore = usdc.balanceOf(user1);
+
+        vm.expectEmit(true, true, false, true);
+        emit VaultManager.BadDebtRealized(positionId, address(usdc), interest - position.collateralAmount);
+
+        vm.prank(liquidator);
+        vault.liquidate(positionId);
+
+        // Pool received principal plus interest capped at the collateral
+        assertEq(usdc.balanceOf(address(pool)), poolBalBefore + position.borrowedAmount + position.collateralAmount);
+        // Vault paid out exactly what the position held — nothing else drained
+        assertEq(usdc.balanceOf(address(vault)), vaultBefore - position.borrowedAmount - position.collateralAmount);
+        // Owner gets nothing; principal record fully cleared
+        assertEq(usdc.balanceOf(user1), ownerBefore);
+        assertEq(pool.totalBorrowed(address(usdc)), 0);
+        assertFalse(vault.getPosition(positionId).isActive);
+    }
+
+    /// @dev Same cap on the voluntary close path: an owner closing a position
+    ///      whose interest exceeds its collateral gets nothing back, but the
+    ///      vault never pays the pool more than the position holds
+    function test_ClosePositionCapsInterestAtCollateral() public {
+        uint256 collateral = 12_000e6;
+
+        vm.startPrank(user1);
+        usdc.approve(address(vault), collateral);
+        uint256 positionId = vault.openPosition(collateral, 10, address(usdc));
+        vm.stopPrank();
+
+        VaultManager.Position memory position = vault.getPosition(positionId);
+
+        vm.warp(block.timestamp + 300 days);
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(GOLD_PRICE));
+        bandOracle.setReferenceData(GOLD_PRICE * 1e10);
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(GOLD_PRICE * 1e10)));
+        oracle.updateTwap();
+
+        uint256 interest = vault.calculateInterest(positionId);
+        assertGt(interest, position.collateralAmount);
+
+        uint256 vaultBefore = usdc.balanceOf(address(vault));
+        uint256 ownerBefore = usdc.balanceOf(user1);
+        uint256 burnFee = (position.collateralAmount * 15) / BASIS_POINTS;
+
+        vm.startPrank(user1);
+        tgaux.approve(address(vault), position.tgauxMinted);
+        vault.closePosition(positionId);
+        vm.stopPrank();
+
+        // Vault outflow = principal + (collateral - burnFee); burn fee stays as fees
+        assertEq(
+            usdc.balanceOf(address(vault)),
+            vaultBefore - position.borrowedAmount - (position.collateralAmount - burnFee)
+        );
+        // Owner receives nothing back
+        assertEq(usdc.balanceOf(user1), ownerBefore);
+        assertEq(pool.totalBorrowed(address(usdc)), 0);
+        assertFalse(vault.getPosition(positionId).isActive);
+    }
+
     /// @dev addCollateral regression: adding collateral must not reset the
     ///      interest clock (previously wiped all accrued interest)
     function test_AddCollateralDoesNotResetInterest() public {
