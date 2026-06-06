@@ -77,6 +77,11 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
     address public treasury;
 
     mapping(uint256 => uint256) public liquidationWarningTime;
+    // Timestamp a position's mark was last cleared via clearMark(). A relapse
+    // within GRACE_PERIOD + MARK_VALIDITY of a clear is treated as a
+    // continuation (backdated re-mark, no fresh grace) rather than a genuine
+    // recovery, so clear-then-relapse oscillation cannot earn endless graces.
+    mapping(uint256 => uint256) public markClearedAt;
     mapping(uint256 => PartialLiquidation) public partialLiquidations;
     mapping(address => LiquidatorStats) public liquidators;
     mapping(address => mapping(address => uint256)) public pendingTokenRewards;
@@ -107,6 +112,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
     error LiquidationEngine__AlreadyMarked();
     error LiquidationEngine__StillLiquidatable();
     error LiquidationEngine__NotMarked();
+    error LiquidationEngine__NotPositionOwner();
 
     /* ============ Constructor ============ */
 
@@ -146,28 +152,35 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
         // so the owner cannot front-run keeper recovery to buy another grace.
         uint256 markTime = _remarkTime(positionId);
         liquidationWarningTime[positionId] = markTime;
+        delete markClearedAt[positionId];
 
         emit PositionMarkedForLiquidation(positionId, markTime);
     }
 
     /**
-     * @dev Clear the liquidation mark of a position that is no longer
-     *      liquidatable. Callable by anyone (typically the owner after
-     *      self-remediating, or a keeper sweep). A later relapse then
-     *      requires a fresh mark with a full grace period — without this,
-     *      a recovered-then-relapsed position would be re-marked with no
-     *      grace once its old mark went stale.
+     * @dev Clear the liquidation mark of a position that has genuinely
+     *      recovered. OWNER-ONLY: a permissionless clear would let a griefer
+     *      delete a legitimate mark during a transient healthy price wick and
+     *      restart the keeper's grace clock, delaying liquidation of a still-
+     *      underwater position. Records the clear time so that a relapse soon
+     *      after (within GRACE_PERIOD + MARK_VALIDITY) is re-marked backdated
+     *      rather than earning a fresh grace — only a sustained recovery past
+     *      that window grants a new full grace period on the next mark.
      * @param positionId ID of the position to clear
      */
     function clearMark(uint256 positionId) external {
         if (liquidationWarningTime[positionId] == 0) {
             revert LiquidationEngine__NotMarked();
         }
+        if (msg.sender != IVaultManager(vaultManager).getPosition(positionId).owner) {
+            revert LiquidationEngine__NotPositionOwner();
+        }
         if (_isPositionLiquidatable(positionId)) {
             revert LiquidationEngine__StillLiquidatable();
         }
 
         delete liquidationWarningTime[positionId];
+        markClearedAt[positionId] = block.timestamp;
 
         emit LiquidationMarkCleared(positionId);
     }
@@ -443,12 +456,13 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
         if (_needsMark(positionId) && _isPositionLiquidatable(positionId)) {
             uint256 markTime = _remarkTime(positionId);
             liquidationWarningTime[positionId] = markTime;
+            delete markClearedAt[positionId];
             emit PositionMarkedForLiquidation(positionId, markTime);
             if (markTime == block.timestamp) {
                 // Fresh mark: grant the grace period and stop here
                 return 0;
             }
-            // Stale re-mark: fall through and liquidate now
+            // Stale or recently-cleared re-mark: fall through and liquidate now
         }
 
         // Check if can liquidate
@@ -465,14 +479,25 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
 
         IVaultManager.Position memory position = IVaultManager(vaultManager).getPosition(positionId);
 
-        // Check minimum value
-        uint256 positionValue = _getPositionValue(positionId, position);
-        if (positionValue < MIN_LIQUIDATION_VALUE) {
-            revert LiquidationEngine__InsufficientValue();
+        // Minimum-value gate applies only to STARTING a liquidation: it skips
+        // dust positions not worth the gas. Once a liquidation is underway, the
+        // position's equity shrinks ~25% per tranche, so re-checking it here
+        // would revert mid-sequence and strand the position with residual
+        // principal — never reaching the final settling tranche.
+        if (partialLiq.tranchesLiquidated == 0) {
+            uint256 positionValue = _getPositionValue(positionId, position);
+            if (positionValue < MIN_LIQUIDATION_VALUE) {
+                revert LiquidationEngine__InsufficientValue();
+            }
         }
 
-        // Liquidate 25% of the position
-        penalty = IVaultManager(vaultManager).liquidatePosition(positionId, LIQUIDATION_TRANCHE);
+        // Liquidate 25% of the position, except the final tranche closes the
+        // whole remainder (25% of remaining never reaches zero, so without
+        // this the position would be left active with residual principal and
+        // uncollected interest after MAX_TRANCHES)
+        uint256 tranchePercentage =
+            partialLiq.tranchesLiquidated + 1 >= MAX_TRANCHES ? BASIS_POINTS : LIQUIDATION_TRANCHE;
+        penalty = IVaultManager(vaultManager).liquidatePosition(positionId, tranchePercentage);
 
         // Update partial liquidation tracking
         partialLiq.tranchesLiquidated++;
@@ -583,13 +608,24 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
     }
 
     /**
-     * @dev Timestamp to record for a (re-)mark: a first mark starts the grace
-     *      period now; a stale re-mark is backdated by GRACE_PERIOD so the
-     *      position is immediately liquidatable (the owner already had a full
-     *      grace from the original mark and never cleared it while healthy)
+     * @dev Timestamp to record for a (re-)mark. Backdated by GRACE_PERIOD (so
+     *      the position is immediately liquidatable, no fresh grace) when:
+     *        - a stale live mark is being refreshed (owner already had a grace
+     *          from the original mark and never cleared it while healthy), or
+     *        - the mark was cleared less than GRACE_PERIOD + MARK_VALIDITY ago
+     *          (a clear-then-relapse oscillation, not a sustained recovery).
+     *      Otherwise — first-ever mark, or a relapse long after a genuine
+     *      recovery — the full grace period starts now.
      */
     function _remarkTime(uint256 positionId) internal view returns (uint256) {
-        return liquidationWarningTime[positionId] == 0 ? block.timestamp : block.timestamp - GRACE_PERIOD;
+        if (liquidationWarningTime[positionId] != 0) {
+            return block.timestamp - GRACE_PERIOD;
+        }
+        uint256 cleared = markClearedAt[positionId];
+        if (cleared != 0 && block.timestamp <= cleared + GRACE_PERIOD + MARK_VALIDITY) {
+            return block.timestamp - GRACE_PERIOD;
+        }
+        return block.timestamp;
     }
 
     /**
