@@ -48,14 +48,14 @@ contract Deploy is Script {
         uint256 deployerKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
 
         Addresses memory env = Addresses({
-            admin:    vm.envAddress("ADMIN"),
+            admin: vm.envAddress("ADMIN"),
             treasury: vm.envAddress("TREASURY"),
-            usdc:     vm.envAddress("USDC"),
-            usdt:     vm.envAddress("USDT"),
-            tgx:      vm.envAddress("TGX"),
+            usdc: vm.envAddress("USDC"),
+            usdt: vm.envAddress("USDT"),
+            tgx: vm.envAddress("TGX"),
             chainlink: vm.envAddress("CHAINLINK_XAU_USD"),
-            band:     vm.envAddress("BAND_ORACLE"),
-            api3:     vm.envAddress("API3_ORACLE"),
+            band: vm.envAddress("BAND_ORACLE"),
+            api3: vm.envAddress("API3_ORACLE"),
             aavePool: vm.envAddress("AAVE_POOL")
         });
 
@@ -73,9 +73,7 @@ contract Deploy is Script {
         console.log("TGAUX:              ", address(tgaux));
 
         // 2. Oracle aggregator
-        OracleAggregator oracle = new OracleAggregator(
-            env.admin, env.chainlink, env.band, env.api3
-        );
+        OracleAggregator oracle = new OracleAggregator(env.admin, env.chainlink, env.band, env.api3);
         console.log("OracleAggregator:   ", address(oracle));
 
         // 3. Liquidity pool
@@ -83,28 +81,22 @@ contract Deploy is Script {
         console.log("LiquidityPool:      ", address(liquidityPool));
 
         // 4. VaultManager
-        VaultManager vaultManager = new VaultManager(
-            env.admin, address(tgaux), address(oracle),
-            address(liquidityPool), env.usdc, env.usdt
-        );
+        VaultManager vaultManager =
+            new VaultManager(env.admin, address(tgaux), address(oracle), address(liquidityPool), env.usdc, env.usdt);
         console.log("VaultManager:       ", address(vaultManager));
 
         // 5. InsuranceFund
-        InsuranceFund insuranceFund = new InsuranceFund(
-            env.admin, address(vaultManager), address(liquidityPool), env.aavePool
-        );
+        InsuranceFund insuranceFund =
+            new InsuranceFund(env.admin, address(vaultManager), address(liquidityPool), env.aavePool);
         console.log("InsuranceFund:      ", address(insuranceFund));
 
         // 6. FeeDistributor
-        FeeDistributor feeDistributor = new FeeDistributor(
-            env.admin, env.tgx, address(insuranceFund), env.treasury
-        );
+        FeeDistributor feeDistributor = new FeeDistributor(env.admin, env.tgx, address(insuranceFund), env.treasury);
         console.log("FeeDistributor:     ", address(feeDistributor));
 
         // 7. LiquidationEngine
-        LiquidationEngine liquidationEngine = new LiquidationEngine(
-            address(vaultManager), address(insuranceFund), env.treasury
-        );
+        LiquidationEngine liquidationEngine =
+            new LiquidationEngine(address(vaultManager), address(insuranceFund), env.treasury);
         console.log("LiquidationEngine:  ", address(liquidationEngine));
 
         vm.stopBroadcast();
@@ -129,14 +121,14 @@ contract Deploy is Script {
     }
 
     function _validate(Addresses memory env) internal pure {
-        require(env.admin    != address(0), "Deploy: ADMIN not set");
+        require(env.admin != address(0), "Deploy: ADMIN not set");
         require(env.treasury != address(0), "Deploy: TREASURY not set");
-        require(env.usdc     != address(0), "Deploy: USDC not set");
-        require(env.usdt     != address(0), "Deploy: USDT not set");
-        require(env.tgx      != address(0), "Deploy: TGX not set");
+        require(env.usdc != address(0), "Deploy: USDC not set");
+        require(env.usdt != address(0), "Deploy: USDT not set");
+        require(env.tgx != address(0), "Deploy: TGX not set");
         require(env.chainlink != address(0), "Deploy: CHAINLINK_XAU_USD not set");
-        require(env.band     != address(0), "Deploy: BAND_ORACLE not set");
-        require(env.api3     != address(0), "Deploy: API3_ORACLE not set");
+        require(env.band != address(0), "Deploy: BAND_ORACLE not set");
+        require(env.api3 != address(0), "Deploy: API3_ORACLE not set");
         require(env.aavePool != address(0), "Deploy: AAVE_POOL not set");
     }
 }
