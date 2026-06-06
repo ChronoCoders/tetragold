@@ -694,6 +694,44 @@ contract VaultManagerTest is Test {
         assertEq(pool.totalBorrowed(address(usdc)), borrowedBefore - expectedRepay);
     }
 
+    /// @dev Partial-path interest regression: a tranche must repay its
+    ///      proportional share of accrued interest to the pool (the engine is
+    ///      the production liquidation route; previously it passed interest=0,
+    ///      so LPs collected nothing on engine-liquidated leveraged positions)
+    function test_PartialLiquidationRepaysInterestToPool() public {
+        uint256 collateral = 4000e6;
+
+        vm.startPrank(user1);
+        usdc.approve(address(vault), collateral);
+        uint256 positionId = vault.openPosition(collateral, 2, address(usdc));
+        vm.stopPrank();
+
+        VaultManager.Position memory position = vault.getPosition(positionId);
+
+        // Accrue enough interest that the position is liquidatable at the same
+        // price (equity eroded below the 2x 90% margin purely by interest)
+        vm.warp(block.timestamp + 220 days);
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(GOLD_PRICE));
+        bandOracle.setReferenceData(GOLD_PRICE * 1e10);
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(GOLD_PRICE * 1e10)));
+        oracle.updateTwap();
+        assertTrue(vault.isLiquidatable(positionId));
+
+        uint256 trancheInterest = (vault.calculateInterest(positionId) * 2500) / BASIS_POINTS;
+        uint256 borrowedToRepay = (position.borrowedAmount * 2500) / BASIS_POINTS;
+        assertGt(trancheInterest, 0);
+        uint256 poolBalBefore = usdc.balanceOf(address(pool));
+        uint256 borrowedBefore = pool.totalBorrowed(address(usdc));
+
+        vm.prank(liquidator);
+        vault.liquidatePosition(positionId, 2500);
+
+        // Only principal decrements totalBorrowed; the pool actually received
+        // principal PLUS this tranche's interest
+        assertEq(pool.totalBorrowed(address(usdc)), borrowedBefore - borrowedToRepay);
+        assertEq(usdc.balanceOf(address(pool)), poolBalBefore + borrowedToRepay + trancheInterest);
+    }
+
     /// @dev H-02 regression: liquidation burns TGAUX from the position owner via
     ///      vaultBurn — it must succeed even if the owner revoked all allowances
     function test_LiquidateSucceedsWithoutOwnerAllowance() public {

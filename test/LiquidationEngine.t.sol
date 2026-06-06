@@ -303,6 +303,126 @@ contract LiquidationEngineTest is Test {
         liquidationEngine.clearMark(positionId);
     }
 
+    /// @dev clearMark is owner-only: a third party cannot delete a legitimate
+    ///      mark during a transient healthy wick to restart the grace clock
+    function test_ClearMarkRevertsWhenNotOwner() public {
+        uint256 positionId = _createLiquidatablePosition();
+
+        vm.prank(liquidator);
+        liquidationEngine.markForLiquidation(positionId);
+
+        // Bring the position back to health so the StillLiquidatable guard
+        // would pass, isolating the owner check
+        vm.startPrank(user1);
+        usdc.approve(address(vaultManager), 3000e6);
+        vaultManager.addCollateral(positionId, 3000e6);
+        vm.stopPrank();
+        assertFalse(vaultManager.isLiquidatable(positionId));
+
+        // A non-owner (here the liquidator) cannot clear it
+        vm.prank(liquidator);
+        vm.expectRevert(LiquidationEngine.LiquidationEngine__NotPositionOwner.selector);
+        liquidationEngine.clearMark(positionId);
+    }
+
+    /// @dev Oscillation guard: clearing a mark then relapsing within
+    ///      GRACE_PERIOD + MARK_VALIDITY is treated as a continuation, not a
+    ///      fresh recovery — the re-mark is backdated and liquidation proceeds
+    ///      immediately, so recover->clear->relapse cannot farm endless graces
+    function test_ClearThenQuickRelapseGetsNoFreshGrace() public {
+        uint256 positionId = _createLiquidatablePosition();
+
+        vm.prank(liquidator);
+        liquidationEngine.markForLiquidation(positionId);
+
+        // Owner tops up just over the threshold to clear, then clears the mark
+        vm.startPrank(user1);
+        usdc.approve(address(vaultManager), 300e6);
+        vaultManager.addCollateral(positionId, 300e6);
+        liquidationEngine.clearMark(positionId);
+        vm.stopPrank();
+        assertFalse(vaultManager.isLiquidatable(positionId));
+
+        // Relapse shortly after: 4 x 3% steps (~40 min total, inside the
+        // GRACE + MARK_VALIDITY = 70 min window from the clear)
+        uint256 stepPrice = GOLD_PRICE * 125 / 100; // price after the helper
+        for (uint256 i = 0; i < 4; i++) {
+            stepPrice = stepPrice * 103 / 100;
+            chainlinkOracle.setLatestAnswer(SafeCast.toInt256(stepPrice));
+            bandOracle.setReferenceData(stepPrice * 1e10);
+            api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(stepPrice * 1e10)));
+            vm.warp(block.timestamp + 601);
+            oracle.updateTwap();
+        }
+        assertTrue(vaultManager.isLiquidatable(positionId));
+
+        // No fresh grace: the position is liquidated on the first attempt
+        vm.prank(liquidator);
+        uint256 penalty = liquidationEngine.liquidatePosition(positionId);
+        assertGt(penalty, 0);
+    }
+
+    /// @dev MIN_LIQUIDATION_VALUE gates only the FIRST tranche. A position whose
+    ///      equity starts just above the floor drops below it after a tranche or
+    ///      two; the check must not re-fire mid-sequence and strand the position
+    ///      before it reaches the final settling tranche.
+    function test_TrancheSequenceCompletesWhenEquityFallsBelowMinValue() public {
+        // Small 2x position: engine equity (notional - debt) lands just above
+        // the $100 floor at the liquidation point, so it dips below after the
+        // first 25% tranche
+        vm.startPrank(user1);
+        usdc.approve(address(vaultManager), 110e6);
+        uint256 positionId = vaultManager.openPosition(110e6, 2, address(usdc));
+        tgaux.approve(address(vaultManager), type(uint256).max);
+        vm.stopPrank();
+
+        // Two 4% steps (within the circuit breaker) make the 2x liquidatable
+        uint256 price = GOLD_PRICE;
+        for (uint256 i = 0; i < 2; i++) {
+            price = price * 104 / 100;
+            chainlinkOracle.setLatestAnswer(SafeCast.toInt256(price));
+            bandOracle.setReferenceData(price * 1e10);
+            api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(price * 1e10)));
+            vm.warp(block.timestamp + 601);
+            oracle.updateTwap();
+        }
+        assertTrue(vaultManager.isLiquidatable(positionId));
+        assertGe(_positionValue(positionId), liquidationEngine.MIN_LIQUIDATION_VALUE());
+
+        vm.prank(liquidator);
+        liquidationEngine.markForLiquidation(positionId);
+        vm.warp(block.timestamp + 11 minutes);
+
+        // First tranche succeeds; equity then drops below the floor
+        vm.startPrank(liquidator);
+        liquidationEngine.liquidatePosition(positionId);
+        assertLt(_positionValue(positionId), liquidationEngine.MIN_LIQUIDATION_VALUE());
+
+        // Remaining tranches must still proceed (previously reverted
+        // InsufficientValue) and the position fully settles
+        liquidationEngine.liquidatePosition(positionId);
+        liquidationEngine.liquidatePosition(positionId);
+        liquidationEngine.liquidatePosition(positionId);
+        vm.stopPrank();
+
+        VaultManager.Position memory position = vaultManager.getPosition(positionId);
+        assertFalse(position.isActive);
+        assertEq(position.borrowedAmount, 0);
+        assertEq(position.tgauxMinted, 0);
+    }
+
+    /// @dev Reads a position's engine-side value (notional - debt) via the
+    ///      public checkPositions view
+    function _positionValue(uint256 positionId) internal view returns (uint256) {
+        LiquidationEngine.LiquidationCandidate[] memory candidates = liquidationEngine.checkPositions(0, 50);
+        for (uint256 i = 0; i < candidates.length; i++) {
+            if (candidates[i].positionId == positionId) {
+                return candidates[i].positionValue;
+            }
+        }
+        return 0;
+    }
+
     /// @dev Mark overwrite guard: a live mark cannot be re-marked, so an owner
     ///      cannot reset their own grace period to dodge liquidation
     function test_MarkForLiquidationRevertsWhenAlreadyMarked() public {
@@ -417,22 +537,32 @@ contract LiquidationEngineTest is Test {
         assertEq(info.tranchesLiquidated, 2);
     }
 
-    function test_LiquidatePositionRevertsAfter4Tranches() public {
+    /// @dev The final tranche settles the whole remainder, so a position is
+    ///      fully closed after MAX_TRANCHES rather than left active with ~31%
+    ///      residual principal stranded (25% of remaining never reaches zero)
+    function test_PositionFullySettledAfter4Tranches() public {
         uint256 positionId = _createLiquidatablePosition();
 
         vm.prank(liquidator);
         liquidationEngine.markForLiquidation(positionId);
         vm.warp(block.timestamp + 11 minutes);
 
-        // Liquidate 4 tranches (100%)
+        // Liquidate 4 tranches: 25%, 25%, 25%, then the final 100% of remainder
         vm.startPrank(liquidator);
-        liquidationEngine.liquidatePosition(positionId); // 25%
-        liquidationEngine.liquidatePosition(positionId); // 50%
-        liquidationEngine.liquidatePosition(positionId); // 75%
-        liquidationEngine.liquidatePosition(positionId); // 100%
+        liquidationEngine.liquidatePosition(positionId);
+        liquidationEngine.liquidatePosition(positionId);
+        liquidationEngine.liquidatePosition(positionId);
+        liquidationEngine.liquidatePosition(positionId);
 
-        // Try 5th liquidation
-        vm.expectRevert(LiquidationEngine.LiquidationEngine__PositionFullyLiquidated.selector);
+        // Position is fully settled: nothing left active, nothing stranded
+        VaultManager.Position memory position = vaultManager.getPosition(positionId);
+        assertFalse(position.isActive);
+        assertEq(position.collateralAmount, 0);
+        assertEq(position.tgauxMinted, 0);
+        assertEq(position.borrowedAmount, 0);
+
+        // A further attempt reverts (the position is no longer liquidatable)
+        vm.expectRevert(LiquidationEngine.LiquidationEngine__GracePeriodActive.selector);
         liquidationEngine.liquidatePosition(positionId);
         vm.stopPrank();
     }

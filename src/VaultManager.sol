@@ -552,28 +552,42 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         uint256 collateralToReturn = (position.collateralAmount * percentage) / BASIS_POINTS;
         uint256 borrowedToRepay = (position.borrowedAmount * percentage) / BASIS_POINTS;
 
-        // Calculate penalty (5-15% based on leverage)
-        // Combine multiplications to avoid precision loss
-        uint256 penaltyRate = _calculateLiquidationPenalty(position.leverage);
-        penalty = (position.collateralAmount * percentage * penaltyRate) / (BASIS_POINTS * BASIS_POINTS);
+        // This tranche's proportional share of accrued interest, funded from
+        // the tranche's collateral and capped at it. Without paying it here the
+        // engine path (the production liquidation route) would never repay
+        // interest to LPs. Capping plus BadDebtRealized mirrors the full paths.
+        uint256 interestPaid;
+        {
+            uint256 trancheInterest = (calculateInterest(positionId) * percentage) / BASIS_POINTS;
+            interestPaid = trancheInterest > collateralToReturn ? collateralToReturn : trancheInterest;
+            if (trancheInterest > interestPaid) {
+                emit BadDebtRealized(positionId, position.collateralToken, trancheInterest - interestPaid);
+            }
+        }
+
+        // Penalty (5-15% based on leverage) on collateral remaining after
+        // interest — interest is owed debt, not seizable equity
+        penalty = ((collateralToReturn - interestPaid) * _calculateLiquidationPenalty(position.leverage)) / BASIS_POINTS;
 
         // Burn TGAUX from owner (no allowance needed — owner cannot block
         // liquidation by revoking approval)
         tgaux.vaultBurn(position.owner, tgauxToLiquidate);
 
-        // Repay borrowed amount to liquidity pool via repay() so pool accounting
-        // (totalBorrowed / borrowedByToken) is decremented, matching closePosition/liquidate
-        if (borrowedToRepay > 0) {
-            IERC20(position.collateralToken).safeIncreaseAllowance(liquidityPool, borrowedToRepay);
-            ILiquidityPool(liquidityPool).repay(borrowedToRepay, 0, position.collateralToken, borrowPoolOf[positionId]);
+        // Repay principal + this tranche's interest to the borrow's origin pool
+        // so pool accounting (totalBorrowed / borrowedByToken) and LP interest
+        // credit stay correct, matching closePosition/liquidate
+        if (borrowedToRepay + interestPaid > 0) {
+            IERC20(position.collateralToken).safeIncreaseAllowance(liquidityPool, borrowedToRepay + interestPaid);
+            ILiquidityPool(liquidityPool)
+                .repay(borrowedToRepay, interestPaid, position.collateralToken, borrowPoolOf[positionId]);
         }
 
-        // Deduct penalty from collateral
-        uint256 returnToOwner = collateralToReturn - penalty;
-
-        // Return remaining collateral to owner
-        if (returnToOwner > 0) {
-            IERC20(position.collateralToken).safeTransfer(position.owner, returnToOwner);
+        // Return collateral net of interest and penalty to the owner
+        {
+            uint256 returnToOwner = collateralToReturn - interestPaid - penalty;
+            if (returnToOwner > 0) {
+                IERC20(position.collateralToken).safeTransfer(position.owner, returnToOwner);
+            }
         }
 
         // Transfer penalty to caller
