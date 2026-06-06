@@ -26,28 +26,36 @@ contract MockERC20 {
     event Approval(address indexed owner, address indexed spender, uint256 value);
 
     constructor(string memory _name, string memory _symbol, uint8 _decimals) {
-        name = _name; symbol = _symbol; decimals = _decimals;
+        name = _name;
+        symbol = _symbol;
+        decimals = _decimals;
     }
 
     function mint(address to, uint256 amount) external {
-        totalSupply += amount; balanceOf[to] += amount;
+        totalSupply += amount;
+        balanceOf[to] += amount;
         emit Transfer(address(0), to, amount);
     }
 
     function transfer(address to, uint256 amount) external returns (bool) {
-        balanceOf[msg.sender] -= amount; balanceOf[to] += amount;
-        emit Transfer(msg.sender, to, amount); return true;
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+        emit Transfer(msg.sender, to, amount);
+        return true;
     }
 
     function approve(address spender, uint256 amount) external returns (bool) {
         allowance[msg.sender][spender] = amount;
-        emit Approval(msg.sender, spender, amount); return true;
+        emit Approval(msg.sender, spender, amount);
+        return true;
     }
 
     function transferFrom(address from, address to, uint256 amount) external returns (bool) {
         allowance[from][msg.sender] -= amount;
-        balanceOf[from] -= amount; balanceOf[to] += amount;
-        emit Transfer(from, to, amount); return true;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+        emit Transfer(from, to, amount);
+        return true;
     }
 }
 
@@ -55,13 +63,16 @@ contract MockChainlinkOracle {
     int256 private _price;
     uint256 private _updatedAt;
 
-    constructor(int256 initialPrice) { _price = initialPrice; _updatedAt = block.timestamp; }
+    constructor(int256 initialPrice) {
+        _price = initialPrice;
+        _updatedAt = block.timestamp;
+    }
 
-    function decimals() external pure returns (uint8) { return 8; }
+    function decimals() external pure returns (uint8) {
+        return 8;
+    }
 
-    function latestRoundData() external view returns (
-        uint80, int256 answer, uint256, uint256 updatedAt, uint80
-    ) {
+    function latestRoundData() external view returns (uint80, int256 answer, uint256, uint256 updatedAt, uint80) {
         return (1, _price, _updatedAt, _updatedAt, 1);
     }
 }
@@ -70,11 +81,16 @@ contract MockBandOracle {
     uint256 private _rate;
     uint256 private _updatedAt;
 
-    constructor(uint256 initialRate) { _rate = initialRate; _updatedAt = block.timestamp; }
+    constructor(uint256 initialRate) {
+        _rate = initialRate;
+        _updatedAt = block.timestamp;
+    }
 
-    function getReferenceData(string memory, string memory) external view returns (
-        uint256 rate, uint256 lastUpdatedBase, uint256 lastUpdatedQuote
-    ) {
+    function getReferenceData(string memory, string memory)
+        external
+        view
+        returns (uint256 rate, uint256 lastUpdatedBase, uint256 lastUpdatedQuote)
+    {
         return (_rate, _updatedAt, _updatedAt);
     }
 }
@@ -83,7 +99,10 @@ contract MockAPI3Oracle {
     int224 private _value;
     uint32 private _timestamp;
 
-    constructor(int224 initialValue) { _value = initialValue; _timestamp = uint32(block.timestamp); }
+    constructor(int224 initialValue) {
+        _value = initialValue;
+        _timestamp = uint32(block.timestamp);
+    }
 
     function read() external view returns (int224 value, uint32 timestamp) {
         return (_value, _timestamp);
@@ -92,7 +111,10 @@ contract MockAPI3Oracle {
 
 contract MockAavePool {
     function supply(address, uint256, address, uint16) external {}
-    function withdraw(address, uint256 amount, address) external returns (uint256) { return amount; }
+
+    function withdraw(address, uint256 amount, address) external returns (uint256) {
+        return amount;
+    }
 }
 
 // ============ Deployment Script ============
@@ -104,15 +126,14 @@ contract MockAavePool {
  */
 contract DeployLocal is Script {
     // Anvil default account #0
-    uint256 private constant DEPLOYER_PRIVATE_KEY =
-        0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
+    uint256 private constant DEPLOYER_PRIVATE_KEY = 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
 
     // Gold price: $2,847.00
-    int256  private constant GOLD_PRICE_8DEC  = 284700000000;
+    int256 private constant GOLD_PRICE_8DEC = 284700000000;
     uint256 private constant GOLD_PRICE_18DEC = 284700000000 * 1e10;
 
     uint256 private constant MINT_STABLE = 1_000_000 * 10 ** 6;
-    uint256 private constant MINT_TGX    = 1_000_000 * 10 ** 18;
+    uint256 private constant MINT_TGX = 1_000_000 * 10 ** 18;
 
     // Deployed addresses passed between helpers via storage
     address private usdc;
@@ -145,16 +166,16 @@ contract DeployLocal is Script {
 
     function _deployTokensAndOracle(address deployer) internal {
         console.log("[1/4] Deploying mock tokens...");
-        usdc = address(new MockERC20("USD Coin",              "USDC", 6));
-        usdt = address(new MockERC20("Tether USD",            "USDT", 6));
-        tgx  = address(new MockERC20("Tetra Gold Governance", "TGX",  18));
+        usdc = address(new MockERC20("USD Coin", "USDC", 6));
+        usdt = address(new MockERC20("Tether USD", "USDT", 6));
+        tgx = address(new MockERC20("Tetra Gold Governance", "TGX", 18));
 
         console.log("[2/4] Deploying mock oracles and TGAUX...");
         address chainlink = address(new MockChainlinkOracle(GOLD_PRICE_8DEC));
-        address band      = address(new MockBandOracle(GOLD_PRICE_18DEC));
-        address api3      = address(new MockAPI3Oracle(int224(int256(GOLD_PRICE_18DEC))));
+        address band = address(new MockBandOracle(GOLD_PRICE_18DEC));
+        address api3 = address(new MockAPI3Oracle(int224(int256(GOLD_PRICE_18DEC))));
 
-        tgaux  = address(new TGAUX(deployer));
+        tgaux = address(new TGAUX(deployer));
         oracle = address(new OracleAggregator(deployer, chainlink, band, api3));
 
         // Seed TWAP with initial gold price
@@ -166,37 +187,16 @@ contract DeployLocal is Script {
 
         liquidityPool = address(new LiquidityPool(usdc, usdt));
 
-        vaultManager = address(new VaultManager(
-            deployer,
-            tgaux,
-            oracle,
-            liquidityPool,
-            usdc,
-            usdt
-        ));
+        vaultManager = address(new VaultManager(deployer, tgaux, oracle, liquidityPool, usdc, usdt));
 
         address aavePool = address(new MockAavePool());
-        insuranceFund = address(new InsuranceFund(
-            deployer,
-            vaultManager,
-            liquidityPool,
-            aavePool
-        ));
+        insuranceFund = address(new InsuranceFund(deployer, vaultManager, liquidityPool, aavePool));
 
-        feeDistributor = address(new FeeDistributor(
-            deployer,
-            tgx,
-            insuranceFund,
-            deployer
-        ));
+        feeDistributor = address(new FeeDistributor(deployer, tgx, insuranceFund, deployer));
         FeeDistributor(feeDistributor).addSupportedToken(usdc);
         FeeDistributor(feeDistributor).addSupportedToken(usdt);
 
-        liquidationEngine = address(new LiquidationEngine(
-            vaultManager,
-            insuranceFund,
-            deployer
-        ));
+        liquidationEngine = address(new LiquidationEngine(vaultManager, insuranceFund, deployer));
     }
 
     function _configureRoles() internal {
@@ -205,22 +205,15 @@ contract DeployLocal is Script {
         TGAUX(tgaux).grantRole(TGAUX(tgaux).MINTER_ROLE(), vaultManager);
         console.log("- MINTER_ROLE            -> VaultManager");
 
-        LiquidityPool(liquidityPool).grantRole(
-            LiquidityPool(liquidityPool).VAULT_MANAGER_ROLE(), vaultManager
-        );
+        LiquidityPool(liquidityPool).grantRole(LiquidityPool(liquidityPool).VAULT_MANAGER_ROLE(), vaultManager);
         console.log("- VAULT_MANAGER_ROLE     -> VaultManager (LiquidityPool)");
 
-        VaultManager(vaultManager).grantRole(
-            VaultManager(vaultManager).LIQUIDATOR_ROLE(), liquidationEngine
-        );
+        VaultManager(vaultManager).grantRole(VaultManager(vaultManager).LIQUIDATOR_ROLE(), liquidationEngine);
         console.log("- LIQUIDATOR_ROLE        -> LiquidationEngine");
 
-        InsuranceFund(insuranceFund).grantRole(
-            InsuranceFund(insuranceFund).VAULT_MANAGER_ROLE(), feeDistributor
-        );
-        InsuranceFund(insuranceFund).grantRole(
-            InsuranceFund(insuranceFund).LIQUIDATION_ENGINE_ROLE(), liquidationEngine
-        );
+        InsuranceFund(insuranceFund).grantRole(InsuranceFund(insuranceFund).VAULT_MANAGER_ROLE(), feeDistributor);
+        InsuranceFund(insuranceFund)
+            .grantRole(InsuranceFund(insuranceFund).LIQUIDATION_ENGINE_ROLE(), liquidationEngine);
         console.log("- VAULT_MANAGER_ROLE     -> FeeDistributor (InsuranceFund)");
         console.log("- LIQUIDATION_ENGINE_ROLE -> LiquidationEngine (InsuranceFund)");
 
@@ -230,12 +223,8 @@ contract DeployLocal is Script {
         console.log("- Supported tokens registered in InsuranceFund");
 
         // Wire VaultManager -> FeeDistributor fee push path
-        FeeDistributor(feeDistributor).grantRole(
-            FeeDistributor(feeDistributor).VAULT_MANAGER_ROLE(), vaultManager
-        );
-        VaultManager(vaultManager).grantRole(
-            VaultManager(vaultManager).FEE_COLLECTOR_ROLE(), vaultManager
-        );
+        FeeDistributor(feeDistributor).grantRole(FeeDistributor(feeDistributor).VAULT_MANAGER_ROLE(), vaultManager);
+        VaultManager(vaultManager).grantRole(VaultManager(vaultManager).FEE_COLLECTOR_ROLE(), vaultManager);
         VaultManager(vaultManager).setFeeDistributor(feeDistributor);
         console.log("- VAULT_MANAGER_ROLE     -> VaultManager (FeeDistributor)");
         console.log("- feeDistributor set in VaultManager");
