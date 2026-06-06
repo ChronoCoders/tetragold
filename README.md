@@ -161,7 +161,7 @@ forge test --gas-report
 forge coverage
 ```
 
-**Test suite:** 344 tests across 13 contract test suites, including unit tests, integration tests, fuzz tests, and two handler-based invariant suites (one against mocks, one against the real LiquidityPool + LiquidationEngine).
+**Test suite:** 348 tests across 13 contract test suites, including unit tests, integration tests, fuzz tests, and two handler-based invariant suites (one against mocks, one against the real LiquidityPool + LiquidationEngine).
 
 ## Deployment
 
@@ -214,8 +214,8 @@ All contracts use OpenZeppelin's `AccessControl`. The `DEFAULT_ADMIN_ROLE` canno
 - **Reentrancy protection** - `ReentrancyGuard` on all state-mutating external functions
 - **Emergency pause** - all critical paths respect the `whenNotPaused` modifier
 - **Oracle circuit breaker** - system pauses automatically on abnormal price movement
-- **Partial liquidations** - 25% tranches reduce the impact of sudden position closures
-- **Grace period** - 10-minute window between marking and liquidation, allowing self-remediation. A mark expires after 1 hour; a stale mark on a still-liquidatable position is re-marked without a fresh grace period (the owner already received one), so keeper downtime cannot repeatedly delay liquidation. Positions that recover should clear their mark via `clearMark()` - a later relapse then gets a fresh mark with a full grace period
+- **Partial liquidations** - 25% tranches reduce the impact of sudden position closures; the final tranche settles the whole remainder so a position is never left active with residual principal, and every tranche repays its proportional share of accrued interest to LPs. The minimum-value gate applies only to starting a liquidation (skipping dust positions); once underway, the dwindling per-tranche equity cannot strand a position mid-sequence
+- **Grace period** - 10-minute window between marking and liquidation, allowing self-remediation. A mark expires after 1 hour; a stale mark on a still-liquidatable position is re-marked without a fresh grace period (the owner already received one), so keeper downtime cannot repeatedly delay liquidation. A recovered position's owner may clear its mark via `clearMark()` (owner-only, so it cannot be used to grief keepers); a relapse within the grace+validity window of a clear is treated as a continuation and liquidated without a fresh grace, while a relapse after a sustained recovery earns a new full grace period
 - **Bad debt containment** - if accrued interest ever exceeds a position's collateral, close/liquidation still succeeds: interest paid to the pool is capped at the position's own collateral and the shortfall is surfaced via a `BadDebtRealized` event (LPs forgo interest, never principal; no other position's funds are touched)
 - **Per-pool borrow attribution** - each borrow records its origin pool and repayments are routed back to it, so dual-pool borrows of the same token can never cross-contaminate pool accounting or misdirect LP interest
 - **SafeERC20** - all token transfers use OZ's safe wrappers
