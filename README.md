@@ -161,7 +161,7 @@ forge test --gas-report
 forge coverage
 ```
 
-**Test suite:** 333 tests across 12 contract test suites, including unit tests, integration tests, and fuzz tests.
+**Test suite:** 344 tests across 13 contract test suites, including unit tests, integration tests, fuzz tests, and two handler-based invariant suites (one against mocks, one against the real LiquidityPool + LiquidationEngine).
 
 ## Deployment
 
@@ -215,7 +215,9 @@ All contracts use OpenZeppelin's `AccessControl`. The `DEFAULT_ADMIN_ROLE` canno
 - **Emergency pause** - all critical paths respect the `whenNotPaused` modifier
 - **Oracle circuit breaker** - system pauses automatically on abnormal price movement
 - **Partial liquidations** - 25% tranches reduce the impact of sudden position closures
-- **Grace period** - 10-minute window between marking and liquidation, allowing self-remediation; marks expire after 1 hour and require re-marking (fresh grace period) so recovered-then-relapsed positions are never liquidated instantly
+- **Grace period** - 10-minute window between marking and liquidation, allowing self-remediation. A mark expires after 1 hour; a stale mark on a still-liquidatable position is re-marked without a fresh grace period (the owner already received one), so keeper downtime cannot repeatedly delay liquidation. Positions that recover should clear their mark via `clearMark()` - a later relapse then gets a fresh mark with a full grace period
+- **Bad debt containment** - if accrued interest ever exceeds a position's collateral, close/liquidation still succeeds: interest paid to the pool is capped at the position's own collateral and the shortfall is surfaced via a `BadDebtRealized` event (LPs forgo interest, never principal; no other position's funds are touched)
+- **Per-pool borrow attribution** - each borrow records its origin pool and repayments are routed back to it, so dual-pool borrows of the same token can never cross-contaminate pool accounting or misdirect LP interest
 - **SafeERC20** - all token transfers use OZ's safe wrappers
 
 ## Operations Runbook: Oracle Liveness
@@ -241,7 +243,7 @@ Note: a halt blocks `closePosition()` too - users cannot exit positions until th
 ### Recovery procedure (circuit breaker pause)
 
 1. Verify the price movement was genuine (compare Chainlink/Band/API3 against off-chain reference prices)
-2. If genuine: admin multisig calls `unpause()` on OracleAggregator; the next `updateTwap()` re-seeds from current feeds. Expect a wave of liquidations - the auto-mark pass grants every affected position a 10-minute grace period first
+2. If genuine: admin multisig calls `unpause()` on OracleAggregator; the next `updateTwap()` re-seeds from current feeds. Expect a wave of liquidations - the auto-mark pass grants every newly-marked position a 10-minute grace period first. Caution: positions whose marks predate the outage and went stale are liquidated without a fresh grace period - if the outage exceeded 70 minutes, communicate to users that marked positions liquidate immediately on recovery
 3. If a feed malfunctioned: call `updateOracleAddress()` to replace the faulty feed before unpausing
 4. After unpausing, confirm `updateTwap()` succeeds and `getGoldPrice()` returns a fresh price before announcing recovery
 
