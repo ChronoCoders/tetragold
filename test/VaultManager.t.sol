@@ -302,6 +302,46 @@ contract VaultManagerTest is Test {
         assertTrue(balanceAfter > balanceBefore);
     }
 
+    function test_ClosePositionWithMinReturnSucceeds() public {
+        uint256 collateral = 3000e6;
+
+        vm.startPrank(user1);
+        usdc.approve(address(vault), collateral);
+        uint256 positionId = vault.openPosition(collateral, 1, address(usdc));
+
+        uint256 tgauxBalance = tgaux.balanceOf(user1);
+        tgaux.approve(address(vault), tgauxBalance);
+
+        // Closing immediately: only the burn fee is deducted, so the return is
+        // close to the post-open-fee collateral. A conservative floor passes.
+        uint256 balanceBefore = usdc.balanceOf(user1);
+        vault.closePosition(positionId, 2000e6);
+        uint256 balanceAfter = usdc.balanceOf(user1);
+        vm.stopPrank();
+
+        assertFalse(vault.getPosition(positionId).isActive);
+        assertGe(balanceAfter - balanceBefore, 2000e6);
+    }
+
+    function test_ClosePositionRevertsWhenReturnBelowMinimum() public {
+        uint256 collateral = 3000e6;
+
+        vm.startPrank(user1);
+        usdc.approve(address(vault), collateral);
+        uint256 positionId = vault.openPosition(collateral, 1, address(usdc));
+
+        uint256 tgauxBalance = tgaux.balanceOf(user1);
+        tgaux.approve(address(vault), tgauxBalance);
+
+        // Demand more than the full collateral back - must revert.
+        vm.expectRevert("VaultManager: return below minimum");
+        vault.closePosition(positionId, collateral + 1);
+        vm.stopPrank();
+
+        // Position remains active after the revert.
+        assertTrue(vault.getPosition(positionId).isActive);
+    }
+
     function test_ClosePosition2xLeverage() public {
         // Open position with 2x leverage - use enough collateral to cover borrowing costs
         uint256 collateral = 5000e6;

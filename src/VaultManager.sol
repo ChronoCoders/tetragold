@@ -232,6 +232,27 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
      * @param positionId ID of the position to close
      */
     function closePosition(uint256 positionId) external nonReentrant whenNotPaused {
+        _closePosition(positionId, 0);
+    }
+
+    /**
+     * @dev Closes a position with a minimum acceptable return amount
+     * @param positionId ID of the position to close
+     * @param minReturnAmount Minimum collateral (in collateral token) the caller
+     *        will accept back. Guards against extra interest accruing between
+     *        transaction submission and inclusion. Reverts if the computed return
+     *        falls below this value.
+     */
+    function closePosition(uint256 positionId, uint256 minReturnAmount) external nonReentrant whenNotPaused {
+        _closePosition(positionId, minReturnAmount);
+    }
+
+    /**
+     * @dev Internal close logic shared by both closePosition entry points
+     * @param positionId ID of the position to close
+     * @param minReturnAmount Minimum collateral the caller will accept back
+     */
+    function _closePosition(uint256 positionId, uint256 minReturnAmount) internal {
         Position storage position = positions[positionId];
         require(position.isActive, "VaultManager: position not active");
         require(position.owner == msg.sender, "VaultManager: not position owner");
@@ -281,6 +302,7 @@ contract VaultManager is AccessControl, Pausable, ReentrancyGuard {
         // Interest is deducted here because it is funded from the position's collateral,
         // not from phantom funds — vault only holds collateral + borrowed principal.
         uint256 returnAmount = position.collateralAmount - burnFee - interestPaid;
+        require(returnAmount >= minReturnAmount, "VaultManager: return below minimum");
 
         // slither-disable-next-line reentrancy-eth
         if (returnAmount > 0) {
