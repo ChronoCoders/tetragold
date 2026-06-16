@@ -4,7 +4,12 @@ pragma solidity 0.8.30;
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
 
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
 import {TGAUX} from "../src/TGAUX.sol";
+import {TGX} from "../src/TGX.sol";
+import {TGXVesting} from "../src/TGXVesting.sol";
+import {TGXEmissions} from "../src/TGXEmissions.sol";
 import {VaultManager} from "../src/VaultManager.sol";
 import {LiquidityPool} from "../src/LiquidityPool.sol";
 import {LiquidationEngine} from "../src/LiquidationEngine.sol";
@@ -62,6 +67,7 @@ contract VerifyDeploy is Script {
         _verifyFeeDistributor();
         _verifyOracle();
         _verifyLiquidationEngine();
+        _verifyTGX();
 
         console.log("");
         console.log("Results: passed =", _passed, "failed =", _failed);
@@ -132,6 +138,40 @@ contract VerifyDeploy is Script {
         LiquidationEngine eng = LiquidationEngine(liquidationEngineAddr);
         _check("vaultManager address correct", eng.vaultManager() == vaultManagerAddr);
         _check("insuranceFund address correct", eng.insuranceFund() == insuranceFundAddr);
+    }
+
+    function _verifyTGX() internal {
+        // Optional: only runs if the TGX ecosystem addresses are provided.
+        address tgxAddr = vm.envOr("TGX", address(0));
+        if (tgxAddr == address(0)) {
+            return;
+        }
+
+        console.log("[TGX]");
+        TGX tgx = TGX(tgxAddr);
+        _check("admin has DEFAULT_ADMIN_ROLE", tgx.hasRole(tgx.DEFAULT_ADMIN_ROLE(), admin));
+        _check("full supply minted (100M)", tgx.totalSupply() == tgx.MAX_SUPPLY());
+        _check("FeeDistributor wired to TGX", FeeDistributor(feeDistributorAddr).tgxToken() == tgxAddr);
+
+        address vestingAddr = vm.envOr("TGX_VESTING", address(0));
+        if (vestingAddr != address(0)) {
+            console.log("[TGXVesting]");
+            TGXVesting vesting = TGXVesting(vestingAddr);
+            _check("admin has DEFAULT_ADMIN_ROLE", vesting.hasRole(vesting.DEFAULT_ADMIN_ROLE(), admin));
+            _check("tgx address correct", address(vesting.tgx()) == tgxAddr);
+        }
+
+        address emissionsAddr = vm.envOr("TGX_EMISSIONS", address(0));
+        if (emissionsAddr != address(0)) {
+            console.log("[TGXEmissions]");
+            TGXEmissions emissions = TGXEmissions(emissionsAddr);
+            _check("admin has DEFAULT_ADMIN_ROLE", emissions.hasRole(emissions.DEFAULT_ADMIN_ROLE(), admin));
+            _check("tgx address correct", address(emissions.tgx()) == tgxAddr);
+            (IERC20 stakeC,,,,) = emissions.pools(0);
+            (IERC20 stakeA,,,,) = emissions.pools(1);
+            _check("conservative pool staking token set", address(stakeC) != address(0));
+            _check("aggressive pool staking token set", address(stakeA) != address(0));
+        }
     }
 
     function _check(string memory label, bool condition) internal {
