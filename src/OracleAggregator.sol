@@ -21,6 +21,10 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 contract OracleAggregator is AccessControl, Pausable {
     // Roles
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+    // PARAM_ROLE governs slow parameter tuning (deviation / circuit-breaker
+    // thresholds). It is intended to be held by a TimelockController so these
+    // changes are subject to a delay, while emergency pause stays on ADMIN_ROLE.
+    bytes32 public constant PARAM_ROLE = keccak256("PARAM_ROLE");
 
     // Oracle interfaces
     IAggregatorV3 public chainlinkOracle;
@@ -67,6 +71,7 @@ contract OracleAggregator is AccessControl, Pausable {
 
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         _grantRole(ADMIN_ROLE, _admin);
+        _grantRole(PARAM_ROLE, _admin);
 
         chainlinkOracle = IAggregatorV3(_chainlinkOracle);
         bandOracle = IBandOracle(_bandOracle);
@@ -333,7 +338,7 @@ contract OracleAggregator is AccessControl, Pausable {
      * @dev Set price deviation threshold
      * @param newThreshold New threshold in basis points (1% = 100 bp)
      */
-    function setPriceDeviation(uint256 newThreshold) external onlyRole(ADMIN_ROLE) {
+    function setPriceDeviation(uint256 newThreshold) external onlyRole(PARAM_ROLE) {
         require(newThreshold <= 1000, "OracleAggregator: threshold too high"); // Max 10%
         uint256 oldThreshold = priceDeviationThreshold;
         priceDeviationThreshold = newThreshold;
@@ -344,7 +349,7 @@ contract OracleAggregator is AccessControl, Pausable {
      * @dev Set circuit breaker threshold
      * @param newThreshold New threshold in basis points (1% = 100 bp)
      */
-    function setCircuitBreakerThreshold(uint256 newThreshold) external onlyRole(ADMIN_ROLE) {
+    function setCircuitBreakerThreshold(uint256 newThreshold) external onlyRole(PARAM_ROLE) {
         require(newThreshold <= 2000, "OracleAggregator: threshold too high"); // Max 20%
         uint256 oldThreshold = circuitBreakerThreshold;
         circuitBreakerThreshold = newThreshold;

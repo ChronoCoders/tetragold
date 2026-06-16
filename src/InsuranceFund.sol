@@ -28,6 +28,10 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
     bytes32 public constant VAULT_MANAGER_ROLE = keccak256("VAULT_MANAGER_ROLE");
     bytes32 public constant LIQUIDATION_ENGINE_ROLE = keccak256("LIQUIDATION_ENGINE_ROLE");
     bytes32 public constant COVERAGE_MANAGER_ROLE = keccak256("COVERAGE_MANAGER_ROLE");
+    // PARAM_ROLE governs slow parameter tuning (target reserve percentage). It is
+    // intended to be held by a TimelockController so the change is subject to a
+    // delay, while emergency pause stays on DEFAULT_ADMIN_ROLE.
+    bytes32 public constant PARAM_ROLE = keccak256("PARAM_ROLE");
 
     // ============ Enums ============
 
@@ -128,6 +132,7 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
 
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         _grantRole(COVERAGE_MANAGER_ROLE, _admin);
+        _grantRole(PARAM_ROLE, _admin);
 
         vaultManager = _vaultManager;
         liquidityPool = _liquidityPool;
@@ -549,7 +554,7 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
      * @notice Update target reserve percentage
      * @param newPercentage New target percentage (in basis points)
      */
-    function updateTargetPercentage(uint256 newPercentage) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function updateTargetPercentage(uint256 newPercentage) external onlyRole(PARAM_ROLE) {
         if (newPercentage == 0 || newPercentage > 1000) {
             revert InsuranceFund__InvalidPercentage();
         } // Max 10%

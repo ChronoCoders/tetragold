@@ -14,6 +14,7 @@ import {LiquidityPool} from "../src/LiquidityPool.sol";
 import {LiquidationEngine} from "../src/LiquidationEngine.sol";
 import {InsuranceFund} from "../src/InsuranceFund.sol";
 import {FeeDistributor} from "../src/FeeDistributor.sol";
+import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
 
 /**
  * @title Deploy
@@ -126,12 +127,22 @@ contract Deploy is Script {
             new LiquidationEngine(address(vaultManager), address(insuranceFund), env.treasury);
         console.log("LiquidationEngine:  ", address(liquidationEngine));
 
+        // 11. Governance timelock (48h) for slow parameter tuning. The admin
+        // multisig is the sole proposer and executor; the timelock self-administers
+        // (admin == address(0)) so role management also flows through the delay.
+        address[] memory proposers = new address[](1);
+        proposers[0] = env.admin;
+        address[] memory executors = new address[](1);
+        executors[0] = env.admin;
+        TimelockController timelock = new TimelockController(48 hours, proposers, executors, address(0));
+        console.log("TimelockController: ", address(timelock));
+
         vm.stopBroadcast();
 
-        _printPendingActions(address(tgxEmissions), address(tgxVesting));
+        _printPendingActions(address(tgxEmissions), address(tgxVesting), address(timelock));
     }
 
-    function _printPendingActions(address tgxEmissions, address tgxVesting) internal view {
+    function _printPendingActions(address tgxEmissions, address tgxVesting, address timelock) internal view {
         // Role setup and TGX distribution must be executed by the admin multisig
         // and treasury after deployment. Run VerifyDeploy.s.sol to confirm roles.
         console.log("");
@@ -161,6 +172,16 @@ contract Deploy is Script {
         console.log(
             "Emission step decay (per year): 25M / 15M / 7.5M / 2.5M = 50M emitted; ~15M sweepable after year 4"
         );
+
+        console.log("");
+        console.log("=== PENDING TIMELOCK HANDOFF (run as admin) ===");
+        console.log("Move slow parameter tuning behind the 48h timelock, keep pause immediate:");
+        console.log("  timelock:", timelock);
+        console.log("- oracle.grantRole(PARAM_ROLE, timelock)");
+        console.log("- oracle.renounceRole(PARAM_ROLE, admin)");
+        console.log("- insuranceFund.grantRole(PARAM_ROLE, timelock)");
+        console.log("- insuranceFund.renounceRole(PARAM_ROLE, admin)");
+        console.log("setPriceDeviation / setCircuitBreakerThreshold / updateTargetPercentage now require the timelock");
     }
 
     function _validate(Addresses memory env) internal pure {

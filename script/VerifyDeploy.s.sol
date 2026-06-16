@@ -68,6 +68,7 @@ contract VerifyDeploy is Script {
         _verifyOracle();
         _verifyLiquidationEngine();
         _verifyTGX();
+        _verifyTimelock();
 
         console.log("");
         console.log("Results: passed =", _passed, "failed =", _failed);
@@ -172,6 +173,26 @@ contract VerifyDeploy is Script {
             _check("conservative pool staking token set", address(stakeC) != address(0));
             _check("aggressive pool staking token set", address(stakeA) != address(0));
         }
+    }
+
+    function _verifyTimelock() internal {
+        // Optional: only runs if the TIMELOCK address is provided. Confirms the
+        // timelock holds PARAM_ROLE on the oracle and insurance fund, and that
+        // the admin has renounced it so parameter tuning is delay-gated.
+        address timelock = vm.envOr("TIMELOCK", address(0));
+        if (timelock == address(0)) {
+            return;
+        }
+
+        console.log("[Timelock]");
+        OracleAggregator ora = OracleAggregator(oracleAddr);
+        InsuranceFund ins = InsuranceFund(insuranceFundAddr);
+        _check("timelock holds oracle PARAM_ROLE", ora.hasRole(ora.PARAM_ROLE(), timelock));
+        _check("admin renounced oracle PARAM_ROLE", !ora.hasRole(ora.PARAM_ROLE(), admin));
+        _check("timelock holds fund PARAM_ROLE", ins.hasRole(ins.PARAM_ROLE(), timelock));
+        _check("admin renounced fund PARAM_ROLE", !ins.hasRole(ins.PARAM_ROLE(), admin));
+        // Emergency pause must remain on the fast admin role, not the timelock.
+        _check("admin retains oracle ADMIN_ROLE (pause)", ora.hasRole(ora.ADMIN_ROLE(), admin));
     }
 
     function _check(string memory label, bool condition) internal {

@@ -194,6 +194,8 @@ After deploying all contracts, the following roles must be configured:
 | InsuranceFund | `VAULT_MANAGER_ROLE` | FeeDistributor |
 | InsuranceFund | `LIQUIDATION_ENGINE_ROLE` | LiquidationEngine |
 | InsuranceFund | `COVERAGE_MANAGER_ROLE` | Admin multisig |
+| OracleAggregator | `PARAM_ROLE` | TimelockController |
+| InsuranceFund | `PARAM_ROLE` | TimelockController |
 
 ## Access Control
 
@@ -207,6 +209,11 @@ All contracts use OpenZeppelin's `AccessControl`. The `DEFAULT_ADMIN_ROLE` canno
 | `LIQUIDATOR_ROLE` | LiquidationEngine | Execute liquidations |
 | `FEE_COLLECTOR_ROLE` | FeeDistributor | Withdraw collected fees |
 | `VAULT_MANAGER_ROLE` | VaultManager | Borrow/repay from LiquidityPool |
+| `PARAM_ROLE` | TimelockController | Tune slow parameters (oracle deviation / circuit-breaker thresholds, insurance target percentage) behind a 48h delay |
+
+### Governance timelock
+
+Slow parameter tuning is gated by a 48-hour `TimelockController` that holds `PARAM_ROLE`, while emergency pause stays on the admin multisig for an immediate response. After deployment the admin grants `PARAM_ROLE` to the timelock and renounces it, so `setPriceDeviation`, `setCircuitBreakerThreshold`, and `updateTargetPercentage` can only be changed through a scheduled, delayed proposal.
 
 ## Security Properties
 
