@@ -119,6 +119,21 @@ contract VaultManagerTest is Test {
     function test_ConstructorRevertsWithZeroAddresses() public {
         vm.expectRevert("VaultManager: zero admin address");
         new VaultManager(address(0), address(tgaux), address(oracle), address(pool), address(usdc), address(usdt));
+
+        vm.expectRevert("VaultManager: zero tgaux address");
+        new VaultManager(admin, address(0), address(oracle), address(pool), address(usdc), address(usdt));
+
+        vm.expectRevert("VaultManager: zero oracle address");
+        new VaultManager(admin, address(tgaux), address(0), address(pool), address(usdc), address(usdt));
+
+        vm.expectRevert("VaultManager: zero pool address");
+        new VaultManager(admin, address(tgaux), address(oracle), address(0), address(usdc), address(usdt));
+
+        vm.expectRevert("VaultManager: zero usdc address");
+        new VaultManager(admin, address(tgaux), address(oracle), address(pool), address(0), address(usdt));
+
+        vm.expectRevert("VaultManager: zero usdt address");
+        new VaultManager(admin, address(tgaux), address(oracle), address(pool), address(usdc), address(0));
     }
 
     /* ============ Position Opening Tests ============ */
@@ -1205,5 +1220,64 @@ contract VaultManagerTest is Test {
         // All user TGAUX burned
         assertEq(tgaux.balanceOf(user1), 0);
         assertEq(vault.totalValueLocked(), 0);
+    }
+
+    /* ============ Branch coverage ============ */
+
+    function test_SetFeeDistributorRevertsZeroAddress() public {
+        vm.prank(admin);
+        vm.expectRevert("VaultManager: zero address");
+        vault.setFeeDistributor(address(0));
+    }
+
+    function test_PushFeesRevertsWhenDistributorNotSet() public {
+        // feeDistributor is unset by default.
+        vm.prank(feeCollector);
+        vm.expectRevert("VaultManager: fee distributor not set");
+        vault.pushFeesToDistributor(address(usdc));
+    }
+
+    function test_PushFeesRevertsWhenNoFees() public {
+        // Point feeDistributor at a non-zero dummy, then push a token with no fees.
+        vm.prank(admin);
+        vault.setFeeDistributor(address(0xFEE));
+        vm.prank(feeCollector);
+        vm.expectRevert("VaultManager: no fees to collect");
+        vault.pushFeesToDistributor(address(usdt));
+    }
+
+    function test_GetActivePositionIdsPaginationEdges() public {
+        // No active positions: offset >= total and limit == 0 both yield empty.
+        (uint256[] memory a, uint256 totalA) = vault.getActivePositionIds(5, 10);
+        assertEq(a.length, 0);
+        assertEq(totalA, 0);
+
+        (uint256[] memory b,) = vault.getActivePositionIds(0, 0);
+        assertEq(b.length, 0);
+    }
+
+    function test_AddCollateralRevertsWhenPositionNotActive() public {
+        vm.startPrank(user1);
+        usdc.approve(address(vault), 4500e6);
+        uint256 positionId = vault.openPosition(4500e6, 1, address(usdc));
+        tgaux.approve(address(vault), type(uint256).max);
+        vault.closePosition(positionId);
+
+        usdc.approve(address(vault), 100e6);
+        vm.expectRevert("VaultManager: position not active");
+        vault.addCollateral(positionId, 100e6);
+        vm.stopPrank();
+    }
+
+    function test_GetPositionHealthRevertsWhenNotActive() public {
+        vm.startPrank(user1);
+        usdc.approve(address(vault), 4500e6);
+        uint256 positionId = vault.openPosition(4500e6, 1, address(usdc));
+        tgaux.approve(address(vault), type(uint256).max);
+        vault.closePosition(positionId);
+        vm.stopPrank();
+
+        vm.expectRevert("VaultManager: position not active");
+        vault.getPositionHealth(positionId);
     }
 }

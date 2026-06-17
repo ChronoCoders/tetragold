@@ -704,4 +704,58 @@ contract LiquidityPoolTest is Test {
         (totalDeposits,,,,) = pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
         assertApproxEqAbs(totalDeposits, 1000e6, 2); // Allow small rounding
     }
+
+    /* ============ Branch coverage ============ */
+
+    function test_ConstructorRevertsZeroUsdc() public {
+        vm.expectRevert("LiquidityPool: zero usdc address");
+        new LiquidityPool(address(0), address(usdt));
+    }
+
+    function test_ConstructorRevertsZeroUsdt() public {
+        vm.expectRevert("LiquidityPool: zero usdt address");
+        new LiquidityPool(address(usdc), address(0));
+    }
+
+    function test_DepositLPRevertsUnsupportedToken() public {
+        MockERC20 other = new MockERC20("Other", "OTH", 6);
+        other.mint(lp1, 1000e6);
+        vm.startPrank(lp1);
+        other.approve(address(pool), 1000e6);
+        vm.expectRevert(LiquidityPool.LiquidityPool__UnsupportedToken.selector);
+        pool.depositLP(1000e6, LiquidityPool.PoolType.CONSERVATIVE, address(other));
+        vm.stopPrank();
+    }
+
+    function test_WithdrawReturnsUsdtWhenUsdcUnavailable() public {
+        // Deposit only USDT, so withdrawal must return USDT (usdc-balance branch false).
+        uint256 amount = 1000e6;
+        vm.startPrank(lp1);
+        usdt.approve(address(pool), amount);
+        pool.depositLP(amount, LiquidityPool.PoolType.CONSERVATIVE, address(usdt));
+
+        (,,, address lpToken,) = pool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
+        uint256 lpBal = IERC20(lpToken).balanceOf(lp1);
+        uint256 usdtBefore = usdt.balanceOf(lp1);
+        pool.withdrawLP(lpBal, LiquidityPool.PoolType.CONSERVATIVE);
+        vm.stopPrank();
+
+        assertGt(usdt.balanceOf(lp1), usdtBefore);
+    }
+
+    function test_BorrowRevertsZeroAmount() public {
+        vm.expectRevert(LiquidityPool.LiquidityPool__InvalidAmount.selector);
+        vaultManager.borrow(0, address(usdc));
+    }
+
+    function test_BorrowRevertsUnsupportedToken() public {
+        MockERC20 other = new MockERC20("Other", "OTH", 6);
+        vm.expectRevert(LiquidityPool.LiquidityPool__UnsupportedToken.selector);
+        vaultManager.borrow(100e6, address(other));
+    }
+
+    function test_RepayRevertsZeroPrincipal() public {
+        vm.expectRevert(LiquidityPool.LiquidityPool__InvalidAmount.selector);
+        vaultManager.repay(0, 0, address(usdc), LiquidityPool.PoolType.CONSERVATIVE);
+    }
 }
