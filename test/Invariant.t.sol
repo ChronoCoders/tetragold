@@ -494,7 +494,7 @@ contract RealPoolInvariantTest is Test {
 
         insurance = new InsuranceSink();
         vm.prank(admin);
-        engine = new LiquidationEngine(address(vault), address(insurance), treasury);
+        engine = new LiquidationEngine(admin, address(vault), address(insurance), treasury);
 
         handler = new RealPoolHandler(
             vault, tgaux, usdc, oracle, pool, engine, chainlinkOracle, bandOracle, api3Oracle, GOLD_PRICE

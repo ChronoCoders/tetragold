@@ -137,7 +137,8 @@ contract Deploy is Script {
         console.log("FeeDistributor:     ", address(feeDistributor));
 
         // 10. LiquidationEngine
-        liquidationEngine = new LiquidationEngine(address(vaultManager), address(insuranceFund), env.treasury);
+        liquidationEngine =
+            new LiquidationEngine(env.admin, address(vaultManager), address(insuranceFund), env.treasury);
         console.log("LiquidationEngine:  ", address(liquidationEngine));
 
         // 11. Governance timelock (48h) for slow parameter tuning. The admin
