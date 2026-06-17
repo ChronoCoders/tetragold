@@ -55,6 +55,22 @@ contract Deploy is Script {
         address aavePool;
     }
 
+    // Deployed contracts, exposed as public state so deployment can be verified
+    // (e.g. by VerifyDeploy or a smoke test) after run() completes.
+    TGAUX public tgaux;
+    TGX public tgx;
+    OracleAggregator public oracle;
+    LiquidityPool public liquidityPool;
+    TGXVesting public tgxVesting;
+    TGXEmissions public tgxEmissions;
+    VaultManager public vaultManager;
+    InsuranceFund public insuranceFund;
+    FeeDistributor public feeDistributor;
+    LiquidationEngine public liquidationEngine;
+    TimelockController public timelock;
+    address public lpConservative;
+    address public lpAggressive;
+
     function run() external {
         uint256 deployerKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
 
@@ -79,52 +95,49 @@ contract Deploy is Script {
         console.log("");
 
         // 1. TGAUX token
-        TGAUX tgaux = new TGAUX(env.admin);
+        tgaux = new TGAUX(env.admin);
         console.log("TGAUX:              ", address(tgaux));
 
         // 2. TGX governance/reward token (mints 100M to treasury)
-        TGX tgx = new TGX(env.admin, env.treasury);
+        tgx = new TGX(env.admin, env.treasury);
         console.log("TGX:                ", address(tgx));
 
         // 3. Oracle aggregator
-        OracleAggregator oracle = new OracleAggregator(env.admin, env.chainlink, env.band, env.api3);
+        oracle = new OracleAggregator(env.admin, env.chainlink, env.band, env.api3);
         console.log("OracleAggregator:   ", address(oracle));
 
         // 4. Liquidity pool (constructs its own TGLP-C / TGLP-A LP tokens)
-        LiquidityPool liquidityPool = new LiquidityPool(env.usdc, env.usdt);
+        liquidityPool = new LiquidityPool(env.admin, env.usdc, env.usdt);
         console.log("LiquidityPool:      ", address(liquidityPool));
 
-        (,,, address lpConservative,) = liquidityPool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
-        (,,, address lpAggressive,) = liquidityPool.getPoolInfo(LiquidityPool.PoolType.AGGRESSIVE);
+        (,,, lpConservative,) = liquidityPool.getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
+        (,,, lpAggressive,) = liquidityPool.getPoolInfo(LiquidityPool.PoolType.AGGRESSIVE);
         console.log("  TGLP-C:           ", lpConservative);
         console.log("  TGLP-A:           ", lpAggressive);
 
         // 5. TGX vesting (team + contributors, schedules created on demand by admin)
-        TGXVesting tgxVesting = new TGXVesting(env.admin, address(tgx));
+        tgxVesting = new TGXVesting(env.admin, address(tgx));
         console.log("TGXVesting:         ", address(tgxVesting));
 
         // 6. TGX emissions (stake-to-earn over TGLP-C / TGLP-A, 4-year step decay)
-        TGXEmissions tgxEmissions = new TGXEmissions(env.admin, address(tgx), lpConservative, lpAggressive);
+        tgxEmissions = new TGXEmissions(env.admin, address(tgx), lpConservative, lpAggressive);
         console.log("TGXEmissions:       ", address(tgxEmissions));
 
         // 7. VaultManager
-        VaultManager vaultManager =
+        vaultManager =
             new VaultManager(env.admin, address(tgaux), address(oracle), address(liquidityPool), env.usdc, env.usdt);
         console.log("VaultManager:       ", address(vaultManager));
 
         // 8. InsuranceFund
-        InsuranceFund insuranceFund =
-            new InsuranceFund(env.admin, address(vaultManager), address(liquidityPool), env.aavePool);
+        insuranceFund = new InsuranceFund(env.admin, address(vaultManager), address(liquidityPool), env.aavePool);
         console.log("InsuranceFund:      ", address(insuranceFund));
 
         // 9. FeeDistributor (wired to the freshly deployed TGX)
-        FeeDistributor feeDistributor =
-            new FeeDistributor(env.admin, address(tgx), address(insuranceFund), env.treasury);
+        feeDistributor = new FeeDistributor(env.admin, address(tgx), address(insuranceFund), env.treasury);
         console.log("FeeDistributor:     ", address(feeDistributor));
 
         // 10. LiquidationEngine
-        LiquidationEngine liquidationEngine =
-            new LiquidationEngine(address(vaultManager), address(insuranceFund), env.treasury);
+        liquidationEngine = new LiquidationEngine(address(vaultManager), address(insuranceFund), env.treasury);
         console.log("LiquidationEngine:  ", address(liquidationEngine));
 
         // 11. Governance timelock (48h) for slow parameter tuning. The admin
@@ -134,7 +147,7 @@ contract Deploy is Script {
         proposers[0] = env.admin;
         address[] memory executors = new address[](1);
         executors[0] = env.admin;
-        TimelockController timelock = new TimelockController(48 hours, proposers, executors, address(0));
+        timelock = new TimelockController(48 hours, proposers, executors, address(0));
         console.log("TimelockController: ", address(timelock));
 
         vm.stopBroadcast();

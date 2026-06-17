@@ -35,6 +35,7 @@ tetragold/
 │   ├── Timelock.t.sol
 │   ├── Integration.t.sol
 │   ├── Invariant.t.sol
+│   ├── DeploySmoke.t.sol
 │   └── mocks/
 ├── script/
 │   ├── Deploy.s.sol                        # Full protocol + TGX ecosystem + timelock
@@ -173,7 +174,7 @@ forge test --gas-report
 forge coverage
 ```
 
-**Test suite:** 419 tests across 15 contract test suites, including unit tests, integration tests, fuzz tests, and two handler-based invariant suites (one against mocks, one against the real LiquidityPool + LiquidationEngine).
+**Test suite:** 422 tests across 16 contract test suites, including unit tests, integration tests, fuzz tests, an end-to-end deployment smoke test, and two handler-based invariant suites (one against mocks, one against the real LiquidityPool + LiquidationEngine).
 
 ## Deployment
 
