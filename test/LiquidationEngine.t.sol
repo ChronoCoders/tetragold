@@ -100,7 +100,7 @@ contract LiquidationEngineTest is Test {
         tgaux.grantRole(tgaux.MINTER_ROLE(), address(vaultManager));
 
         // Deploy LiquidationEngine
-        liquidationEngine = new LiquidationEngine(address(vaultManager), address(insuranceFund), treasury);
+        liquidationEngine = new LiquidationEngine(admin, address(vaultManager), address(insuranceFund), treasury);
 
         // Grant liquidator role to LiquidationEngine
         vaultManager.grantRole(vaultManager.LIQUIDATOR_ROLE(), address(liquidationEngine));
@@ -125,13 +125,16 @@ contract LiquidationEngineTest is Test {
 
     function test_ConstructorRevertsWithZeroAddress() public {
         vm.expectRevert(LiquidationEngine.LiquidationEngine__InvalidAddress.selector);
-        new LiquidationEngine(address(0), address(insuranceFund), treasury);
+        new LiquidationEngine(address(0), address(vaultManager), address(insuranceFund), treasury);
 
         vm.expectRevert(LiquidationEngine.LiquidationEngine__InvalidAddress.selector);
-        new LiquidationEngine(address(vaultManager), address(0), treasury);
+        new LiquidationEngine(admin, address(0), address(insuranceFund), treasury);
 
         vm.expectRevert(LiquidationEngine.LiquidationEngine__InvalidAddress.selector);
-        new LiquidationEngine(address(vaultManager), address(insuranceFund), address(0));
+        new LiquidationEngine(admin, address(vaultManager), address(0), treasury);
+
+        vm.expectRevert(LiquidationEngine.LiquidationEngine__InvalidAddress.selector);
+        new LiquidationEngine(admin, address(vaultManager), address(insuranceFund), address(0));
     }
 
     /* ============ Liquidator Registration Tests ============ */

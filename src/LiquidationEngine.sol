@@ -116,8 +116,11 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
 
     /* ============ Constructor ============ */
 
-    constructor(address _vaultManager, address _insuranceFund, address _treasury) {
-        if (_vaultManager == address(0) || _insuranceFund == address(0) || _treasury == address(0)) {
+    constructor(address _admin, address _vaultManager, address _insuranceFund, address _treasury) {
+        if (
+            _admin == address(0) || _vaultManager == address(0) || _insuranceFund == address(0)
+                || _treasury == address(0)
+        ) {
             revert LiquidationEngine__InvalidAddress();
         }
 
@@ -125,7 +128,7 @@ contract LiquidationEngine is AccessControl, Pausable, ReentrancyGuard, Automati
         insuranceFund = _insuranceFund;
         treasury = _treasury;
 
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(DEFAULT_ADMIN_ROLE, _admin);
     }
 
     /* ============ External Functions ============ */

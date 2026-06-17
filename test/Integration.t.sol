@@ -87,7 +87,7 @@ contract IntegrationTest is Test {
         MockAavePool aave = new MockAavePool();
         insurance = new InsuranceFund(admin, address(vault), address(pool), address(aave));
         distributor = new FeeDistributor(admin, address(tgx), address(insurance), treasury);
-        engine = new LiquidationEngine(address(vault), address(insurance), treasury);
+        engine = new LiquidationEngine(admin, address(vault), address(insurance), treasury);
 
         // Role wiring
         tgaux.grantRole(tgaux.MINTER_ROLE(), address(vault));

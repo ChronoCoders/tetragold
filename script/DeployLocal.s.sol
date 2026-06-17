@@ -196,7 +196,7 @@ contract DeployLocal is Script {
         FeeDistributor(feeDistributor).addSupportedToken(usdc);
         FeeDistributor(feeDistributor).addSupportedToken(usdt);
 
-        liquidationEngine = address(new LiquidationEngine(vaultManager, insuranceFund, deployer));
+        liquidationEngine = address(new LiquidationEngine(deployer, vaultManager, insuranceFund, deployer));
     }
 
     function _configureRoles() internal {

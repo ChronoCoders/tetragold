@@ -90,9 +90,17 @@ contract DeploySmokeTest is Test {
         // FeeDistributor wired to the freshly deployed TGX, not an external one.
         assertEq(deployer.feeDistributor().tgxToken(), address(tgx));
 
-        // Admin holds DEFAULT_ADMIN_ROLE on the core contracts.
+        // Admin (not the deployer EOA) holds DEFAULT_ADMIN_ROLE on every core
+        // contract, including LiquidityPool and LiquidationEngine which assign
+        // admin via constructor param rather than msg.sender.
         VaultManager vault = deployer.vaultManager();
         assertTrue(vault.hasRole(vault.DEFAULT_ADMIN_ROLE(), admin));
+        LiquidityPool pool = deployer.liquidityPool();
+        assertTrue(pool.hasRole(pool.DEFAULT_ADMIN_ROLE(), admin));
+        LiquidationEngine engine = deployer.liquidationEngine();
+        assertTrue(engine.hasRole(engine.DEFAULT_ADMIN_ROLE(), admin));
+        InsuranceFund fund = deployer.insuranceFund();
+        assertTrue(fund.hasRole(fund.DEFAULT_ADMIN_ROLE(), admin));
 
         // Emissions pools point at the LiquidityPool's own LP tokens.
         TGXEmissions emissions = deployer.tgxEmissions();

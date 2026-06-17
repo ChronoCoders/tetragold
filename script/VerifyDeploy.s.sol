@@ -137,6 +137,7 @@ contract VerifyDeploy is Script {
     function _verifyLiquidationEngine() internal {
         console.log("[LiquidationEngine]");
         LiquidationEngine eng = LiquidationEngine(liquidationEngineAddr);
+        _check("admin has DEFAULT_ADMIN_ROLE", eng.hasRole(eng.DEFAULT_ADMIN_ROLE(), admin));
         _check("vaultManager address correct", eng.vaultManager() == vaultManagerAddr);
         _check("insuranceFund address correct", eng.insuranceFund() == insuranceFundAddr);
     }
