@@ -726,6 +726,58 @@ contract LiquidationEngineTest is Test {
         liquidationEngine.performUpkeep(abi.encode(ids));
     }
 
+    /* ============ Branch coverage: engine-driven liquidation paths ============ */
+
+    function test_LiquidationInfoUnmarkedLiquidatableCannotLiquidate() public {
+        // Liquidatable but unmarked: _canLiquidateNow returns false on the
+        // markedTime == 0 branch, so canLiquidate is false.
+        uint256 positionId = _createLiquidatablePosition();
+        LiquidationEngine.LiquidationInfo memory info = liquidationEngine.getPositionLiquidationInfo(positionId);
+        assertFalse(info.isMarked);
+        assertFalse(info.canLiquidate);
+    }
+
+    function test_GetLiquidatablePositionsSkipsHealthyPosition() public {
+        // A healthy active position exercises the !_isPositionLiquidatable branch
+        // in _needsAction and must not be returned as a candidate.
+        vm.startPrank(user1);
+        usdc.approve(address(vaultManager), 3000e6);
+        vaultManager.openPosition(3000e6, 1, address(usdc));
+        vm.stopPrank();
+
+        uint256[] memory ids = liquidationEngine.getLiquidatablePositions();
+        assertEq(ids.length, 0);
+    }
+
+    function test_CheckPositionsBuildsCandidateFor1x() public {
+        uint256 positionId = _createLiquidatablePosition();
+        LiquidationEngine.LiquidationCandidate[] memory candidates = liquidationEngine.checkPositions(0, 10);
+        assertEq(candidates.length, 1);
+        assertEq(candidates[0].positionId, positionId);
+        assertEq(candidates[0].liquidationRatio, 12500); // 1x threshold (125%)
+    }
+
+    function test_CheckPositionsBuildsCandidateFor2x() public {
+        _create2xLiquidatablePosition();
+        LiquidationEngine.LiquidationCandidate[] memory candidates = liquidationEngine.checkPositions(0, 10);
+        assertEq(candidates.length, 1);
+        assertEq(candidates[0].liquidationRatio, 9000); // 2x threshold (90%)
+    }
+
+    function test_LiquidateRevertsWhenValueBelowMinimum() public {
+        // A small position whose economic value is under MIN_LIQUIDATION_VALUE
+        // ($100) cannot start a liquidation even once marked and past grace.
+        uint256 positionId = _createSmallLiquidatablePosition();
+
+        vm.prank(liquidator);
+        liquidationEngine.markForLiquidation(positionId);
+        vm.warp(block.timestamp + 11 minutes);
+
+        vm.prank(liquidator);
+        vm.expectRevert(LiquidationEngine.LiquidationEngine__InsufficientValue.selector);
+        liquidationEngine.liquidatePosition(positionId);
+    }
+
     /* ============ Helper Functions ============ */
 
     function _createLiquidatablePosition() internal returns (uint256 positionId) {
@@ -750,6 +802,56 @@ contract LiquidationEngineTest is Test {
             oracle.updateTwap();
         }
 
+        return positionId;
+    }
+
+    /// @dev A 1x position small enough that its economic value stays under
+    ///      MIN_LIQUIDATION_VALUE ($100) once it becomes liquidatable.
+    function _createSmallLiquidatablePosition() internal returns (uint256 positionId) {
+        vm.startPrank(user1);
+        usdc.approve(address(vaultManager), 110e6);
+        positionId = vaultManager.openPosition(110e6, 1, address(usdc));
+        tgaux.approve(address(vaultManager), type(uint256).max);
+        vm.stopPrank();
+
+        for (uint256 i = 0; i < 5; i++) {
+            uint256 newPrice = GOLD_PRICE * (105 + i * 5) / 100;
+            chainlinkOracle.setLatestAnswer(SafeCast.toInt256(newPrice));
+            bandOracle.setReferenceData(newPrice * 1e10);
+            api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(newPrice * 1e10)));
+            vm.warp(block.timestamp + 601);
+            oracle.updateTwap();
+        }
+        require(vaultManager.isLiquidatable(positionId), "small position not liquidatable");
+        return positionId;
+    }
+
+    /// @dev A 2x leveraged position driven into a liquidatable state, used to
+    ///      exercise the leverage == 2 path in _getLiquidationThreshold.
+    function _create2xLiquidatablePosition() internal returns (uint256 positionId) {
+        vm.startPrank(user1);
+        usdc.approve(address(vaultManager), 5000e6);
+        positionId = vaultManager.openPosition(5000e6, 2, address(usdc));
+        tgaux.approve(address(vaultManager), type(uint256).max);
+        vm.stopPrank();
+
+        // Two sub-circuit-breaker upward steps push the 2x margin below its 90%
+        // liquidation threshold.
+        uint256 price = GOLD_PRICE * 104 / 100;
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(price));
+        bandOracle.setReferenceData(price * 1e10);
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(price * 1e10)));
+        vm.warp(block.timestamp + 601);
+        oracle.updateTwap();
+
+        price = price * 104 / 100;
+        chainlinkOracle.setLatestAnswer(SafeCast.toInt256(price));
+        bandOracle.setReferenceData(price * 1e10);
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(price * 1e10)));
+        vm.warp(block.timestamp + 601);
+        oracle.updateTwap();
+
+        require(vaultManager.isLiquidatable(positionId), "2x position not liquidatable");
         return positionId;
     }
 }
