@@ -57,7 +57,7 @@ contract OracleAggregator is AccessControl, Pausable {
     event CircuitBreakerTriggered(uint256 oldPrice, uint256 newPrice, uint256 deviation);
     event OracleFailed(string oracleName, string reason);
     event ThresholdUpdated(string thresholdType, uint256 oldValue, uint256 newValue);
-    event OracleAddressUpdated(string oracleName, address newAddress);
+    event OracleAddressUpdated(string oracleName, address indexed newAddress);
 
     /**
      * @dev Constructor
