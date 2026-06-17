@@ -65,15 +65,17 @@ fund_health_label() {
   esac
 }
 
+RULE="  ------------------------------------------------------------"
+
 render() {
-  local now block bts
+  local now block
   now=$(date -u '+%Y-%m-%d %H:%M:%SZ')
   block=$("$CAST" block-number --rpc-url "$RPC_URL" 2>/dev/null || echo "n/a")
 
   printf '%s' $'\033[H\033[2J'
-  echo "${B}  TETRA GOLD  —  live protocol monitor${R}"
+  echo "${B}  TETRA GOLD  -  live protocol monitor${R}"
   echo "${DIM}  rpc ${RPC_URL}   block ${block}   ${now}   refresh ${INTERVAL}s${R}"
-  echo
+  echo "$RULE"
 
   # ---- Oracle ----
   local price ut paused age
@@ -83,45 +85,47 @@ render() {
   age="n/a"
   [[ "${ut:-}" =~ ^[0-9]+$ ]] && age="$(( $(date +%s) - ut ))s ago"
   local pstr="${GRN}live${R}"; [ "$paused" = "true" ] && pstr="${RED}PAUSED${R}"
-  echo "${B}ORACLE${R}  gold ${B}\$$(fmt "$price" 8)${R}/oz   updated ${age}   ${pstr}"
-  echo
+  printf "  %-9s gold ${B}\$%s${R}/oz   updated %s   %b\n" "ORACLE" "$(fmt "$price" 8)" "$age" "$pstr"
+  echo "$RULE"
 
   # ---- Liquidity pools ----
-  echo "${B}LIQUIDITY POOLS${R}"
-  printf "  %-13s %14s %14s %8s\n" "pool" "deposits" "borrowed" "util"
+  echo "  ${B}LIQUIDITY POOLS${R}"
+  printf "    %-12s %14s %14s %8s\n" "pool" "deposits" "borrowed" "util"
   local pid name dep bor util rest
   for pid in 0 1; do
     name=$([ "$pid" = 0 ] && echo CONSERVATIVE || echo AGGRESSIVE)
     { read -r dep; read -r bor; read -r util; read -r rest; } < <(
       call "$POOL" "getPoolInfo(uint8)(uint256,uint256,uint256,address,uint256)" "$pid")
-    printf "  %-13s %14s %14s %7s%%\n" "$name" "$(fmt "$dep" 6 0)" "$(fmt "$bor" 6 0)" "$(fmt "$util" 2 1)"
+    printf "    %-12s %14s %14s %7s%%\n" "$name" "$(fmt "$dep" 6 0)" "$(fmt "$bor" 6 0)" "$(fmt "$util" 2 1)"
   done
-  echo
+  echo "$RULE"
 
   # ---- VaultManager + positions ----
   local tvl count nextId
   tvl=$(call "$VAULT" "totalValueLocked()(uint256)")
   count=$(call "$VAULT" "activePositionCount()(uint256)")
   nextId=$(call "$VAULT" "nextPositionId()(uint256)")
-  echo "${B}VAULT${R}  TVL ${B}\$$(fmt "$tvl" 6 0)${R}   active positions ${count:-n/a}   next id ${nextId:-n/a}"
+  printf "  %-9s TVL ${B}\$%s${R}   active positions %s   next id %s\n" \
+    "VAULT" "$(fmt "$tvl" 6 0)" "${count:-n/a}" "${nextId:-n/a}"
 
-  local ids id health liq lev owner col owstr levline hbp hpct flag
+  local ids id health liq lev owner col owstr hpct flag
   ids=$(call "$VAULT" "getActivePositionIds()(uint256[])" | tr -d '[]"' | tr ',' ' ')
   if [ -n "$ids" ]; then
-    printf "  %-5s %-12s %-7s %10s %9s\n" "id" "owner" "lev" "health" "status"
+    printf "    %-4s %-14s %-5s %8s   %s\n" "id" "owner" "lev" "health" "status"
     for id in $ids; do
       [ -n "$id" ] || continue
       health=$(call "$VAULT" "getPositionHealth(uint256)(uint256)" "$id")
       liq=$(call "$VAULT" "isLiquidatable(uint256)(bool)" "$id")
       { read -r owner; read -r col; read -r _ct; read -r _tg; read -r _bo; read -r lev; read -r _op; read -r _ts; read -r _act; } < <(
         call "$VAULT" "getPosition(uint256)(address,uint256,address,uint256,uint256,uint256,uint256,uint256,bool)" "$id")
-      owstr="${owner:0:6}…${owner: -4}"
+      owstr="${owner:0:6}..${owner: -4}"
       hpct=$(fmt "$health" 2 1)
       if [ "$liq" = "true" ]; then flag="${RED}LIQUIDATABLE${R}"; else flag="${GRN}ok${R}"; fi
-      printf "  %-5s %-12s %-7s %9s%% %18b\n" "$id" "$owstr" "${lev:-?}x" "$hpct" "$flag"
+      # status is the last column, so the color codes do not affect alignment
+      printf "    %-4s %-14s %-5s %7s%%   %b\n" "$id" "$owstr" "${lev:-?}x" "$hpct" "$flag"
     done
   fi
-  echo
+  echo "$RULE"
 
   # ---- Insurance fund ----
   local res tgt fh supply
@@ -129,9 +133,10 @@ render() {
   tgt=$(call "$INSURANCE" "getTargetReserve()(uint256)")
   fh=$(call "$INSURANCE" "getFundHealth()(uint8)")
   supply=$(call "$TGAUX" "totalSupply()(uint256)")
-  echo "${B}INSURANCE${R}  reserves ${B}\$$(fmt "$res" 6 0)${R}   target \$$(fmt "$tgt" 6 0)   status $(fund_health_label "$fh")"
-  echo "${B}TGAUX${R}      supply ${B}$(fmt "$supply" 18 4)${R}"
-  echo
+  printf "  %-9s reserves ${B}\$%s${R}   target \$%s   status %b\n" \
+    "INSURANCE" "$(fmt "$res" 6 0)" "$(fmt "$tgt" 6 0)" "$(fund_health_label "$fh")"
+  printf "  %-9s supply ${B}%s${R}\n" "TGAUX" "$(fmt "$supply" 18 4)"
+  echo "$RULE"
   echo "${DIM}  Ctrl-C to exit${R}"
 }
 
