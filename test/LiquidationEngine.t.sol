@@ -688,6 +688,44 @@ contract LiquidationEngineTest is Test {
         assertEq(liquidationEngine.treasury(), newTreasury);
     }
 
+    /* ============ Branch coverage ============ */
+
+    function test_UpdateInsuranceFundRevertsZeroAddress() public {
+        vm.prank(admin);
+        vm.expectRevert(LiquidationEngine.LiquidationEngine__InvalidAddress.selector);
+        liquidationEngine.updateInsuranceFund(address(0));
+    }
+
+    function test_UpdateTreasuryRevertsZeroAddress() public {
+        vm.prank(admin);
+        vm.expectRevert(LiquidationEngine.LiquidationEngine__InvalidAddress.selector);
+        liquidationEngine.updateTreasury(address(0));
+    }
+
+    function test_ClaimRewardsRevertsWhenNoRewards() public {
+        vm.prank(liquidator);
+        vm.expectRevert(LiquidationEngine.LiquidationEngine__NoRewardsToClaim.selector);
+        liquidationEngine.claimRewards(address(usdc));
+    }
+
+    function test_LiquidatePositionInternalRevertsWhenCalledExternally() public {
+        vm.expectRevert("LiquidationEngine: internal only");
+        liquidationEngine.liquidatePositionInternal(0, liquidator);
+    }
+
+    function test_BatchLiquidateTruncatesOversizedInput() public {
+        // 11 ids (> MAX_LIQUIDATIONS_PER_UPKEEP). None are liquidatable, so every
+        // attempt is skipped by the try/catch; the call exercises the length cap.
+        uint256[] memory ids = new uint256[](11);
+        uint256 total = liquidationEngine.batchLiquidate(ids);
+        assertEq(total, 0);
+    }
+
+    function test_PerformUpkeepTruncatesOversizedInput() public {
+        uint256[] memory ids = new uint256[](11);
+        liquidationEngine.performUpkeep(abi.encode(ids));
+    }
+
     /* ============ Helper Functions ============ */
 
     function _createLiquidatablePosition() internal returns (uint256 positionId) {

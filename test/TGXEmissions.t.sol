@@ -355,4 +355,104 @@ contract TGXEmissionsTest is Test {
         vm.expectRevert();
         emissions.sweepUndistributed(treasury);
     }
+
+    /* ============ Branch coverage: constructor guards ============ */
+
+    function test_ConstructorRevertsZeroAdmin() public {
+        vm.expectRevert(TGXEmissions.TGXEmissions__ZeroAddress.selector);
+        new TGXEmissions(address(0), address(tgx), address(lpConservative), address(lpAggressive));
+    }
+
+    function test_ConstructorRevertsZeroTgx() public {
+        vm.expectRevert(TGXEmissions.TGXEmissions__ZeroAddress.selector);
+        new TGXEmissions(admin, address(0), address(lpConservative), address(lpAggressive));
+    }
+
+    function test_ConstructorRevertsZeroConservativeLp() public {
+        vm.expectRevert(TGXEmissions.TGXEmissions__ZeroAddress.selector);
+        new TGXEmissions(admin, address(tgx), address(0), address(lpAggressive));
+    }
+
+    function test_ConstructorRevertsZeroAggressiveLp() public {
+        vm.expectRevert(TGXEmissions.TGXEmissions__ZeroAddress.selector);
+        new TGXEmissions(admin, address(tgx), address(lpConservative), address(0));
+    }
+
+    /* ============ Branch coverage: invalid pool / amount guards ============ */
+
+    function test_UnstakeRevertsInvalidPool() public {
+        vm.prank(user1);
+        vm.expectRevert(TGXEmissions.TGXEmissions__InvalidPool.selector);
+        emissions.unstake(2, 1);
+    }
+
+    function test_UnstakeRevertsInsufficientBalance() public {
+        vm.prank(user1);
+        emissions.stake(0, 100e18);
+        vm.prank(user1);
+        vm.expectRevert(TGXEmissions.TGXEmissions__InsufficientBalance.selector);
+        emissions.unstake(0, 200e18);
+    }
+
+    function test_ClaimRevertsInvalidPool() public {
+        vm.prank(user1);
+        vm.expectRevert(TGXEmissions.TGXEmissions__InvalidPool.selector);
+        emissions.claim(2);
+    }
+
+    function test_UpdatePoolRevertsInvalidPool() public {
+        vm.expectRevert(TGXEmissions.TGXEmissions__InvalidPool.selector);
+        emissions.updatePool(2);
+    }
+
+    function test_PendingTGXRevertsInvalidPool() public {
+        vm.expectRevert(TGXEmissions.TGXEmissions__InvalidPool.selector);
+        emissions.pendingTGX(2, user1);
+    }
+
+    /* ============ Branch coverage: stake auto-claims pending ============ */
+
+    function test_StakeAutoClaimsExistingPending() public {
+        vm.prank(user1);
+        emissions.stake(0, 100e18);
+
+        vm.warp(block.timestamp + 30 days);
+        uint256 pending = emissions.pendingTGX(0, user1);
+        assertGt(pending, 0);
+
+        // Staking again while a balance exists triggers the pending payout path.
+        uint256 balBefore = tgx.balanceOf(user1);
+        vm.prank(user1);
+        emissions.stake(0, 100e18);
+        assertGe(tgx.balanceOf(user1) - balBefore, pending);
+    }
+
+    /* ============ Branch coverage: sweep / emission-end edges ============ */
+
+    function test_SweepRevertsNothingToSweep() public {
+        // An unfunded emissions contract has zero balance and zero owed, so after
+        // the emission window there is nothing to sweep.
+        TGXEmissions empty = new TGXEmissions(admin, address(tgx), address(lpConservative), address(lpAggressive));
+        vm.warp(empty.startTime() + 4 * 365 days + 1);
+        vm.prank(admin);
+        vm.expectRevert(TGXEmissions.TGXEmissions__NothingToSweep.selector);
+        empty.sweepUndistributed(treasury);
+    }
+
+    function test_UpdatePoolAfterEmissionEndAddsNoRewards() public {
+        vm.prank(user1);
+        emissions.stake(0, 100e18);
+        uint256 start = emissions.startTime();
+
+        // First update right at end captures the full schedule.
+        vm.warp(start + 4 * 365 days);
+        emissions.updatePool(0);
+        (,,, uint256 accAfterEnd,) = emissions.pools(0);
+
+        // A later update past the end adds nothing (fromTime >= emissionEnd).
+        vm.warp(start + 5 * 365 days);
+        emissions.updatePool(0);
+        (,,, uint256 accLater,) = emissions.pools(0);
+        assertEq(accLater, accAfterEnd);
+    }
 }

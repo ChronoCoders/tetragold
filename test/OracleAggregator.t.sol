@@ -682,4 +682,26 @@ contract OracleAggregatorTest is Test {
         (uint256 price,) = aggregator.getGoldPrice();
         assertEq(price, GOLD_PRICE);
     }
+
+    /* ============ Branch coverage: normalize when feed decimals < 8 ============ */
+
+    function test_NormalizeFeedWithFewerDecimals() public {
+        // Swap in a Chainlink feed reporting 6 decimals to exercise the
+        // decimals < DECIMALS scaling branch in _normalizePrice.
+        MockChainlinkOracle sixDecFeed = new MockChainlinkOracle(6);
+        sixDecFeed.setLatestAnswer(SafeCast.toInt256(GOLD_PRICE / 100)); // $2000 at 6 decimals
+
+        vm.prank(admin);
+        aggregator.updateOracleAddress(0, address(sixDecFeed));
+
+        // Keep Band and API3 valid and aligned at $2000 (18 decimals).
+        bandOracle.setReferenceData(GOLD_PRICE * 1e10);
+        api3Oracle.setValue(SafeCast.toInt224(SafeCast.toInt256(GOLD_PRICE * 1e10)));
+
+        vm.warp(block.timestamp + 61);
+        aggregator.updateTwap();
+
+        (uint256 price,) = aggregator.getGoldPrice();
+        assertApproxEqAbs(price, GOLD_PRICE, GOLD_PRICE / 1000);
+    }
 }

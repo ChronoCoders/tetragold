@@ -258,4 +258,27 @@ contract TGXVestingTest is Test {
         assertEq(tgx.balanceOf(teamMember), SCHEDULE_AMOUNT);
         assertEq(tgx.balanceOf(teamMember2), SCHEDULE_AMOUNT * 2);
     }
+
+    /* ============ Branch coverage ============ */
+
+    function test_CreateScheduleRevertsZeroDuration() public {
+        vm.prank(admin);
+        vm.expectRevert(TGXVesting.TGXVesting__InvalidDuration.selector);
+        vesting.createSchedule(teamMember, SCHEDULE_AMOUNT, block.timestamp, CLIFF, 0);
+    }
+
+    function test_RevokeRevertsZeroTreasury() public {
+        vm.prank(admin);
+        vesting.createSchedule(teamMember, SCHEDULE_AMOUNT, block.timestamp, CLIFF, DURATION);
+
+        vm.prank(admin);
+        vm.expectRevert(TGXVesting.TGXVesting__ZeroAddress.selector);
+        vesting.revokeSchedule(teamMember, address(0));
+    }
+
+    function test_VestedReturnsZeroForUnknownBeneficiary() public view {
+        // No schedule exists for teamMember2 -> totalAmount == 0 branch.
+        assertEq(vesting.vested(teamMember2), 0);
+        assertEq(vesting.releasable(teamMember2), 0);
+    }
 }

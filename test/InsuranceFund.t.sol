@@ -626,4 +626,159 @@ contract InsuranceFundTest is Test {
         assertEq(fund.getTotalReservesForToken(address(usdc)), expectedTotal);
         assertEq(fund.totalCoverage(address(usdc)), 3000e6);
     }
+
+    /* ============ Branch coverage: zero-token / zero-amount guards ============ */
+
+    function test_DepositFromFeesRevertsZeroToken() public {
+        vm.prank(vaultManagerContract);
+        vm.expectRevert(InsuranceFund.InsuranceFund__InvalidToken.selector);
+        fund.depositFromFees(1000e6, address(0));
+    }
+
+    function test_DepositFromLiquidationRevertsZeroAmount() public {
+        vm.prank(liquidationEngine);
+        vm.expectRevert(InsuranceFund.InsuranceFund__ZeroAmount.selector);
+        fund.depositFromLiquidation(0, address(usdc));
+    }
+
+    function test_DepositFromLiquidationRevertsZeroToken() public {
+        vm.prank(liquidationEngine);
+        vm.expectRevert(InsuranceFund.InsuranceFund__InvalidToken.selector);
+        fund.depositFromLiquidation(1000e6, address(0));
+    }
+
+    function test_DeployToAaveRevertsZeroAmount() public {
+        vm.prank(admin);
+        vm.expectRevert(InsuranceFund.InsuranceFund__ZeroAmount.selector);
+        fund.deployToAave(0, address(usdc));
+    }
+
+    function test_DeployToAaveRevertsZeroToken() public {
+        vm.prank(admin);
+        vm.expectRevert(InsuranceFund.InsuranceFund__InvalidToken.selector);
+        fund.deployToAave(1000e6, address(0));
+    }
+
+    function test_WithdrawFromAaveRevertsZeroAmount() public {
+        vm.prank(admin);
+        vm.expectRevert(InsuranceFund.InsuranceFund__ZeroAmount.selector);
+        fund.withdrawFromAave(0, address(usdc));
+    }
+
+    function test_WithdrawFromAaveRevertsZeroToken() public {
+        vm.prank(admin);
+        vm.expectRevert(InsuranceFund.InsuranceFund__InvalidToken.selector);
+        fund.withdrawFromAave(1000e6, address(0));
+    }
+
+    function test_RebalanceTokenRevertsZeroToken() public {
+        vm.prank(admin);
+        vm.expectRevert(InsuranceFund.InsuranceFund__InvalidToken.selector);
+        fund.rebalanceToken(address(0));
+    }
+
+    function test_AddSupportedTokenRevertsZeroToken() public {
+        vm.prank(admin);
+        vm.expectRevert(InsuranceFund.InsuranceFund__InvalidToken.selector);
+        fund.addSupportedToken(address(0));
+    }
+
+    function test_SetATokenRevertsZeroToken() public {
+        vm.prank(admin);
+        vm.expectRevert(InsuranceFund.InsuranceFund__InvalidToken.selector);
+        fund.setAToken(address(0), address(usdc));
+    }
+
+    function test_SetATokenRevertsZeroAToken() public {
+        vm.prank(admin);
+        vm.expectRevert(InsuranceFund.InsuranceFund__ZeroAddress.selector);
+        fund.setAToken(address(usdc), address(0));
+    }
+
+    /* ============ Branch coverage: emergencyWithdraw ============ */
+
+    function test_EmergencyWithdrawRevertsZeroAmount() public {
+        vm.prank(admin);
+        vm.expectRevert(InsuranceFund.InsuranceFund__ZeroAmount.selector);
+        fund.emergencyWithdraw(address(usdc), 0, admin, "x");
+    }
+
+    function test_EmergencyWithdrawRevertsZeroTo() public {
+        vm.prank(admin);
+        vm.expectRevert(InsuranceFund.InsuranceFund__ZeroAddress.selector);
+        fund.emergencyWithdraw(address(usdc), 1000e6, address(0), "x");
+    }
+
+    function test_EmergencyWithdrawRevertsZeroToken() public {
+        vm.prank(admin);
+        vm.expectRevert(InsuranceFund.InsuranceFund__InvalidToken.selector);
+        fund.emergencyWithdraw(address(0), 1000e6, admin, "x");
+    }
+
+    function test_EmergencyWithdrawPullsFromAaveShortfall() public {
+        // reserves 4000, deployed 6000; withdrawing 5000 pulls 1000 from Aave.
+        vm.startPrank(vaultManagerContract);
+        usdc.approve(address(fund), 10_000e6);
+        fund.depositFromFees(10_000e6, address(usdc));
+        vm.stopPrank();
+        vm.prank(admin);
+        fund.deployToAave(6_000e6, address(usdc));
+
+        vm.prank(admin);
+        fund.emergencyWithdraw(address(usdc), 5_000e6, admin, "shortfall");
+        assertTrue(usdc.balanceOf(admin) >= 5_000e6);
+    }
+
+    /* ============ Branch coverage: getCoverageEvent / fund health ============ */
+
+    function test_GetCoverageEventRevertsInvalidId() public {
+        vm.expectRevert("InsuranceFund: invalid event ID");
+        fund.getCoverageEvent(0);
+    }
+
+    function test_FundHealthHealthyWhenNoTvl() public {
+        vaultManager.setTotalValueLocked(0);
+        assertEq(uint256(fund.getFundHealth()), uint256(InsuranceFund.FundHealth.HEALTHY));
+    }
+
+    function test_FundHealthStatesAcrossReserveLevels() public {
+        // target = 1.5% of 10M TVL = 150,000e6
+        // CRITICAL: no reserves
+        assertEq(uint256(fund.getFundHealth()), uint256(InsuranceFund.FundHealth.CRITICAL));
+
+        // WARNING: reserves in [target/2, target)
+        _depositFees(80_000e6);
+        assertEq(uint256(fund.getFundHealth()), uint256(InsuranceFund.FundHealth.WARNING));
+
+        // HEALTHY: reserves in [target, target*2)
+        _depositFees(80_000e6); // total 160,000e6
+        assertEq(uint256(fund.getFundHealth()), uint256(InsuranceFund.FundHealth.HEALTHY));
+
+        // OVERCAPITALIZED: reserves >= target*2 (300,000e6)
+        _depositFees(160_000e6); // total 320,000e6
+        assertEq(uint256(fund.getFundHealth()), uint256(InsuranceFund.FundHealth.OVERCAPITALIZED));
+    }
+
+    /* ============ Branch coverage: reserve normalization for non-6-decimal tokens ============ */
+
+    function test_GetTotalReservesNormalizesMixedDecimals() public {
+        MockERC20 token18 = new MockERC20("Eighteen", "E18", 18);
+        MockERC20 token2 = new MockERC20("Two", "T2", 2);
+        vm.startPrank(admin);
+        fund.addSupportedToken(address(usdc)); // 6 decimals (== branch)
+        fund.addSupportedToken(address(token18)); // > 6 branch
+        fund.addSupportedToken(address(token2)); // < 6 branch
+        vm.stopPrank();
+
+        // getTotalReserves iterates all three, exercising each decimal branch.
+        assertEq(fund.getTotalReserves(), 0);
+    }
+
+    function _depositFees(uint256 amount) internal {
+        usdc.mint(vaultManagerContract, amount);
+        vm.startPrank(vaultManagerContract);
+        usdc.approve(address(fund), amount);
+        fund.depositFromFees(amount, address(usdc));
+        vm.stopPrank();
+    }
 }
