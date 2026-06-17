@@ -310,7 +310,8 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
      * @notice Rebalance reserves for all registered tokens to maintain target utilization
      */
     function rebalance() external onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused {
-        for (uint256 i = 0; i < _tokenList.length; i++) {
+        uint256 len = _tokenList.length;
+        for (uint256 i = 0; i < len; i++) {
             _rebalanceToken(_tokenList[i]);
         }
     }
@@ -373,7 +374,8 @@ contract InsuranceFund is AccessControl, Pausable, ReentrancyGuard {
      * @return total Total reserves in 6-decimal USD equivalent
      */
     function getTotalReserves() public view returns (uint256 total) {
-        for (uint256 i = 0; i < _tokenList.length; i++) {
+        uint256 len = _tokenList.length;
+        for (uint256 i = 0; i < len; i++) {
             address token = _tokenList[i];
             uint256 raw = reserves[token] + deployed[token];
             uint8 dec = tokenDecimals[token];
