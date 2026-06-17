@@ -185,7 +185,7 @@ contract DeployLocal is Script {
     function _deployCore(address deployer) internal {
         console.log("[3/4] Deploying core protocol contracts...");
 
-        liquidityPool = address(new LiquidityPool(usdc, usdt));
+        liquidityPool = address(new LiquidityPool(deployer, usdc, usdt));
 
         vaultManager = address(new VaultManager(deployer, tgaux, oracle, liquidityPool, usdc, usdt));
 

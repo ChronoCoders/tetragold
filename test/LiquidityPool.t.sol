@@ -72,7 +72,7 @@ contract LiquidityPoolTest is Test {
         usdt = new MockERC20("Tether USD", "USDT", 6);
 
         // Deploy liquidity pool
-        pool = new LiquidityPool(address(usdc), address(usdt));
+        pool = new LiquidityPool(admin, address(usdc), address(usdt));
 
         // Deploy mock vault manager
         vaultManager = new MockVaultManager(address(pool));
@@ -707,14 +707,19 @@ contract LiquidityPoolTest is Test {
 
     /* ============ Branch coverage ============ */
 
+    function test_ConstructorRevertsZeroAdmin() public {
+        vm.expectRevert("LiquidityPool: zero admin address");
+        new LiquidityPool(address(0), address(usdc), address(usdt));
+    }
+
     function test_ConstructorRevertsZeroUsdc() public {
         vm.expectRevert("LiquidityPool: zero usdc address");
-        new LiquidityPool(address(0), address(usdt));
+        new LiquidityPool(admin, address(0), address(usdt));
     }
 
     function test_ConstructorRevertsZeroUsdt() public {
         vm.expectRevert("LiquidityPool: zero usdt address");
-        new LiquidityPool(address(usdc), address(0));
+        new LiquidityPool(admin, address(usdc), address(0));
     }
 
     function test_DepositLPRevertsUnsupportedToken() public {

@@ -81,7 +81,7 @@ contract IntegrationTest is Test {
         vm.warp(block.timestamp + 601);
         oracle.updateTwap();
 
-        pool = new LiquidityPool(address(usdc), address(usdt));
+        pool = new LiquidityPool(admin, address(usdc), address(usdt));
         vault = new VaultManager(admin, address(tgaux), address(oracle), address(pool), address(usdc), address(usdt));
 
         MockAavePool aave = new MockAavePool();

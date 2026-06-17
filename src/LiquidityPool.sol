@@ -80,14 +80,15 @@ contract LiquidityPool is AccessControl, Pausable, ReentrancyGuard {
 
     /* ============ Constructor ============ */
 
-    constructor(address _usdc, address _usdt) {
+    constructor(address _admin, address _usdc, address _usdt) {
+        require(_admin != address(0), "LiquidityPool: zero admin address");
         require(_usdc != address(0), "LiquidityPool: zero usdc address");
         require(_usdt != address(0), "LiquidityPool: zero usdt address");
 
         usdc = _usdc;
         usdt = _usdt;
 
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(DEFAULT_ADMIN_ROLE, _admin);
 
         // Initialize Conservative Pool
         pools[PoolType.CONSERVATIVE].lpToken = address(new LPToken("Tetra Gold LP Conservative", "TGLP-C"));

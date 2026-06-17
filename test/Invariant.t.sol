@@ -487,8 +487,7 @@ contract RealPoolInvariantTest is Test {
         vm.warp(block.timestamp + 601);
         oracle.updateTwap();
 
-        vm.prank(admin);
-        pool = new LiquidityPool(address(usdc), address(usdt));
+        pool = new LiquidityPool(admin, address(usdc), address(usdt));
 
         vm.prank(admin);
         vault = new VaultManager(admin, address(tgaux), address(oracle), address(pool), address(usdc), address(usdt));
