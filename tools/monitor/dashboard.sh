@@ -106,7 +106,7 @@ render() {
   echo "${B}VAULT${R}  TVL ${B}\$$(fmt "$tvl" 6 0)${R}   active positions ${count:-n/a}   next id ${nextId:-n/a}"
 
   local ids id health liq lev owner col owstr levline hbp hpct flag
-  ids=$(call "$VAULT" "getActivePositionIds()(uint256[])" | tr -d '[]," ')
+  ids=$(call "$VAULT" "getActivePositionIds()(uint256[])" | tr -d '[]"' | tr ',' ' ')
   if [ -n "$ids" ]; then
     printf "  %-5s %-12s %-7s %10s %9s\n" "id" "owner" "lev" "health" "status"
     for id in $ids; do
