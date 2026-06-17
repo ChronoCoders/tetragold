@@ -15,6 +15,9 @@ tetragold/
 │   ├── InsuranceFund.sol                   # Bad debt coverage with Aave yield generation
 │   ├── FeeDistributor.sol                  # Protocol revenue distribution
 │   ├── LPToken.sol                         # ERC-20 LP share token
+│   ├── TGX.sol                             # Capped governance / reward token (100M supply)
+│   ├── TGXVesting.sol                      # Linear vesting with cliff for team / contributors
+│   ├── TGXEmissions.sol                    # MasterChef-style TGX stake-to-earn emissions
 │   └── interfaces/
 │       └── AutomationCompatibleInterface.sol
 ├── test/
@@ -25,10 +28,19 @@ tetragold/
 │   ├── OracleAggregator.t.sol
 │   ├── InsuranceFund.t.sol
 │   ├── FeeDistributor.t.sol
+│   ├── LPToken.t.sol
+│   ├── TGX.t.sol
+│   ├── TGXVesting.t.sol
+│   ├── TGXEmissions.t.sol
+│   ├── Timelock.t.sol
+│   ├── Integration.t.sol
+│   ├── Invariant.t.sol
 │   └── mocks/
 ├── script/
+│   ├── Deploy.s.sol                        # Full protocol + TGX ecosystem + timelock
 │   ├── DeployTGAUX.s.sol
-│   └── DeployLocal.s.sol
+│   ├── DeployLocal.s.sol
+│   └── VerifyDeploy.s.sol                  # Post-deploy role and wiring checks
 ├── foundry.toml
 └── lib/
 ```
@@ -161,7 +173,7 @@ forge test --gas-report
 forge coverage
 ```
 
-**Test suite:** 348 tests across 13 contract test suites, including unit tests, integration tests, fuzz tests, and two handler-based invariant suites (one against mocks, one against the real LiquidityPool + LiquidationEngine).
+**Test suite:** 419 tests across 15 contract test suites, including unit tests, integration tests, fuzz tests, and two handler-based invariant suites (one against mocks, one against the real LiquidityPool + LiquidationEngine).
 
 ## Deployment
 
