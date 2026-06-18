@@ -1,0 +1,143 @@
+groups:
+  - name: tetragold-oracle
+    rules:
+      - alert: OraclePriceStale
+        expr: tetragold_oracle_price_age_seconds > 300
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gold oracle price is stale"
+          description: "Cached TWAP is {{ $value | humanizeDuration }} old. The keeper should be calling updateTwap(); check keeper liveness."
+      - alert: OraclePriceVeryStale
+        expr: tetragold_oracle_price_age_seconds > 1800
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Gold oracle price is dangerously stale"
+          description: "Cached TWAP is {{ $value | humanizeDuration }} old. Liquidations and position health are using a stale price."
+      - alert: OraclePaused
+        expr: tetragold_oracle_paused == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "OracleAggregator is paused"
+          description: "The oracle is paused (circuit breaker tripped on a >5% move, or admin pause). The whole protocol is effectively frozen until resolved."
+
+  - name: tetragold-protocol
+    rules:
+      - alert: ContractPaused
+        expr: tetragold_contract_paused == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.contract }} is paused"
+          description: "Contract {{ $labels.contract }} reports paused == 1. Confirm whether this was intentional (incident response) or unexpected."
+      - alert: LiquidatableBacklog
+        expr: tetragold_liquidatable_positions > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Liquidatable positions are not being cleared"
+          description: "{{ $value }} position(s) have been liquidatable for >5m. The keeper may be down, out of gas, or reverting. Bad debt risk grows with time."
+      - alert: PositionHealthLow
+        expr: tetragold_position_health_min_ratio > 0 and tetragold_position_health_min_ratio < 1.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A position is close to liquidation"
+          description: "Weakest position health ratio is {{ $value }} (1.0 == at threshold). Expect liquidation activity soon."
+      - alert: PoolUtilizationHigh
+        expr: tetragold_pool_utilization_ratio > 0.95
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.pool }} pool utilization is very high"
+          description: "{{ $labels.pool }} utilization is {{ $value | humanizePercentage }}. LPs may be unable to withdraw; borrowing may fail."
+
+  - name: tetragold-insurance
+    rules:
+      - alert: InsuranceFundCritical
+        expr: tetragold_insurance_health == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Insurance fund health is CRITICAL"
+          description: "FundHealth == CRITICAL. Reserves are far below target; the fund may not cover bad debt. Consider topping up or de-risking."
+      - alert: InsuranceFundWarning
+        expr: tetragold_insurance_health == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Insurance fund health is WARNING"
+          description: "FundHealth == WARNING. Reserves are below target. Monitor and plan a top-up."
+      - alert: InsuranceUndercollateralized
+        expr: tetragold_insurance_target_usd > 0 and (tetragold_insurance_reserves_usd / tetragold_insurance_target_usd) < 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Insurance reserves below 50% of target"
+          description: "Reserves are {{ $value | humanizePercentage }} of target."
+
+  - name: tetragold-keeper
+    rules:
+      - alert: KeeperDown
+        expr: up{job="keeper"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Keeper is not reachable"
+          description: "Prometheus cannot scrape the keeper. Oracle refresh and liquidations are not running."
+      - alert: KeeperStalled
+        expr: time() - tetragold_keeper_last_tick_timestamp > 120
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Keeper loop is stalled"
+          description: "The keeper process is up but has not completed a loop iteration in {{ $value | humanizeDuration }}."
+      - alert: KeeperLowGas
+        expr: tetragold_keeper_balance_wei < 5e16
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Keeper gas balance is low"
+          description: "Keeper balance is {{ $value }} wei (< 0.05 ETH). Top it up before it can no longer send transactions."
+      - alert: KeeperDryRunInProduction
+        expr: tetragold_keeper_dry_run == 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Keeper is running in dry-run mode"
+          description: "KEEPER_DRY_RUN is enabled: the keeper observes but never sends transactions. If this is production, no oracle refresh or liquidation is actually happening."
+
+  - name: tetragold-exporter
+    rules:
+      - alert: ExporterDown
+        expr: up{job="exporter"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Protocol exporter is down"
+          description: "Prometheus cannot scrape the exporter; protocol-state metrics and their alerts are blind."
+      - alert: ExporterScrapeStale
+        expr: time() - tetragold_exporter_last_scrape_success_timestamp > 90
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Exporter cannot read chain state"
+          description: "The exporter is up but its last successful on-chain scrape was {{ $value | humanizeDuration }} ago (likely an RPC problem)."

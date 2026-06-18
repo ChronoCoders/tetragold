@@ -1,0 +1,60 @@
+# Local graph-node stack for indexing against a local chain (anvil) or testnet.
+#   docker compose up -d
+#   npm run create-local && npm run deploy-local
+#
+# graph-node is configured with one network named "localhost" pointed at the
+# host RPC. Build the manifest for it with `npm run build:localhost` (which sets
+# `network: localhost` from networks.json). Point it at anvil below.
+name: tetragold-subgraph
+
+services:
+  graph-node:
+    image: graphprotocol/graph-node:v0.35.1
+    ports:
+      - "${GRAPH_PORT_GQL:-8000}:8000"      # GraphQL (queries)
+      - "${GRAPH_PORT_GQLWS:-8001}:8001"    # GraphQL (subscriptions)
+      - "${GRAPH_PORT_ADMIN:-8020}:8020"    # JSON-RPC (deploy)
+      - "${GRAPH_PORT_STATUS:-8030}:8030"   # subgraph indexing status
+    depends_on:
+      - ipfs
+      - postgres
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      postgres_host: postgres
+      postgres_user: graph
+      postgres_pass: graph
+      postgres_db: graph
+      ipfs: "ipfs:5001"
+      ethereum: "localhost:http://host.docker.internal:8545"
+      GRAPH_LOG: info
+    restart: unless-stopped
+
+  ipfs:
+    image: ipfs/kubo:v0.29.0
+    ports:
+      - "${IPFS_PORT:-5001}:5001"
+    volumes:
+      - ipfs-data:/data/ipfs
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "${PG_PORT:-5432}:5432"
+    command:
+      - postgres
+      - -cshared_preload_libraries=pg_stat_statements
+    environment:
+      POSTGRES_USER: graph
+      POSTGRES_PASSWORD: graph
+      POSTGRES_DB: graph
+      PGDATA: /var/lib/postgresql/data
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  ipfs-data:
+  postgres-data:

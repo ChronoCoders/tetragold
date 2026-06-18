@@ -9,6 +9,16 @@ auto_detect_solc = true
 optimizer = true
 optimizer_runs = 200
 
+# block.timestamp comparisons are intentional and safe at this protocol's time
+# scales (grace periods, TWAP windows, vesting/emission schedules). Validator
+# second-level skew is immaterial, so the lint is excluded rather than annotated
+# at 15 intentional sites.
+[lint]
+exclude_lints = ["block-timestamp"]
+# Tests are not deployed; lint findings there (raw mock-token transfers, setup
+# typecasts) are noise. src/ and script/ stay fully linted.
+ignore = ["test/**"]
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
 
 [invariant]

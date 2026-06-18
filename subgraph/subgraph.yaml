@@ -1,0 +1,165 @@
+specVersion: 1.0.0
+description: Tetra Gold - leveraged synthetic gold protocol indexer
+schema:
+  file: ./schema.graphql
+dataSources:
+  - kind: ethereum
+    name: VaultManager
+    network: mainnet
+    source:
+      abi: VaultManager
+      address: "0x0000000000000000000000000000000000000000"
+      startBlock: 0
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      file: ./src/vault.ts
+      entities:
+        - Protocol
+        - User
+        - Position
+        - BadDebt
+      abis:
+        - name: VaultManager
+          file: ./abis/VaultManager.json
+      eventHandlers:
+        - event: PositionOpened(indexed uint256,indexed address,uint256,uint256,uint256)
+          handler: handlePositionOpened
+        - event: PositionClosed(indexed uint256,indexed address,uint256)
+          handler: handlePositionClosed
+        - event: CollateralAdded(indexed uint256,uint256)
+          handler: handleCollateralAdded
+        - event: PositionLiquidated(indexed uint256,indexed address,uint256)
+          handler: handleVaultPositionLiquidated
+        - event: BadDebtRealized(indexed uint256,indexed address,uint256)
+          handler: handleBadDebtRealized
+  - kind: ethereum
+    name: LiquidationEngine
+    network: mainnet
+    source:
+      abi: LiquidationEngine
+      address: "0x0000000000000000000000000000000000000000"
+      startBlock: 0
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      file: ./src/liquidation.ts
+      entities:
+        - Protocol
+        - User
+        - Position
+        - Liquidation
+        - LiquidationMark
+      abis:
+        - name: LiquidationEngine
+          file: ./abis/LiquidationEngine.json
+      eventHandlers:
+        - event: PositionLiquidated(indexed uint256,indexed address,uint256,uint256)
+          handler: handleEngineLiquidation
+        - event: PositionMarkedForLiquidation(indexed uint256,uint256)
+          handler: handleMarked
+        - event: LiquidationMarkCleared(indexed uint256)
+          handler: handleMarkCleared
+  - kind: ethereum
+    name: OracleAggregator
+    network: mainnet
+    source:
+      abi: OracleAggregator
+      address: "0x0000000000000000000000000000000000000000"
+      startBlock: 0
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      file: ./src/oracle.ts
+      entities:
+        - Protocol
+        - OraclePrice
+        - CircuitBreakerEvent
+      abis:
+        - name: OracleAggregator
+          file: ./abis/OracleAggregator.json
+      eventHandlers:
+        - event: PriceUpdated(uint256,uint256)
+          handler: handlePriceUpdated
+        - event: CircuitBreakerTriggered(uint256,uint256,uint256)
+          handler: handleCircuitBreaker
+  - kind: ethereum
+    name: LiquidityPool
+    network: mainnet
+    source:
+      abi: LiquidityPool
+      address: "0x0000000000000000000000000000000000000000"
+      startBlock: 0
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      file: ./src/pool.ts
+      entities:
+        - Pool
+        - User
+        - LpDeposit
+      abis:
+        - name: LiquidityPool
+          file: ./abis/LiquidityPool.json
+      eventHandlers:
+        - event: LPDeposit(indexed address,uint256,indexed uint8,uint256,indexed address)
+          handler: handleLpDeposit
+        - event: LPWithdrawal(indexed address,uint256,indexed uint8,uint256,indexed
+            address)
+          handler: handleLpWithdrawal
+        - event: Borrowed(uint256,indexed address,indexed uint8)
+          handler: handleBorrowed
+        - event: Repaid(uint256,indexed address,indexed uint8)
+          handler: handleRepaid
+        - event: UtilizationUpdated(indexed uint8,uint256)
+          handler: handleUtilizationUpdated
+  - kind: ethereum
+    name: InsuranceFund
+    network: mainnet
+    source:
+      abi: InsuranceFund
+      address: "0x0000000000000000000000000000000000000000"
+      startBlock: 0
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      file: ./src/insurance.ts
+      entities:
+        - InsuranceEvent
+      abis:
+        - name: InsuranceFund
+          file: ./abis/InsuranceFund.json
+      eventHandlers:
+        - event: FundsDeposited(indexed address,uint256,indexed address,string)
+          handler: handleFundsDeposited
+        - event: CoverageProvided(indexed uint256,indexed uint256,uint256,uint8)
+          handler: handleCoverageProvided
+        - event: FundHealthUpdated(uint8,uint8)
+          handler: handleFundHealthUpdated
+        - event: Rebalanced(indexed address,uint256,uint256)
+          handler: handleRebalanced
+  - kind: ethereum
+    name: FeeDistributor
+    network: mainnet
+    source:
+      abi: FeeDistributor
+      address: "0x0000000000000000000000000000000000000000"
+      startBlock: 0
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      file: ./src/fees.ts
+      entities:
+        - FeeEvent
+      abis:
+        - name: FeeDistributor
+          file: ./abis/FeeDistributor.json
+      eventHandlers:
+        - event: FeesCollected(indexed address,uint256,uint256,uint256,uint256)
+          handler: handleFeesCollected

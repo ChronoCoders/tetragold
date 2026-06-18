@@ -1,0 +1,162 @@
+type Protocol @entity {
+  id: ID!
+  totalPositionsOpened: BigInt!
+  totalPositionsClosed: BigInt!
+  totalPositionsLiquidated: BigInt!
+  openPositionCount: BigInt!
+  totalCollateralOpened: BigInt!
+  totalTgauxMinted: BigInt!
+  totalLiquidations: BigInt!
+  totalPenaltiesCollected: BigInt!
+  totalBadDebt: BigInt!
+  lastGoldPrice: BigInt!
+  lastPriceUpdate: BigInt!
+  circuitBreakerTrips: BigInt!
+}
+
+type User @entity {
+  id: ID!
+  positionsOpened: BigInt!
+  positionsLiquidated: BigInt!
+  liquidationsPerformed: BigInt!
+  penaltiesEarned: BigInt!
+  positions: [Position!]! @derivedFrom(field: "owner")
+  lpDeposits: [LpDeposit!]! @derivedFrom(field: "user")
+}
+
+enum PositionStatus {
+  OPEN
+  CLOSED
+  LIQUIDATED
+}
+
+type Position @entity {
+  id: ID!
+  positionId: BigInt!
+  owner: User!
+  collateralToken: Bytes
+  collateral: BigInt!
+  borrowedAmount: BigInt!
+  leverage: BigInt!
+  tgauxMinted: BigInt!
+  openPrice: BigInt!
+  status: PositionStatus!
+  returnAmount: BigInt
+  collateralSeized: BigInt!
+  badDebt: BigInt!
+  tranchesLiquidated: Int!
+  openedAt: BigInt!
+  openedTx: Bytes!
+  closedAt: BigInt
+  liquidations: [Liquidation!]! @derivedFrom(field: "position")
+  marks: [LiquidationMark!]! @derivedFrom(field: "position")
+  badDebtEvents: [BadDebt!]! @derivedFrom(field: "position")
+}
+
+type Liquidation @entity(immutable: true) {
+  id: ID!
+  position: Position!
+  liquidator: Bytes!
+  penalty: BigInt!
+  portion: BigInt!
+  timestamp: BigInt!
+  block: BigInt!
+  tx: Bytes!
+}
+
+type LiquidationMark @entity {
+  id: ID!
+  position: Position!
+  markedTime: BigInt!
+  cleared: Boolean!
+  clearedAt: BigInt
+  timestamp: BigInt!
+  tx: Bytes!
+}
+
+type BadDebt @entity(immutable: true) {
+  id: ID!
+  position: Position!
+  token: Bytes!
+  shortfall: BigInt!
+  timestamp: BigInt!
+  tx: Bytes!
+}
+
+type OraclePrice @entity(immutable: true) {
+  id: ID!
+  price: BigInt!
+  timestamp: BigInt!
+  block: BigInt!
+  tx: Bytes!
+}
+
+type CircuitBreakerEvent @entity(immutable: true) {
+  id: ID!
+  oldPrice: BigInt!
+  newPrice: BigInt!
+  deviation: BigInt!
+  timestamp: BigInt!
+  tx: Bytes!
+}
+
+type Pool @entity {
+  id: ID!
+  poolType: Int!
+  name: String!
+  netDeposited: BigInt!
+  totalBorrowed: BigInt!
+  utilization: BigInt!
+  depositCount: BigInt!
+  withdrawalCount: BigInt!
+  borrowCount: BigInt!
+  repayCount: BigInt!
+}
+
+type LpDeposit @entity(immutable: true) {
+  id: ID!
+  user: User!
+  pool: Pool!
+  amount: BigInt!
+  lpTokens: BigInt!
+  token: Bytes!
+  isWithdrawal: Boolean!
+  timestamp: BigInt!
+  tx: Bytes!
+}
+
+type InsuranceEvent @entity(immutable: true) {
+  id: ID!
+  kind: String!
+  amount: BigInt
+  token: Bytes
+  positionId: BigInt
+  oldHealth: Int
+  newHealth: Int
+  timestamp: BigInt!
+  tx: Bytes!
+}
+
+type FeeEvent @entity(immutable: true) {
+  id: ID!
+  source: String!
+  token: Bytes!
+  total: BigInt!
+  toInsurance: BigInt!
+  toTreasury: BigInt!
+  toStakers: BigInt!
+  timestamp: BigInt!
+  tx: Bytes!
+}
+
+type ProtocolDayData @entity {
+  id: ID!
+  date: Int!
+  positionsOpened: BigInt!
+  positionsClosed: BigInt!
+  positionsLiquidated: BigInt!
+  penalties: BigInt!
+  badDebt: BigInt!
+  collateralOpened: BigInt!
+  goldPriceClose: BigInt!
+}
