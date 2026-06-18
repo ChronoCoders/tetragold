@@ -1,0 +1,49 @@
+# Alertmanager routing. Replace the receiver webhooks/credentials with your own
+# (Slack, PagerDuty, Opsgenie). Secrets should come from the environment or a
+# secrets manager in production, never be committed here.
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: default
+  group_by: ["alertname", "severity"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers:
+        - severity = "critical"
+      receiver: pager
+      group_wait: 10s
+      repeat_interval: 1h
+    - matchers:
+        - severity = "warning"
+      receiver: chat
+
+receivers:
+  - name: default
+    # No-op sink; routes above send everything to pager/chat.
+
+  - name: pager
+    # Page a human for critical alerts. Fill in your PagerDuty routing key.
+    pagerduty_configs:
+      - routing_key: "REPLACE_WITH_PAGERDUTY_ROUTING_KEY"
+        severity: critical
+        description: "{{ .CommonAnnotations.summary }}"
+
+  - name: chat
+    # Warnings to Slack. Fill in your Slack incoming-webhook URL.
+    slack_configs:
+      - api_url: "REPLACE_WITH_SLACK_WEBHOOK_URL"
+        channel: "#tetragold-alerts"
+        title: "{{ .CommonLabels.alertname }} ({{ .CommonLabels.severity }})"
+        text: "{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}"
+
+inhibit_rules:
+  # A paused oracle freezes the system, so suppress the noisier downstream
+  # staleness/health alerts it inevitably triggers.
+  - source_matchers:
+      - alertname = "OraclePaused"
+    target_matchers:
+      - alertname =~ "OraclePriceStale|OraclePriceVeryStale|LiquidatableBacklog"
+    equal: ["service"]

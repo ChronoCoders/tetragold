@@ -1,0 +1,80 @@
+# Full ops stack: protocol exporter + keeper + Prometheus + Alertmanager +
+# Grafana. Reads contract addresses and keeper config from ../.env.
+#
+#   cd tools/ops && cp .env.example .env   # then fill in addresses
+#   docker compose -f monitoring/docker-compose.yml up -d
+#
+# Grafana: http://localhost:3000 (admin/admin)  Prometheus: http://localhost:9090
+name: tetragold-ops
+
+services:
+  exporter:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["src/exporter.ts"]
+    env_file: ../.env
+    environment:
+      EXPORTER_PORT: "9102"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "9102:9102"
+    restart: unless-stopped
+
+  keeper:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["src/keeper.ts"]
+    env_file: ../.env
+    environment:
+      KEEPER_METRICS_PORT: "9101"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "9101:9101"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+    ports:
+      - "9093:9093"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:

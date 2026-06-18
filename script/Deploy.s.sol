@@ -156,7 +156,7 @@ contract Deploy is Script {
         _printPendingActions(address(tgxEmissions), address(tgxVesting), address(timelock));
     }
 
-    function _printPendingActions(address tgxEmissions, address tgxVesting, address timelock) internal view {
+    function _printPendingActions(address tgxEmissions_, address tgxVesting_, address timelock_) internal pure {
         // Role setup and TGX distribution must be executed by the admin multisig
         // and treasury after deployment. Run VerifyDeploy.s.sol to confirm roles.
         console.log("");
@@ -179,9 +179,9 @@ contract Deploy is Script {
         console.log("=== PENDING TGX DISTRIBUTION (run as treasury) ===");
         console.log("Genesis: 100,000,000 TGX minted to treasury");
         console.log("- Fund emissions: tgx.transfer(emissions, 65,000,000e18)");
-        console.log("  emissions:", tgxEmissions);
+        console.log("  emissions:", tgxEmissions_);
         console.log("- Vesting budget: approve admin to pull up to 15,000,000e18 for team/contributor schedules");
-        console.log("  vesting:  ", tgxVesting);
+        console.log("  vesting:  ", tgxVesting_);
         console.log("- Remaining 20,000,000 TGX stays in treasury reserve");
         console.log(
             "Emission step decay (per year): 25M / 15M / 7.5M / 2.5M = 50M emitted; ~15M sweepable after year 4"
@@ -190,7 +190,7 @@ contract Deploy is Script {
         console.log("");
         console.log("=== PENDING TIMELOCK HANDOFF (run as admin) ===");
         console.log("Move slow parameter tuning behind the 48h timelock, keep pause immediate:");
-        console.log("  timelock:", timelock);
+        console.log("  timelock:", timelock_);
         console.log("- oracle.grantRole(PARAM_ROLE, timelock)");
         console.log("- oracle.renounceRole(PARAM_ROLE, admin)");
         console.log("- insuranceFund.grantRole(PARAM_ROLE, timelock)");

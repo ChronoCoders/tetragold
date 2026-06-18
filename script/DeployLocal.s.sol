@@ -3,6 +3,7 @@ pragma solidity 0.8.30;
 
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {TGAUX} from "../src/TGAUX.sol";
 import {VaultManager} from "../src/VaultManager.sol";
@@ -75,6 +76,11 @@ contract MockChainlinkOracle {
     function latestRoundData() external view returns (uint80, int256 answer, uint256, uint256 updatedAt, uint80) {
         return (1, _price, _updatedAt, _updatedAt, 1);
     }
+
+    function setLatestAnswer(int256 price) external {
+        _price = price;
+        _updatedAt = block.timestamp;
+    }
 }
 
 contract MockBandOracle {
@@ -93,6 +99,11 @@ contract MockBandOracle {
     {
         return (_rate, _updatedAt, _updatedAt);
     }
+
+    function setReferenceData(uint256 rate) external {
+        _rate = rate;
+        _updatedAt = block.timestamp;
+    }
 }
 
 contract MockAPI3Oracle {
@@ -107,12 +118,17 @@ contract MockAPI3Oracle {
     function read() external view returns (int224 value, uint32 timestamp) {
         return (_value, _timestamp);
     }
+
+    function setValue(int224 value) external {
+        _value = value;
+        _timestamp = uint32(block.timestamp);
+    }
 }
 
 contract MockAavePool {
     function supply(address, uint256, address, uint16) external {}
 
-    function withdraw(address, uint256 amount, address) external returns (uint256) {
+    function withdraw(address, uint256 amount, address) external pure returns (uint256) {
         return amount;
     }
 }
@@ -173,7 +189,7 @@ contract DeployLocal is Script {
         console.log("[2/4] Deploying mock oracles and TGAUX...");
         address chainlink = address(new MockChainlinkOracle(GOLD_PRICE_8DEC));
         address band = address(new MockBandOracle(GOLD_PRICE_18DEC));
-        address api3 = address(new MockAPI3Oracle(int224(int256(GOLD_PRICE_18DEC))));
+        address api3 = address(new MockAPI3Oracle(SafeCast.toInt224(SafeCast.toInt256(GOLD_PRICE_18DEC))));
 
         tgaux = address(new TGAUX(deployer));
         oracle = address(new OracleAggregator(deployer, chainlink, band, api3));

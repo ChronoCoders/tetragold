@@ -1,0 +1,21 @@
+{
+  "name": "tetragold-subgraph",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The Graph subgraph indexing the Tetra Gold protocol.",
+  "scripts": {
+    "codegen": "graph codegen",
+    "build": "graph build",
+    "build:mainnet": "graph build --network mainnet",
+    "build:sepolia": "graph build --network sepolia",
+    "build:localhost": "graph build --network localhost",
+    "create-local": "graph create --node http://localhost:8020/ tetragold/tetragold",
+    "remove-local": "graph remove --node http://localhost:8020/ tetragold/tetragold",
+    "deploy-local": "graph deploy --node http://localhost:8020/ --ipfs http://localhost:5001 tetragold/tetragold",
+    "deploy": "graph deploy --studio tetragold"
+  },
+  "dependencies": {
+    "@graphprotocol/graph-cli": "^0.80.0",
+    "@graphprotocol/graph-ts": "^0.35.1"
+  }
+}

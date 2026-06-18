@@ -49,6 +49,7 @@ grab() { grep -oE "$1: +0x[a-fA-F0-9]{40}" <<<"$DEPLOY_OUT" | grep -oE "0x[a-fA-
   echo "export ORACLE=$(grab 'OracleAggregator')"
   echo "export POOL=$(grab 'LiquidityPool')"
   echo "export VAULT=$(grab 'VaultManager')"
+  echo "export LIQUIDATION_ENGINE=$(grab 'LiquidationEngine')"
   echo "export INSURANCE=$(grab 'InsuranceFund')"
   echo "export TGAUX=$(grab 'TGAUX')"
   echo "export USDC=$(grab 'USDC')"

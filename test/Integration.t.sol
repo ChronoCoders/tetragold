@@ -20,7 +20,7 @@ import {MockAPI3Oracle} from "./mocks/MockAPI3Oracle.sol";
 contract MockAavePool {
     function supply(address, uint256, address, uint16) external {}
 
-    function withdraw(address, uint256 amount, address) external returns (uint256) {
+    function withdraw(address, uint256 amount, address) external pure returns (uint256) {
         return amount;
     }
 }

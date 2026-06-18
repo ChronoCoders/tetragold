@@ -1,0 +1,73 @@
+# Tenderly alert definitions. Mirror of the Defender monitors for teams using
+# Tenderly's on-chain alerting instead of (or alongside) self-hosted Prometheus.
+# Create these in the Tenderly dashboard (Alerts > New Alert) or via the
+# Tenderly API; the YAML below documents the intended rules. Replace addresses
+# and delivery channel ids.
+project: tetragold
+network: mainnet
+
+alerts:
+  - name: oracle-circuit-breaker
+    description: Oracle circuit breaker tripped on a large price move
+    trigger:
+      type: event_emitted
+      contract: "{{ORACLE_ADDRESS}}"
+      event: CircuitBreakerTriggered
+    severity: critical
+    delivery: [pagerduty]
+
+  - name: oracle-feed-failure
+    description: A constituent oracle feed failed
+    trigger:
+      type: event_emitted
+      contract: "{{ORACLE_ADDRESS}}"
+      event: OracleFailed
+    severity: warning
+    delivery: [slack]
+
+  - name: bad-debt-realized
+    description: VaultManager realized bad debt on a close or liquidation
+    trigger:
+      type: event_emitted
+      contract: "{{VAULT_ADDRESS}}"
+      event: BadDebtRealized
+    severity: critical
+    delivery: [pagerduty]
+
+  - name: contract-paused
+    description: Any core contract was paused
+    trigger:
+      type: event_emitted
+      event: Paused
+      contracts:
+        - "{{ORACLE_ADDRESS}}"
+        - "{{VAULT_ADDRESS}}"
+        - "{{POOL_ADDRESS}}"
+        - "{{LIQUIDATION_ENGINE_ADDRESS}}"
+        - "{{INSURANCE_ADDRESS}}"
+    severity: critical
+    delivery: [pagerduty]
+
+  - name: role-change
+    description: A role was granted or revoked after deploy handoff
+    trigger:
+      type: event_emitted
+      events: [RoleGranted, RoleRevoked]
+      contracts:
+        - "{{ORACLE_ADDRESS}}"
+        - "{{VAULT_ADDRESS}}"
+        - "{{POOL_ADDRESS}}"
+        - "{{LIQUIDATION_ENGINE_ADDRESS}}"
+        - "{{INSURANCE_ADDRESS}}"
+        - "{{TGAUX_ADDRESS}}"
+    severity: critical
+    delivery: [pagerduty]
+
+  - name: keeper-account-low-gas
+    description: Keeper EOA balance dropped below 0.05 ETH
+    trigger:
+      type: wallet_balance
+      address: "{{KEEPER_ADDRESS}}"
+      below: "0.05 ETH"
+    severity: warning
+    delivery: [slack]

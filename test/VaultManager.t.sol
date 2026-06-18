@@ -1246,7 +1246,7 @@ contract VaultManagerTest is Test {
         vault.pushFeesToDistributor(address(usdt));
     }
 
-    function test_GetActivePositionIdsPaginationEdges() public {
+    function test_GetActivePositionIdsPaginationEdges() public view {
         // No active positions: offset >= total and limit == 0 both yield empty.
         (uint256[] memory a, uint256 totalA) = vault.getActivePositionIds(5, 10);
         assertEq(a.length, 0);

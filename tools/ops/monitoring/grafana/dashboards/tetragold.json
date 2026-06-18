@@ -1,0 +1,124 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 0,
+  "title": "Tetra Gold - Protocol Overview",
+  "uid": "tetragold-overview",
+  "schemaVersion": 39,
+  "tags": ["tetragold"],
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Gold price (USD)",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [{ "expr": "tetragold_gold_price_usd" }],
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 2 } }
+    },
+    {
+      "type": "stat",
+      "title": "Oracle price age (s)",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [{ "expr": "tetragold_oracle_price_age_seconds" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 300 },
+            { "color": "red", "value": 1800 }
+          ] }
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "TVL (USD)",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [{ "expr": "tetragold_tvl_usd" }],
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 0 } }
+    },
+    {
+      "type": "stat",
+      "title": "Liquidatable positions",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "targets": [{ "expr": "tetragold_liquidatable_positions" }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "red", "value": 1 }
+          ] }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Pool utilization",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [{ "expr": "tetragold_pool_utilization_ratio", "legendFormat": "{{pool}}" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1 } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Pool deposits vs borrowed (USD)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        { "expr": "tetragold_pool_deposits_usd", "legendFormat": "{{pool}} deposits" },
+        { "expr": "tetragold_pool_borrowed_usd", "legendFormat": "{{pool}} borrowed" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" } }
+    },
+    {
+      "type": "stat",
+      "title": "Insurance health",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 12 },
+      "targets": [{ "expr": "tetragold_insurance_health" }],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [{ "type": "value", "options": {
+            "0": { "text": "CRITICAL", "color": "red" },
+            "1": { "text": "WARNING", "color": "yellow" },
+            "2": { "text": "HEALTHY", "color": "green" },
+            "3": { "text": "OVERCAP", "color": "blue" }
+          } }]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Insurance reserves vs target (USD)",
+      "gridPos": { "h": 8, "w": 12, "x": 6, "y": 12 },
+      "targets": [
+        { "expr": "tetragold_insurance_reserves_usd", "legendFormat": "reserves" },
+        { "expr": "tetragold_insurance_target_usd", "legendFormat": "target" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" } }
+    },
+    {
+      "type": "stat",
+      "title": "Keeper gas (ETH)",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 12 },
+      "targets": [{ "expr": "tetragold_keeper_balance_wei / 1e18" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ether",
+          "decimals": 3,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "yellow", "value": 0.05 },
+            { "color": "green", "value": 0.2 }
+          ] }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Keeper actions (rate)",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "targets": [{ "expr": "rate(tetragold_keeper_actions_total[5m])", "legendFormat": "{{action}} {{outcome}}" }]
+    }
+  ]
+}

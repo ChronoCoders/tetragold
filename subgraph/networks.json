@@ -1,0 +1,27 @@
+{
+  "_comment": "Fill in deployed addresses and the deploy block per network, then `graph build --network <name>`. The localhost block uses anvil DeployLocal defaults; replace from tools/monitor/addresses.env after deploying.",
+  "localhost": {
+    "VaultManager": { "address": "0x610178dA211FEF7D417bC0e6FeD39F05609AD788", "startBlock": 0 },
+    "LiquidationEngine": { "address": "0x959922bE3CAee4b8Cd9a407cc3ac1C251C2007B1", "startBlock": 0 },
+    "OracleAggregator": { "address": "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853", "startBlock": 0 },
+    "LiquidityPool": { "address": "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318", "startBlock": 0 },
+    "InsuranceFund": { "address": "0xA51c1fc2f0D1a1b8494Ed1FE312d7C3a78Ed91C0", "startBlock": 0 },
+    "FeeDistributor": { "address": "0x0000000000000000000000000000000000000000", "startBlock": 0 }
+  },
+  "mainnet": {
+    "VaultManager": { "address": "0x0000000000000000000000000000000000000000", "startBlock": 0 },
+    "LiquidationEngine": { "address": "0x0000000000000000000000000000000000000000", "startBlock": 0 },
+    "OracleAggregator": { "address": "0x0000000000000000000000000000000000000000", "startBlock": 0 },
+    "LiquidityPool": { "address": "0x0000000000000000000000000000000000000000", "startBlock": 0 },
+    "InsuranceFund": { "address": "0x0000000000000000000000000000000000000000", "startBlock": 0 },
+    "FeeDistributor": { "address": "0x0000000000000000000000000000000000000000", "startBlock": 0 }
+  },
+  "sepolia": {
+    "VaultManager": { "address": "0x0000000000000000000000000000000000000000", "startBlock": 0 },
+    "LiquidationEngine": { "address": "0x0000000000000000000000000000000000000000", "startBlock": 0 },
+    "OracleAggregator": { "address": "0x0000000000000000000000000000000000000000", "startBlock": 0 },
+    "LiquidityPool": { "address": "0x0000000000000000000000000000000000000000", "startBlock": 0 },
+    "InsuranceFund": { "address": "0x0000000000000000000000000000000000000000", "startBlock": 0 },
+    "FeeDistributor": { "address": "0x0000000000000000000000000000000000000000", "startBlock": 0 }
+  }
+}

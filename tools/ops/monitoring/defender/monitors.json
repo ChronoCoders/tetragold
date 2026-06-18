@@ -1,0 +1,82 @@
+{
+  "_comment": "OpenZeppelin Defender Monitor definitions. Import via the Defender UI (Monitor > Create) or the defender-as-code serverless plugin. Replace {{ADDRESS}} placeholders and notification channel ids. These are event/function monitors that complement the Prometheus exporter alerts (which cover time-based conditions like oracle staleness that on-chain monitors cannot express).",
+  "monitors": [
+    {
+      "name": "Oracle circuit breaker tripped",
+      "type": "BLOCK",
+      "network": "mainnet",
+      "addresses": ["{{ORACLE_ADDRESS}}"],
+      "abi": "OracleAggregator",
+      "eventConditions": [{ "eventSignature": "CircuitBreakerTriggered(uint256,uint256,uint256)" }],
+      "severity": "HIGH",
+      "notify": ["pagerduty-critical"]
+    },
+    {
+      "name": "Oracle feed failure",
+      "type": "BLOCK",
+      "network": "mainnet",
+      "addresses": ["{{ORACLE_ADDRESS}}"],
+      "abi": "OracleAggregator",
+      "eventConditions": [{ "eventSignature": "OracleFailed(string,string)" }],
+      "severity": "MEDIUM",
+      "notify": ["slack-warning"]
+    },
+    {
+      "name": "Bad debt realized",
+      "type": "BLOCK",
+      "network": "mainnet",
+      "addresses": ["{{VAULT_ADDRESS}}"],
+      "abi": "VaultManager",
+      "eventConditions": [{ "eventSignature": "BadDebtRealized(uint256,address,uint256)" }],
+      "severity": "HIGH",
+      "notify": ["pagerduty-critical"]
+    },
+    {
+      "name": "Pausable: any contract paused",
+      "type": "BLOCK",
+      "network": "mainnet",
+      "addresses": [
+        "{{ORACLE_ADDRESS}}",
+        "{{VAULT_ADDRESS}}",
+        "{{POOL_ADDRESS}}",
+        "{{LIQUIDATION_ENGINE_ADDRESS}}",
+        "{{INSURANCE_ADDRESS}}"
+      ],
+      "eventConditions": [{ "eventSignature": "Paused(address)" }],
+      "severity": "HIGH",
+      "notify": ["pagerduty-critical"]
+    },
+    {
+      "name": "AccessControl: role granted or revoked",
+      "type": "BLOCK",
+      "network": "mainnet",
+      "addresses": [
+        "{{ORACLE_ADDRESS}}",
+        "{{VAULT_ADDRESS}}",
+        "{{POOL_ADDRESS}}",
+        "{{LIQUIDATION_ENGINE_ADDRESS}}",
+        "{{INSURANCE_ADDRESS}}",
+        "{{TGAUX_ADDRESS}}"
+      ],
+      "eventConditions": [
+        { "eventSignature": "RoleGranted(bytes32,address,address)" },
+        { "eventSignature": "RoleRevoked(bytes32,address,address)" }
+      ],
+      "severity": "HIGH",
+      "notify": ["pagerduty-critical"],
+      "_comment": "Any role change after the post-deploy handoff is suspicious and should be human-reviewed."
+    },
+    {
+      "name": "Large liquidation",
+      "type": "BLOCK",
+      "network": "mainnet",
+      "addresses": ["{{LIQUIDATION_ENGINE_ADDRESS}}"],
+      "abi": "LiquidationEngine",
+      "eventConditions": [
+        { "eventSignature": "PositionLiquidated(uint256,address,uint256,uint256)", "expression": "penalty > 100000000000" }
+      ],
+      "severity": "MEDIUM",
+      "notify": ["slack-warning"]
+    }
+  ]
+}
