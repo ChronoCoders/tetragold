@@ -4,8 +4,14 @@ pragma solidity 0.8.30;
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
 
 import {TGAUX} from "../src/TGAUX.sol";
+import {TGX} from "../src/TGX.sol";
+import {TGXVesting} from "../src/TGXVesting.sol";
+import {TGXEmissions} from "../src/TGXEmissions.sol";
 import {VaultManager} from "../src/VaultManager.sol";
 import {OracleAggregator} from "../src/OracleAggregator.sol";
 import {LiquidityPool} from "../src/LiquidityPool.sol";
@@ -141,15 +147,21 @@ contract MockAavePool {
  * @dev Run with: forge script script/DeployLocal.s.sol --rpc-url http://localhost:8545 --broadcast
  */
 contract DeployLocal is Script {
+    using SafeERC20 for IERC20;
+
     // Anvil default account #0
     uint256 private constant DEPLOYER_PRIVATE_KEY = 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
+
+    // Anvil default account #1 (demo staker)
+    address private constant DEMO_ACCOUNT = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
 
     // Gold price: $2,847.00
     int256 private constant GOLD_PRICE_8DEC = 284700000000;
     uint256 private constant GOLD_PRICE_18DEC = 284700000000 * 1e10;
 
     uint256 private constant MINT_STABLE = 1_000_000 * 10 ** 6;
-    uint256 private constant MINT_TGX = 1_000_000 * 10 ** 18;
+    uint256 private constant EMISSIONS_FUNDING = 65_000_000 * 10 ** 18;
+    uint256 private constant TGX_DEMO_AMOUNT = 100_000 * 10 ** 18;
 
     // Deployed addresses passed between helpers via storage
     address private usdc;
@@ -158,10 +170,15 @@ contract DeployLocal is Script {
     address private tgaux;
     address private oracle;
     address private liquidityPool;
+    address private lpConservative;
+    address private lpAggressive;
     address private vaultManager;
     address private insuranceFund;
     address private feeDistributor;
     address private liquidationEngine;
+    address private tgxVesting;
+    address private tgxEmissions;
+    address private timelock;
 
     function run() external {
         vm.startBroadcast(DEPLOYER_PRIVATE_KEY);
@@ -173,6 +190,7 @@ contract DeployLocal is Script {
 
         _deployTokensAndOracle(deployer);
         _deployCore(deployer);
+        _deployTgxAndGovernance(deployer);
         _configureRoles();
         _mintTestTokens(deployer);
         _printSummary();
@@ -181,12 +199,12 @@ contract DeployLocal is Script {
     }
 
     function _deployTokensAndOracle(address deployer) internal {
-        console.log("[1/4] Deploying mock tokens...");
+        console.log("[1/5] Deploying tokens (USDC, USDT, TGX)...");
         usdc = address(new MockERC20("USD Coin", "USDC", 6));
         usdt = address(new MockERC20("Tether USD", "USDT", 6));
-        tgx = address(new MockERC20("Tetra Gold Governance", "TGX", 18));
+        tgx = address(new TGX(deployer, deployer));
 
-        console.log("[2/4] Deploying mock oracles and TGAUX...");
+        console.log("[2/5] Deploying mock oracles and TGAUX...");
         address chainlink = address(new MockChainlinkOracle(GOLD_PRICE_8DEC));
         address band = address(new MockBandOracle(GOLD_PRICE_18DEC));
         address api3 = address(new MockAPI3Oracle(SafeCast.toInt224(SafeCast.toInt256(GOLD_PRICE_18DEC))));
@@ -199,9 +217,11 @@ contract DeployLocal is Script {
     }
 
     function _deployCore(address deployer) internal {
-        console.log("[3/4] Deploying core protocol contracts...");
+        console.log("[3/5] Deploying core protocol contracts...");
 
         liquidityPool = address(new LiquidityPool(deployer, usdc, usdt));
+        (,,, lpConservative,) = LiquidityPool(liquidityPool).getPoolInfo(LiquidityPool.PoolType.CONSERVATIVE);
+        (,,, lpAggressive,) = LiquidityPool(liquidityPool).getPoolInfo(LiquidityPool.PoolType.AGGRESSIVE);
 
         vaultManager = address(new VaultManager(deployer, tgaux, oracle, liquidityPool, usdc, usdt));
 
@@ -215,8 +235,22 @@ contract DeployLocal is Script {
         liquidationEngine = address(new LiquidationEngine(deployer, vaultManager, insuranceFund, deployer));
     }
 
+    function _deployTgxAndGovernance(address deployer) internal {
+        console.log("[4/5] Deploying TGX incentives and governance...");
+
+        tgxVesting = address(new TGXVesting(deployer, tgx));
+        tgxEmissions = address(new TGXEmissions(deployer, tgx, lpConservative, lpAggressive));
+
+        // Zero delay locally so tests can execute timelock actions without waiting
+        address[] memory proposers = new address[](1);
+        proposers[0] = deployer;
+        address[] memory executors = new address[](1);
+        executors[0] = deployer;
+        timelock = address(new TimelockController(0, proposers, executors, address(0)));
+    }
+
     function _configureRoles() internal {
-        console.log("[4/4] Configuring roles...");
+        console.log("[5/5] Configuring roles...");
 
         TGAUX(tgaux).grantRole(TGAUX(tgaux).MINTER_ROLE(), vaultManager);
         console.log("- MINTER_ROLE            -> VaultManager");
@@ -244,12 +278,16 @@ contract DeployLocal is Script {
         VaultManager(vaultManager).setFeeDistributor(feeDistributor);
         console.log("- VAULT_MANAGER_ROLE     -> VaultManager (FeeDistributor)");
         console.log("- feeDistributor set in VaultManager");
+
+        // Fund the emissions reward pool from the genesis TGX supply
+        IERC20(tgx).safeTransfer(tgxEmissions, EMISSIONS_FUNDING);
+        console.log("- 65,000,000 TGX         -> TGXEmissions (reward pool funded)");
     }
 
     function _mintTestTokens(address deployer) internal {
         MockERC20(usdc).mint(deployer, MINT_STABLE);
         MockERC20(usdt).mint(deployer, MINT_STABLE);
-        MockERC20(tgx).mint(deployer, MINT_TGX);
+        IERC20(tgx).safeTransfer(DEMO_ACCOUNT, TGX_DEMO_AMOUNT);
     }
 
     function _printSummary() internal view {
@@ -261,13 +299,21 @@ contract DeployLocal is Script {
         console.log("TGAUX:              ", tgaux);
         console.log("OracleAggregator:   ", oracle);
         console.log("LiquidityPool:      ", liquidityPool);
+        console.log("  TGLP-C:           ", lpConservative);
+        console.log("  TGLP-A:           ", lpAggressive);
         console.log("VaultManager:       ", vaultManager);
         console.log("InsuranceFund:      ", insuranceFund);
         console.log("FeeDistributor:     ", feeDistributor);
         console.log("LiquidationEngine:  ", liquidationEngine);
+        console.log("TGXVesting:         ", tgxVesting);
+        console.log("TGXEmissions:       ", tgxEmissions);
+        console.log("TimelockController: ", timelock);
         console.log("");
         console.log("Gold price seed:     $2,847.00");
-        console.log("Deployer balance:    1,000,000 USDC / USDT / TGX");
+        console.log("Deployer stables:    1,000,000 USDC / USDT");
+        console.log("Emissions funded:    65,000,000 TGX");
+        console.log("Demo account:       ", DEMO_ACCOUNT);
+        console.log("Demo TGX balance:    100,000 TGX");
         console.log("=== DEPLOYMENT COMPLETE ===");
     }
 }
