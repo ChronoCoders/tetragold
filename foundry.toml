@@ -17,7 +17,7 @@ optimizer_runs = 200
 exclude_lints = ["block-timestamp"]
 # Tests are not deployed; lint findings there (raw mock-token transfers, setup
 # typecasts) are noise. src/ and script/ stay fully linted.
-ignore = ["test/**"]
+ignore = ["test/**/*.sol"]
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
 
