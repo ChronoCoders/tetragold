@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {InsuranceFund} from "../src/InsuranceFund.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockAavePool} from "./mocks/MockAavePool.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 
 contract MockVaultManager {
     uint256 public tvl;
@@ -532,6 +533,14 @@ contract InsuranceFundTest is Test {
         vm.prank(admin);
         vm.expectRevert(InsuranceFund.InsuranceFund__InvalidPercentage.selector);
         fund.updateTargetPercentage(1001); // Over 10%
+    }
+
+    function test_UpdateTargetPercentageRevertsForNonParamRole() public {
+        // Read the role before the prank so the prank lands on the gated call.
+        bytes32 role = fund.PARAM_ROLE();
+        vm.prank(user1);
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, user1, role));
+        fund.updateTargetPercentage(200);
     }
 
     function test_PauseUnpause() public {

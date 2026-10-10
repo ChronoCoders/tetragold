@@ -7,6 +7,7 @@ import {MockChainlinkOracle} from "./mocks/MockChainlinkOracle.sol";
 import {MockBandOracle} from "./mocks/MockBandOracle.sol";
 import {MockAPI3Oracle} from "./mocks/MockAPI3Oracle.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 
 contract OracleAggregatorTest is Test {
     OracleAggregator public aggregator;
@@ -437,6 +438,21 @@ contract OracleAggregatorTest is Test {
     function test_SetCircuitBreakerThresholdRevertsIfNotAdmin() public {
         vm.prank(user);
         vm.expectRevert();
+        aggregator.setCircuitBreakerThreshold(1000);
+    }
+
+    function test_SetPriceDeviationRevertsForNonParamRole() public {
+        // Read the role before the prank so the prank lands on the gated call.
+        bytes32 role = aggregator.PARAM_ROLE();
+        vm.prank(user);
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, user, role));
+        aggregator.setPriceDeviation(300);
+    }
+
+    function test_SetCircuitBreakerThresholdRevertsForNonParamRole() public {
+        bytes32 role = aggregator.PARAM_ROLE();
+        vm.prank(user);
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, user, role));
         aggregator.setCircuitBreakerThreshold(1000);
     }
 

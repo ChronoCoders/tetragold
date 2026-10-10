@@ -357,6 +357,54 @@ contract VaultManagerTest is Test {
         assertTrue(vault.getPosition(positionId).isActive);
     }
 
+    function test_ClosePositionSucceedsAtExactMinimum() public {
+        uint256 collateral = 3000e6;
+
+        vm.startPrank(user1);
+        usdc.approve(address(vault), collateral);
+        uint256 positionId = vault.openPosition(collateral, 1, address(usdc));
+
+        uint256 tgauxBalance = tgaux.balanceOf(user1);
+        tgaux.approve(address(vault), tgauxBalance);
+
+        uint256 exactReturn = _expectedCloseReturn(positionId);
+        uint256 balanceBefore = usdc.balanceOf(user1);
+        vault.closePosition(positionId, exactReturn);
+        uint256 balanceAfter = usdc.balanceOf(user1);
+        vm.stopPrank();
+
+        assertFalse(vault.getPosition(positionId).isActive);
+        assertEq(balanceAfter - balanceBefore, exactReturn);
+    }
+
+    function test_ClosePositionRevertsOneWeiAboveExactMinimum() public {
+        uint256 collateral = 3000e6;
+
+        vm.startPrank(user1);
+        usdc.approve(address(vault), collateral);
+        uint256 positionId = vault.openPosition(collateral, 1, address(usdc));
+
+        uint256 tgauxBalance = tgaux.balanceOf(user1);
+        tgaux.approve(address(vault), tgauxBalance);
+
+        uint256 exactReturn = _expectedCloseReturn(positionId);
+        vm.expectRevert("VaultManager: return below minimum");
+        vault.closePosition(positionId, exactReturn + 1);
+        vm.stopPrank();
+
+        assertTrue(vault.getPosition(positionId).isActive);
+    }
+
+    // Derive the boundary from live state and constants, never a hardcoded guess.
+    function _expectedCloseReturn(uint256 positionId) internal view returns (uint256) {
+        VaultManager.Position memory pos = vault.getPosition(positionId);
+        uint256 burnFee = (pos.collateralAmount * vault.FEE_BURN()) / vault.BASIS_POINTS();
+        uint256 interest = vault.calculateInterest(positionId);
+        uint256 maxInterestPayable = pos.collateralAmount - burnFee;
+        uint256 interestPaid = interest > maxInterestPayable ? maxInterestPayable : interest;
+        return pos.collateralAmount - burnFee - interestPaid;
+    }
+
     function test_ClosePosition2xLeverage() public {
         // Open position with 2x leverage - use enough collateral to cover borrowing costs
         uint256 collateral = 5000e6;
