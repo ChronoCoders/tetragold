@@ -34,6 +34,7 @@ contract PoolHandler is Test {
     uint256 private constant MIN_PRICE = 500e18;
     uint256 private constant MAX_PRICE = 8000e18;
     uint256 private constant MAX_STEP = 1200;
+    uint256 private constant SELECTOR_BYTES = 4;
 
     CounterpartyPool public immutable POOL;
     MockPositionBook public immutable BOOK;
@@ -68,6 +69,7 @@ contract PoolHandler is Test {
     uint256 public coverageRefusals;
     uint256 public brakeRefusals;
     uint256 public brakeSwitches;
+    uint256 public reserveRefusals;
 
     uint256 public payOutFailures;
     uint256 public overpaidCalls;
@@ -76,6 +78,7 @@ contract PoolHandler is Test {
     uint256 public doubleFinals;
     uint256 public brakeBlockedAnOutflow;
     uint256 public guardianMovedABalance;
+    uint256 public reserveOvershootsAllowed;
 
     // A zero guardian would make the brake unreachable, which the pool's own
     // constructor test covers; this handler is not a deployment script.
@@ -148,6 +151,9 @@ contract PoolHandler is Test {
         depositRequests += 1;
     }
 
+    /// @dev I28: a withdrawal request is an outflow and the brake must not
+    ///      reach it, so a refusal is recorded rather than letting the revert
+    ///      end the sequence with no attribution.
     function requestWithdrawal(uint256 lpSeed, uint256 shareSeed) external {
         address lp = _lpAt(lpSeed);
         uint256 held = SHARES.balanceOf(lp);
@@ -156,13 +162,16 @@ contract PoolHandler is Test {
         }
         uint256 amount = bound(shareSeed, 1, held);
 
-        vm.startPrank(lp);
+        vm.prank(lp);
         assertTrue(SHARES.approve(address(POOL), amount));
-        uint256 id = POOL.requestWithdrawal(amount);
-        vm.stopPrank();
-
-        _pending.push(id);
-        withdrawalRequests += 1;
+        vm.prank(lp);
+        // forge-lint: disable-next-line(reentrancy-no-eth)
+        try POOL.requestWithdrawal(amount) returns (uint256 id) {
+            _pending.push(id);
+            withdrawalRequests += 1;
+        } catch (bytes memory reason) {
+            _countBrakeOrFail(reason, "a withdrawal request reverted");
+        }
     }
 
     /// @dev One settle path for both kinds, so the fuzzer cannot settle only
@@ -213,19 +222,33 @@ contract PoolHandler is Test {
         // forge-lint: disable-next-line(reentrancy-no-eth)
         vm.prank(lp);
         // forge-lint: disable-next-line(reentrancy-no-eth)
-        POOL.expire(id);
-
-        _drop(index);
-        expiries += 1;
-        if (kind == CounterpartyPool.Kind.Deposit) {
-            refundedOut += amount;
+        try POOL.expire(id) {
+            _drop(index);
+            expiries += 1;
+            if (kind == CounterpartyPool.Kind.Deposit) {
+                refundedOut += amount;
+            }
+        } catch (bytes memory reason) {
+            _countBrakeOrFail(reason, "an expiry reverted");
         }
     }
 
     /// @dev An open as D45 and D46 describe it: the trader's collateral joins
     ///      the pool and s ounces are reserved against it.
-    function open(uint256 sizeSeed) external {
+    /// @param overshoot Asks for more than u_max leaves room for. I7 is a
+    ///        claim about the only place R can rise, so a campaign that never
+    ///        asks for too much proves nothing about the check that refuses it.
+    function open(uint256 sizeSeed, bool overshoot) external {
         uint256 room = POOL.reservableOunces();
+        if (overshoot) {
+            // forge-lint: disable-next-line(reentrancy-no-eth)
+            try BOOK.reserve(room + 1 + bound(sizeSeed, 0, MAX_MOVE)) {
+                reserveOvershootsAllowed += 1;
+            } catch {
+                reserveRefusals += 1;
+            }
+            return;
+        }
         if (room < MIN_MOVE) {
             return;
         }
@@ -261,8 +284,12 @@ contract PoolHandler is Test {
             }
             paidOutTotal += paid;
             closes += 1;
-        } catch {
-            payOutFailures += 1;
+        } catch (bytes memory reason) {
+            if (_isBrake(reason)) {
+                brakeBlockedAnOutflow += 1;
+            } else {
+                payOutFailures += 1;
+            }
         }
     }
 
@@ -298,18 +325,23 @@ contract PoolHandler is Test {
 
         // Same as the credit path: the ghosts follow the call deliberately.
         // forge-lint: disable-next-line(reentrancy-no-eth)
-        uint256 minted = BOOK.settleDeposit(id, price);
-        // The exact figure is the I16 claim, so an approximate comparison would
-        // let a rounding defect through.
-        // forge-lint: disable-next-line(incorrect-strict-equality)
-        if (minted != expected) {
-            mispricedDeposits += 1;
-        }
+        try BOOK.settleDeposit(id, price) returns (uint256 minted) {
+            // The exact figure is the I16 claim, so an approximate comparison
+            // would let a rounding defect through.
+            // forge-lint: disable-next-line(incorrect-strict-equality)
+            if (minted != expected) {
+                mispricedDeposits += 1;
+            }
 
-        _drop(index);
-        depositsSettled += amount;
-        settledDeposits += 1;
-        _settledOnce(id);
+            _drop(index);
+            depositsSettled += amount;
+            settledDeposits += 1;
+            _settledOnce(id);
+        } catch (bytes memory reason) {
+            // Settling ounces already escrowed is not an inflow the brake may
+            // stop (D58), so a refusal here is the defect I28 names.
+            _countBrakeOrFail(reason, "a deposit settlement reverted");
+        }
     }
 
     function _settleWithdrawal(uint256 id, uint256 index, uint256 shares) private {
@@ -331,7 +363,11 @@ contract PoolHandler is Test {
             settledWithdrawals += 1;
             _drop(index);
             _settledOnce(id);
-        } catch {
+        } catch (bytes memory reason) {
+            if (_isBrake(reason)) {
+                brakeBlockedAnOutflow += 1;
+                return;
+            }
             // D13: a withdrawal that would leave R above u_max of what is left
             // waits. The request stays pending, which the state read asserts.
             // forge-lint: disable-next-line(unused-return)
@@ -352,6 +388,27 @@ contract PoolHandler is Test {
         if (state != CounterpartyPool.State.Settled) {
             doubleFinals += 1;
         }
+    }
+
+    /// @dev The brake refusing an outflow is an I28 defect with a name, so it
+    ///      is counted; anything else reverting is a defect with none, and the
+    ///      assertion ends the sequence where it happened.
+    function _countBrakeOrFail(bytes memory reason, string memory what) private {
+        if (_isBrake(reason)) {
+            brakeBlockedAnOutflow += 1;
+            return;
+        }
+        assertTrue(false, what);
+    }
+
+    function _isBrake(bytes memory reason) private pure returns (bool) {
+        if (reason.length != SELECTOR_BYTES) {
+            return false;
+        }
+        // The length is checked on the line above, so this cast reads the whole
+        // revert payload and truncates nothing.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return bytes4(reason) == CounterpartyPool.InflowsArePaused.selector;
     }
 
     /// @dev Every figure the pool tracks, in one value. A guardian call must

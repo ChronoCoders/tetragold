@@ -90,9 +90,11 @@ contract CounterpartyPoolInvariantTest is Test {
         );
     }
 
-    /// @notice I7: R stays inside u_max of pool ounces.
+    /// @notice I7: R stays inside u_max of pool ounces, and the check that
+    ///         keeps it there refused every reserve that would have broken it.
     function invariant_I7_ReservedStaysInsideUMax() public view {
         assertLe(pool.reserved() * BPS, pool.ounces() * U_MAX_BPS, "I7: R rose above u_max of pool ounces");
+        assertEq(handler.reserveOvershootsAllowed(), NOTHING, "I7: a reserve past u_max went through");
     }
 
     /// @notice I14: the payout path never reverts for a shortage.
@@ -167,9 +169,13 @@ contract CounterpartyPoolInvariantTest is Test {
         handler.settle(0);
         assertGt(handler.settledDeposits(), NOTHING, "no deposit settled");
 
-        handler.open(DRIVE_SIZE);
+        handler.open(DRIVE_SIZE, false);
         assertGt(handler.opens(), NOTHING, "no position opened");
         assertGt(pool.reserved(), NOTHING, "nothing was reserved");
+
+        handler.open(DRIVE_SIZE, true);
+        assertGt(handler.reserveRefusals(), NOTHING, "the reserve ceiling was never tested");
+        assertEq(handler.reserveOvershootsAllowed(), NOTHING, "I7: a reserve past u_max went through");
 
         handler.moveClaims(type(uint256).max, type(uint256).max);
         assertGt(pool.depositValue(DRIVE_PRICE), NOTHING, "the claims swallowed the whole pool");
@@ -191,6 +197,13 @@ contract CounterpartyPoolInvariantTest is Test {
         handler.switchBrake(true);
         handler.requestDeposit(2, DRIVE_DEPOSIT);
         assertGt(handler.brakeRefusals(), NOTHING, "the brake never refused a deposit request");
+
+        handler.requestWithdrawal(0, type(uint256).max);
+        handler.passTime(EXPIRY);
+        handler.settle(0);
+        handler.close(type(uint256).max, type(uint256).max);
+        assertEq(handler.brakeBlockedAnOutflow(), NOTHING, "I28: the brake stopped an outflow");
+
         handler.switchBrake(false);
         assertEq(handler.guardianMovedABalance(), NOTHING, "a guardian call moved a balance");
     }
