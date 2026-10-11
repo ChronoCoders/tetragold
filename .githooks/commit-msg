@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-# Repo commit-msg, run by the global hook via naming_delegate. The global hook
-# already enforces the banned name and refuses trailers. This adds only what
-# the global layer lacks: a single imperative line, a conventional prefix, and
-# no em or en dash.
-
 set -uo pipefail
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 . "$root/scripts/lib/checks.sh"
@@ -23,8 +18,8 @@ if ! printf '%s' "$subject" | grep -qE '^(feat|fix|docs|test|refactor|chore): .'
     rc=1
 fi
 
-if ! scan_text_dashes "$subject"; then
-    echo "commit-msg: subject contains an em or en dash" >&2
+if ! scan_text_banned_chars "$subject"; then
+    echo "commit-msg: subject contains a banned character U+2013 or U+2014 or banned word" >&2
     rc=1
 fi
 

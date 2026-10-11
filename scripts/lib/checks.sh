@@ -1,55 +1,52 @@
 #!/usr/bin/env bash
-# Shared check library for the gate (scripts/gate) and the repo git hooks
-# (.githooks/). One source of truth for the two sweeps that pass by finding
-# nothing, so each one proves it can detect a seeded violation before it is
-# trusted to report clean.
-#
-# The banned-name pattern is written c[l]aude so this file never matches
-# itself. The dash pattern is written with hex escapes so this file holds no
-# literal em dash or en dash.
 
 NAME_RE='c[l]aude'
-DASH_RE='[\x{2013}\x{2014}]'
+BANNED_CHAR_RE='[\x{2013}\x{2014}]'
+BANNED_WORD_RE='\bd[a]sh(es|ed|ing)?\b'
+CLEANUP_RE='\b(format|formatting|fmt|whitespace|d[a]sh|d[a]shes|punctuation|cleanup|tidy)\b|\bclean up\b'
 
-# _grep_name and _grep_dash scan stdin. 0 = a match was found, 1 = none.
-_grep_name() { grep -niIP "$NAME_RE" >/dev/null 2>&1; }
-_grep_dash() { grep -nIP "$DASH_RE" >/dev/null 2>&1; }
+_grep_name()        { grep -niIP "$NAME_RE" >/dev/null 2>&1; }
+_grep_banned_char() { grep -nIP "$BANNED_CHAR_RE" >/dev/null 2>&1; }
+_grep_banned_word() { grep -niIP "$BANNED_WORD_RE" >/dev/null 2>&1; }
 
-# Positive controls. A seeded violation must be detected, or the detector is
-# broken and must not be trusted. em dash bytes e2 80 94, en dash e2 80 93.
-dash_selftest() {
-    printf '\xe2\x80\x94' | _grep_dash || return 1
-    printf 'ascii only' | _grep_dash && return 1
+is_cleanup_subject() { printf '%s' "$1" | grep -qiE "$CLEANUP_RE"; }
+
+banned_char_selftest() {
+    printf '\xe2\x80\x94' | _grep_banned_char || return 1
+    printf 'ascii only' | _grep_banned_char && return 1
+    return 0
+}
+
+banned_word_selftest() {
+    printf '%s%s' 'd' 'ash' | _grep_banned_word || return 1
+    printf 'gold vault' | _grep_banned_word && return 1
     return 0
 }
 
 name_selftest() {
-    # assemble the seed from pieces so this function body is clean
     printf '%s%s' 'cl' 'aude' | _grep_name || return 1
     printf 'gold vault' | _grep_name && return 1
     return 0
 }
 
-# A cleanup-only commit subject is refused: such corrections ride inside a
-# commit that changes the file for a real reason. Whole words, case
-# insensitive. is_cleanup_subject returns 0 when the subject is cleanup-only.
-CLEANUP_RE='\b(format|formatting|fmt|whitespace|dash|dashes|punctuation|cleanup|tidy)\b|\bclean up\b'
-is_cleanup_subject() { printf '%s' "$1" | grep -qiE "$CLEANUP_RE"; }
 cleanup_selftest() {
-    is_cleanup_subject 'chore: fix dash in readme' || return 1
+    is_cleanup_subject "$(printf '%s%s' 'chore: fix d' 'ash in readme')" || return 1
     is_cleanup_subject 'fix: correct oracle staleness bound' && return 1
     return 0
 }
 
-# scan_tracked_dashes / scan_tracked_name scan every tracked file. They print
-# each offender and return 1 if any is found, 0 if clean, after the control.
-scan_tracked_dashes() {
-    dash_selftest || { echo "  control: dash detector failed its self test"; return 2; }
+scan_tracked_banned_chars() {
+    banned_char_selftest || { echo "  control: character detector failed its self test"; return 2; }
+    banned_word_selftest || { echo "  control: word detector failed its self test"; return 2; }
     local rc=0 f
     while IFS= read -r f; do
         [ -f "$f" ] || continue
-        if grep -nIP "$DASH_RE" "$f" 2>/dev/null; then
-            echo "  dash in $f"
+        if grep -nIP "$BANNED_CHAR_RE" "$f" 2>/dev/null; then
+            echo "  banned character U+2013 or U+2014 in $f"
+            rc=1
+        fi
+        if grep -niIP "$BANNED_WORD_RE" "$f" 2>/dev/null; then
+            echo "  banned word in $f"
             rc=1
         fi
     done < <(git ls-files)
@@ -69,10 +66,11 @@ scan_tracked_name() {
     return $rc
 }
 
-# scan_text_dashes / scan_text_name scan a string (commit messages, push data).
-scan_text_dashes() {
-    dash_selftest || { echo "  control: dash detector failed its self test"; return 2; }
-    printf '%s' "$1" | _grep_dash && return 1
+scan_text_banned_chars() {
+    banned_char_selftest || { echo "  control: character detector failed its self test"; return 2; }
+    banned_word_selftest || { echo "  control: word detector failed its self test"; return 2; }
+    printf '%s' "$1" | _grep_banned_char && return 1
+    printf '%s' "$1" | _grep_banned_word && return 1
     return 0
 }
 
@@ -82,7 +80,10 @@ scan_text_name() {
     return 0
 }
 
-# scan_blob_dashes scans one staged blob by path (pre-commit).
-scan_blob_dashes() {
-    git show ":$1" 2>/dev/null | _grep_dash
+scan_blob_banned_chars() {
+    local blob
+    blob=$(git show ":$1" 2>/dev/null)
+    printf '%s' "$blob" | _grep_banned_char && return 0
+    printf '%s' "$blob" | _grep_banned_word && return 0
+    return 1
 }

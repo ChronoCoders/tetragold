@@ -1,21 +1,17 @@
 #!/usr/bin/env bash
-# Repo pre-commit, run by the global hook via naming_delegate. The global hook
-# already enforces the banned name over staged content and paths (which covers
-# refusing to stage the instruction file, since its path carries the name) and
-# runs its own self test. This adds only what the global layer lacks: a dash
-# sweep over staged content and the formatter.
-
 set -uo pipefail
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 . "$root/scripts/lib/checks.sh"
 
 rc=0
 
-dash_selftest || { echo "pre-commit: dash detector failed its self test" >&2; exit 1; }
+banned_char_selftest || { echo "pre-commit: character detector failed its self test" >&2; exit 1; }
+banned_word_selftest || { echo "pre-commit: word detector failed its self test" >&2; exit 1; }
+
 while IFS= read -r f; do
     [ -n "$f" ] || continue
-    if scan_blob_dashes "$f" >/dev/null; then
-        echo "pre-commit: em or en dash in staged $f" >&2
+    if scan_blob_banned_chars "$f" >/dev/null; then
+        echo "pre-commit: banned character U+2013 or U+2014 or banned word in staged $f" >&2
         rc=1
     fi
 done < <(git diff --cached --name-only --diff-filter=ACMR)
