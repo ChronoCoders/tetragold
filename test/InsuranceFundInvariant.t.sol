@@ -15,6 +15,8 @@ import {VaultStub} from "./mocks/VaultStub.sol";
 contract InsuranceFundInvariantTest is Test {
     uint256 private constant TARGET = 100 ether;
     uint256 private constant ONE = 1 ether;
+    uint256 private constant SEED = 10 ether;
+    uint256 private constant ARRIVAL = 5 ether;
     uint256 private constant NOTHING = 0;
 
     InsuranceFund public fund;
@@ -47,7 +49,7 @@ contract InsuranceFundInvariantTest is Test {
     function invariant_I2_PaidNeverExceedsWhatArrived() public view {
         assertLe(
             handler.paidTotal(),
-            handler.seededTotal() + handler.creditedTotal(),
+            handler.seededTotal() + handler.arrivedTotal(),
             "I2: the fund paid out more than it ever took in"
         );
     }
@@ -68,22 +70,30 @@ contract InsuranceFundInvariantTest is Test {
     ///      a defect that pays out more than arrived makes the subtracted form
     ///      underflow, and the panic then replaces every invariant's own
     ///      message with an arithmetic error.
+    ///
+    ///      The right side counts what the handler put in, so a defect that
+    ///      moves part of an arrival out and credits the remainder breaks this
+    ///      sum. Taking the credit from `syncCredit`'s return value would
+    ///      instead balance against the fund's own understated figure, which
+    ///      is why the second assertion compares the two.
     function invariant_I27_OuncesLeaveOnlyThroughAPayment() public view {
         assertEq(
             fund.ounces() + handler.paidTotal(),
-            handler.seededTotal() + handler.creditedTotal(),
+            handler.seededTotal() + handler.arrivedTotal(),
             "I27: the fund's ounces moved outside seed, credit and payment"
         );
+        assertEq(handler.miscreditedCalls(), NOTHING, "I27: a credit differed from what arrived");
     }
 
     /// @dev Every assertion above holds on a campaign that did nothing, so this
     ///      drives each path by hand first.
     function test_HandlerReachesSeedCreditAndPay() public {
-        handler.seedFund(10 ether);
+        handler.seedFund(SEED);
         assertTrue(fund.seeded(), "the seed path never ran");
 
-        handler.arrive(5 ether);
-        assertGt(handler.creditedTotal(), NOTHING, "the credit path never ran");
+        handler.arrive(ARRIVAL);
+        assertEq(handler.arrivedTotal(), ARRIVAL, "the credit path never ran");
+        assertEq(fund.ounces(), SEED + ARRIVAL, "the credit did not reach the fund");
 
         handler.pay(0, ONE);
         assertGt(handler.paidTotal(), NOTHING, "the payment path never ran");

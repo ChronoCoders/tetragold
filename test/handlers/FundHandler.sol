@@ -11,9 +11,11 @@ import {VaultStub} from "../mocks/VaultStub.sol";
 /// @notice Drives the insurance fund the way the position manager will: it
 ///         deploys the fund, so it is the privileged caller, and every call
 ///         runs inside the shared section.
-/// @dev The ghosts record what each call asked for and what came back, so the
-///      invariants read the handler's own arithmetic rather than the fund's
-///      answer about itself.
+/// @dev The ghosts record what each call asked for and what the handler itself
+///      moved, never the fund's answer about itself. A credit ghost taken from
+///      `syncCredit`'s return value would follow a defect that skims the
+///      arrival and reports the remainder, so the ghost is the amount minted
+///      into the fund and the returned figure is only compared against it.
 ///
 ///      Every guarded call goes through `FundDriver` rather than being wrapped
 ///      here. Foundry runs with call isolation on, so each call this handler
@@ -36,7 +38,8 @@ contract FundHandler is Test {
     address[RECIPIENTS] private _recipients;
 
     uint256 public seededTotal;
-    uint256 public creditedTotal;
+    uint256 public arrivedTotal;
+    uint256 public miscreditedCalls;
     uint256 public paidTotal;
     uint256 public payCalls;
     uint256 public payFailures;
@@ -77,10 +80,13 @@ contract FundHandler is Test {
     function arrive(uint256 amount) external {
         amount = bound(amount, MIN_MOVE, MAX_MOVE);
         VAULT.mint(address(FUND), amount);
+        arrivedTotal += amount;
 
-        // The ghost follows the call because the call is what it records.
         // forge-lint: disable-next-line(reentrancy-no-eth)
-        creditedTotal += DRIVER.syncCredit();
+        uint256 credited = DRIVER.syncCredit();
+        if (credited != amount) {
+            miscreditedCalls += 1;
+        }
     }
 
     function pay(uint256 whichSeed, uint256 requested) external {
