@@ -64,10 +64,14 @@ contract InsuranceFundInvariantTest is Test {
     }
 
     /// @notice I27: ounces leave the fund only through a payment.
+    /// @dev Stated as an addition on both sides rather than as a subtraction:
+    ///      a defect that pays out more than arrived makes the subtracted form
+    ///      underflow, and the panic then replaces every invariant's own
+    ///      message with an arithmetic error.
     function invariant_I27_OuncesLeaveOnlyThroughAPayment() public view {
         assertEq(
-            fund.ounces(),
-            handler.seededTotal() + handler.creditedTotal() - handler.paidTotal(),
+            fund.ounces() + handler.paidTotal(),
+            handler.seededTotal() + handler.creditedTotal(),
             "I27: the fund's ounces moved outside seed, credit and payment"
         );
     }
