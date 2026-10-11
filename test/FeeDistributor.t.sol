@@ -6,15 +6,11 @@ import {FeeDistributor} from "../src/FeeDistributor.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockTGX} from "./mocks/MockTGX.sol";
 
+/// @notice Stands in for the rewritten InsuranceFund, which has no entry point
+///         for a fee push and takes what arrives by balance difference.
 contract MockInsuranceFund {
-    mapping(address => uint256) public depositsReceived;
-
-    function depositFromFees(uint256 amount, address token) external {
-        depositsReceived[token] += amount;
-    }
-
     function getDeposits(address token) external view returns (uint256) {
-        return depositsReceived[token];
+        return MockERC20(token).balanceOf(address(this));
     }
 }
 

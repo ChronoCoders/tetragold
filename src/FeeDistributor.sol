@@ -141,9 +141,12 @@ contract FeeDistributor is AccessControl, Pausable, ReentrancyGuard {
         uint256 treasuryAmount = (amount * TREASURY_SHARE) / BASIS_POINTS;
         uint256 stakerAmount = (amount * STAKER_SHARE) / BASIS_POINTS;
 
-        // Transfer to InsuranceFund
-        IERC20(token).safeIncreaseAllowance(insuranceFund, insuranceAmount);
-        IInsuranceFund(insuranceFund).depositFromFees(insuranceAmount, token);
+        // Stopgap: the rewritten InsuranceFund (D49) takes arrivals by balance
+        // difference through its own `syncCredit`, so there is nothing to call
+        // here and a plain transfer is what reaches it. The D20 routing ceiling
+        // and the TGAUX only rule are not implemented by this fixed share
+        // split, which is a separate rewrite.
+        IERC20(token).safeTransfer(insuranceFund, insuranceAmount);
 
         // Transfer to Treasury
         IERC20(token).safeTransfer(treasury, treasuryAmount);
@@ -444,10 +447,4 @@ contract FeeDistributor is AccessControl, Pausable, ReentrancyGuard {
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
     }
-}
-
-// ============ Interfaces ============
-
-interface IInsuranceFund {
-    function depositFromFees(uint256 amount, address token) external;
 }
