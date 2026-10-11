@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Repo commit-msg, run by the global hook via naming_delegate. The global hook
+# already enforces the banned name and refuses trailers. This adds only what
+# the global layer lacks: a single imperative line, a conventional prefix, and
+# no em or en dash.
+
+set -uo pipefail
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+. "$root/scripts/lib/checks.sh"
+
+msg_file="$1"
+rc=0
+
+body=$(grep -cvE '^[[:space:]]*($|#)' "$msg_file")
+if [ "$body" -ne 1 ]; then
+    echo "commit-msg: the message must be a single line, no body" >&2
+    rc=1
+fi
+
+subject=$(grep -vE '^[[:space:]]*($|#)' "$msg_file" | head -1)
+if ! printf '%s' "$subject" | grep -qE '^(feat|fix|docs|test|refactor|chore): .'; then
+    echo "commit-msg: subject needs a conventional prefix (feat|fix|docs|test|refactor|chore)" >&2
+    rc=1
+fi
+
+if ! scan_text_dashes "$subject"; then
+    echo "commit-msg: subject contains an em or en dash" >&2
+    rc=1
+fi
+
+[ $rc -ne 0 ] && echo "commit-msg: refused" >&2
+exit $rc

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Repo pre-push, run by the global hook via naming_delegate (stdin passed
+# through). The global hook already enforces the banned name across pushed
+# commit messages, content, paths and tag annotations. This adds only what the
+# global layer lacks: a dash sweep over the pushed commit messages and content.
+
+set -uo pipefail
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+. "$root/scripts/lib/checks.sh"
+
+rc=0
+while read -r lref lsha rref rsha; do
+    [ -n "${lref:-}" ] || continue
+    [ "$(printf '%s' "$lsha" | tr -d 0)" = "" ] && continue
+    if [ -z "${rsha:-}" ] || [ "$(printf '%s' "$rsha" | tr -d 0)" = "" ]; then
+        range="$lsha"
+    else
+        range="$rsha..$lsha"
+    fi
+
+    msgs=$(git log --format='%B' "$range" 2>/dev/null || true)
+    if ! scan_text_dashes "$msgs"; then
+        echo "pre-push: em or en dash in a pushed commit message ($range)" >&2
+        rc=1
+    fi
+
+    if [ "$range" = "$lsha" ]; then
+        diffsrc=$(git show -U0 --format='' "$lsha" 2>/dev/null || true)
+    else
+        diffsrc=$(git diff -U0 "$range" 2>/dev/null || true)
+    fi
+    added=$(printf '%s\n' "$diffsrc" | grep '^+' | grep -v '^+++' || true)
+    if ! scan_text_dashes "$added"; then
+        echo "pre-push: em or en dash in pushed content ($range)" >&2
+        rc=1
+    fi
+done
+
+[ $rc -ne 0 ] && echo "pre-push: refused" >&2
+exit $rc

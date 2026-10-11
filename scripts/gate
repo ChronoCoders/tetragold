@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Tetra Gold gate. One PASS or FAIL line per step. Exits non zero if any step
+# failed, after running every step. forge lint exits 0 even with findings, so
+# the lint step parses the warning count and fails on any count above zero.
+#
+# The two sweeps pass by finding nothing, so each proves it can detect a seeded
+# violation (its self test in scripts/lib/checks.sh) before reporting clean.
+
+set -uo pipefail
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "gate: not a git repo"; exit 1; }
+cd "$root"
+. scripts/lib/checks.sh
+
+FORGE="${FORGE:-$HOME/.foundry/bin/forge}"
+rc=0
+
+pass() { echo "PASS $1"; }
+fail() { echo "FAIL $1"; rc=1; }
+
+# 1. formatter
+if "$FORGE" fmt --check >/dev/null 2>&1; then pass "fmt"; else fail "fmt"; fi
+
+# 2. build
+if "$FORGE" build >/dev/null 2>&1; then pass "build"; else fail "build"; fi
+
+# 3. lint across src, script and test, fail on any warning
+lint_out=$("$FORGE" lint src script test 2>&1)
+warns=$(printf '%s\n' "$lint_out" | grep -c 'warning\[')
+if [ "$warns" -eq 0 ]; then pass "lint (0 warnings)"; else fail "lint ($warns warnings)"; fi
+
+# 4. tests, invariant suites included via foundry.toml [invariant]
+if "$FORGE" test >/dev/null 2>&1; then pass "test"; else fail "test"; fi
+
+# 5. dash sweep over tracked files
+dash_report=$(scan_tracked_dashes); dash_rc=$?
+if [ "$dash_rc" -eq 0 ]; then pass "dash sweep"; else printf '%s\n' "$dash_report"; fail "dash sweep"; fi
+
+# 6. banned name sweep over tracked files and over every commit message
+name_report=$(scan_tracked_name); name_rc=$?
+msgs=$(git log --all --format='%H%n%B' 2>/dev/null || true)
+if scan_text_name "$msgs"; then msg_rc=0; else msg_rc=1; fi
+if [ "$name_rc" -eq 0 ] && [ "$msg_rc" -eq 0 ]; then
+    pass "name sweep"
+else
+    printf '%s\n' "$name_report"
+    [ "$msg_rc" -ne 0 ] && echo "  banned name in a commit message"
+    fail "name sweep"
+fi
+
+exit $rc
