@@ -11,6 +11,11 @@ import {MockAavePool} from "./mocks/MockAavePool.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
 /// @notice Invariants I4, I5, I11, I16 and the vault side of I20 (section 8).
+/// @dev The handler returns early instead of reverting, so any revert in a
+///      sequence is a defect rather than a bounds miss. Without this the
+///      handler's own I4 assertion is counted as a discarded call and the
+///      campaign reports green while a holder cannot get out.
+/// forge-config: default.invariant.fail-on-revert = true
 contract TgauxVaultInvariantTest is Test {
     uint256 private constant FEE_IN_BPS = 50;
     uint256 private constant FEE_OUT_BPS = 75;

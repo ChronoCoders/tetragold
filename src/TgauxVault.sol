@@ -111,6 +111,10 @@ contract TgauxVault is ReentrancyGuard {
 
         // The guard is held across this call and the callee is the token this
         // vault deployed, so there is no path back in before the state settles.
+        // The rule fires for any external call inside a nonReentrant function,
+        // whatever the ordering: measured against a probe whose every state
+        // write precedes the call, and silent only when the guard is removed,
+        // which D31 requires. Ordering cannot clear it.
         // forge-lint: disable-next-line(reentrancy-no-eth)
         TOKEN.mint(msg.sender, minted);
     }
@@ -137,8 +141,9 @@ contract TgauxVault is ReentrancyGuard {
         treasuryFeePaxg += fee;
         emit Withdrawn(msg.sender, amount, paid, fee);
 
-        // Same as the deposit: the guard is held across both calls, and the
-        // burn runs before the PAXG leaves, so supply never trails backing.
+        // Same as the deposit, including why the rule cannot be cleared by
+        // ordering: the guard is held across both calls, and the burn runs
+        // before the PAXG leaves, so supply never trails backing.
         // forge-lint: disable-next-line(reentrancy-no-eth)
         TOKEN.burn(msg.sender, amount);
         PAXG.safeTransfer(msg.sender, paid);
