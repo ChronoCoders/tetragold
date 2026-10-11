@@ -17,8 +17,10 @@ import {TGAUX} from "./TGAUX.sol";
  *      tracks the PAXG the vault holds rather than an oracle (D1, 4.1, 4.2).
  *
  *      Fees are immutable constructor parameters with no setter, so the terms a
- *      holder deposited under cannot be rewritten underneath them (O5 leaves
- *      the values open, not the ability to change them later).
+ *      holder deposited under cannot be rewritten underneath them. D41 fixes
+ *      the values this is deployed with, f_in at zero and f_out at 5 basis
+ *      points; they stay parameters so a change means a new vault with notice
+ *      rather than a transaction against existing holders.
  *
  *      I11: backing PAXG is the vault's PAXG balance less `treasuryFeePaxg`,
  *      and it never falls below TGAUX supply, because a deposit adds exactly
@@ -39,10 +41,10 @@ contract TgauxVault is ReentrancyGuard {
     /// @notice The only account that may withdraw treasury fee PAXG.
     address public immutable TREASURY;
 
-    /// @notice Entry fee in basis points, f_in (4.1).
+    /// @notice Entry fee in basis points, f_in (4.1, D41).
     uint256 public immutable FEE_IN_BPS;
 
-    /// @notice Exit fee in basis points, f_out (4.2, D40).
+    /// @notice Exit fee in basis points, f_out (4.2, D40, D41).
     uint256 public immutable FEE_OUT_BPS;
 
     /// @notice PAXG held for the treasury. It is not backing (4.3) and is the

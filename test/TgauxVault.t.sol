@@ -20,6 +20,12 @@ contract TgauxVaultTest is Test {
     uint256 private constant ONE_WEI = 1;
     /// @dev Transfer fee the fee on transfer mock charges, in basis points.
     uint256 private constant MOCK_FEE_BPS = 100;
+    /// @dev The values D41 fixes for deployment: no entry fee, 5 bps on exit.
+    uint256 private constant D41_FEE_IN_BPS = 0;
+    uint256 private constant D41_FEE_OUT_BPS = 5;
+    /// @dev What ten PAXG becomes on the way out under D41, and the fee kept.
+    uint256 private constant D41_TEN_OUT = 9.995 ether;
+    uint256 private constant D41_TEN_FEE = 0.005 ether;
 
     TgauxVault public vault;
     TGAUX public token;
@@ -285,6 +291,35 @@ contract TgauxVaultTest is Test {
 
         assertTrue(hostile.reentryTried(), "the callback never ran, so nothing was proved");
         assertTrue(hostile.reentryRefused(), "the vault let a reentrant deposit through");
+    }
+
+    /// @dev D41: f_in is zero and f_out is 5 basis points, so ten PAXG in
+    ///      mints ten TGAUX, and ten TGAUX out pays 9.995 PAXG with 0.005 left
+    ///      as treasury fee PAXG. The numbers are written out rather than
+    ///      recomputed from the constants, so a change to either fee fails here
+    ///      instead of recomputing itself into agreement.
+    function test_D41FeesMintOneForOneAndChargeFiveBpsOnExit() public {
+        TgauxVault d41 = new TgauxVault(address(paxg), treasury, D41_FEE_IN_BPS, D41_FEE_OUT_BPS);
+        TGAUX d41Token = d41.TOKEN();
+
+        vm.startPrank(alice);
+        assertTrue(paxg.approve(address(d41), TEN));
+        uint256 minted = d41.deposit(TEN);
+        vm.stopPrank();
+
+        assertEq(minted, TEN, "a deposit at f_in of zero is one for one");
+        assertEq(d41Token.balanceOf(alice), TEN);
+        assertEq(d41.treasuryFeePaxg(), NOTHING, "f_in of zero took a fee");
+        assertEq(d41.backingPaxg(), TEN);
+
+        vm.prank(alice);
+        uint256 paid = d41.withdraw(TEN);
+
+        assertEq(paid, D41_TEN_OUT, "f_out of 5 bps did not pay 9.995 PAXG");
+        assertEq(d41.treasuryFeePaxg(), D41_TEN_FEE, "the exit fee was not credited");
+        assertEq(d41Token.totalSupply(), NOTHING);
+        assertEq(d41.backingPaxg(), NOTHING, "backing was left stranded");
+        assertEq(paxg.balanceOf(alice), HUNDRED - TEN + D41_TEN_OUT);
     }
 
     function testFuzz_DepositThenWithdrawNeverReturnsMore(uint256 amount) public {
