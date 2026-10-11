@@ -70,6 +70,7 @@ contract PoolHandler is Test {
     uint256 public brakeRefusals;
     uint256 public brakeSwitches;
     uint256 public reserveRefusals;
+    uint256 public lateSettlementRefusals;
 
     uint256 public payOutFailures;
     uint256 public overpaidCalls;
@@ -79,6 +80,7 @@ contract PoolHandler is Test {
     uint256 public brakeBlockedAnOutflow;
     uint256 public guardianMovedABalance;
     uint256 public reserveOvershootsAllowed;
+    uint256 public lateSettlementsAllowed;
 
     // A zero guardian would make the brake unreachable, which the pool's own
     // constructor test covers; this handler is not a deployment script.
@@ -192,6 +194,15 @@ contract PoolHandler is Test {
         // 9a8fdd0).
         // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp < targetTime) {
+            return;
+        }
+        // Past the expiry the request belongs to `expire` alone (section 7 rule
+        // 4), so the attempt is made on purpose and the refusal is counted. A
+        // campaign that only ever settled in time would say nothing about the
+        // deadline.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp >= targetTime + POOL.REQUEST_EXPIRY()) {
+            _settleTooLate(id, kind);
             return;
         }
 
@@ -390,6 +401,34 @@ contract PoolHandler is Test {
         }
     }
 
+    /// @dev A settlement at or after the expiry must be refused with the pool's
+    ///      own deadline error. Anything else, including success, is a defect.
+    function _settleTooLate(uint256 id, CounterpartyPool.Kind kind) private {
+        if (kind == CounterpartyPool.Kind.Deposit) {
+            // forge-lint: disable-next-line(reentrancy-no-eth)
+            try BOOK.settleDeposit(id, price) returns (uint256) {
+                lateSettlementsAllowed += 1;
+            } catch (bytes memory reason) {
+                _countLateRefusal(reason);
+            }
+        } else {
+            // forge-lint: disable-next-line(reentrancy-no-eth)
+            try BOOK.settleWithdrawal(id, price) returns (uint256) {
+                lateSettlementsAllowed += 1;
+            } catch (bytes memory reason) {
+                _countLateRefusal(reason);
+            }
+        }
+    }
+
+    function _countLateRefusal(bytes memory reason) private {
+        if (_selectorOf(reason) == CounterpartyPool.TooLate.selector) {
+            lateSettlementRefusals += 1;
+            return;
+        }
+        assertTrue(false, "a settlement past the expiry failed for another reason");
+    }
+
     /// @dev The brake refusing an outflow is an I28 defect with a name, so it
     ///      is counted; anything else reverting is a defect with none, and the
     ///      assertion ends the sequence where it happened.
@@ -402,13 +441,19 @@ contract PoolHandler is Test {
     }
 
     function _isBrake(bytes memory reason) private pure returns (bool) {
-        if (reason.length != SELECTOR_BYTES) {
-            return false;
+        return reason.length == SELECTOR_BYTES && _selectorOf(reason) == CounterpartyPool.InflowsArePaused.selector;
+    }
+
+    /// @dev The first four bytes of revert data, which name the error. A shorter
+    ///      payload carries no selector and matches nothing.
+    function _selectorOf(bytes memory reason) private pure returns (bytes4) {
+        if (reason.length < SELECTOR_BYTES) {
+            return bytes4(0);
         }
-        // The length is checked on the line above, so this cast reads the whole
-        // revert payload and truncates nothing.
+        // The length is checked on the line above, so this reads a whole
+        // selector; the arguments after it are not part of the comparison.
         // forge-lint: disable-next-line(unsafe-typecast)
-        return bytes4(reason) == CounterpartyPool.InflowsArePaused.selector;
+        return bytes4(reason);
     }
 
     /// @dev Every figure the pool tracks, in one value. A guardian call must

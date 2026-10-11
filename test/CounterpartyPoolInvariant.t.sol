@@ -130,6 +130,12 @@ contract CounterpartyPoolInvariantTest is Test {
         assertEq(handler.doubleFinals(), NOTHING, "I17: a request left pending more than once or not at all");
     }
 
+    /// @notice Section 7 rule 4: at or after the expiry only expiry remains, so
+    ///         no settlement past that instant was allowed through.
+    function invariant_Rule4_SettlementStopsAtTheExpiry() public view {
+        assertEq(handler.lateSettlementsAllowed(), NOTHING, "rule 4: a settlement past the expiry went through");
+    }
+
     /// @notice I20, pool side: nothing the pool does changes vault backing.
     function invariant_I20_PoolNeverTouchesVaultBacking() public view {
         assertGe(vault.backingPaxg(), gold.totalSupply(), "I20: pool activity broke the vault's backing");
@@ -191,6 +197,10 @@ contract CounterpartyPoolInvariantTest is Test {
 
         handler.requestDeposit(1, DRIVE_DEPOSIT);
         handler.passTime(PAST_EXPIRY);
+        handler.settle(0);
+        assertGt(handler.lateSettlementRefusals(), NOTHING, "the settlement deadline was never tested");
+        assertEq(handler.lateSettlementsAllowed(), NOTHING, "rule 4: a settlement past the expiry went through");
+
         handler.expireOne(0);
         assertGt(handler.expiries(), NOTHING, "no request expired");
 

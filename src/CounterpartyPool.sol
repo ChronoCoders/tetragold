@@ -24,7 +24,12 @@ import {TGAUX} from "./TGAUX.sol";
  *      Deposits and withdrawals are requests settled at a later price (D13,
  *      section 7 rule 1). A request records its target time and nothing else
  *      about the price, so the keeper that settles it has no choice of price.
- *      Only expiry cancels a request (I17).
+ *      It can be settled from that target time until the expiry that follows
+ *      it, and not after: the price is fixed at the target but pool and
+ *      position state are read at settlement, so an open window would let a
+ *      keeper hold an old price against later state (section 7 rule 4).
+ *      Settlement and expiry meet at one instant, the expiry itself, which
+ *      belongs to expiry alone. Only expiry cancels a request (I17).
  *
  *      The guardian brake stops the one inflow this contract has, a deposit
  *      request. It cannot stop a withdrawal request, either settlement, or an
@@ -153,6 +158,7 @@ contract CounterpartyPool {
     error NoSuchRequest(uint256 id);
     error WrongKind(uint256 id);
     error TooEarly(uint256 targetTime);
+    error TooLate(uint256 expiresAt);
     error NotExpiredYet(uint256 expiresAt);
     error MintedNothing();
     error NothingReceived();
@@ -406,7 +412,9 @@ contract CounterpartyPool {
     ///      calls. I15a is asserted over whole operations for that reason, and
     ///      checking it here instead would mean reverting a close, which I14
     ///      forbids.
-    /// @param to Recipient: the position owner, or the keeper for a residual.
+    /// @param to Recipient: the position owner, for a close payout or for the
+    ///        residual equity a liquidation leaves them (D51). Never the
+    ///        keeper, whose fixed fee comes from the insurance fund (D39).
     /// @param requested Ounces asked for.
     /// @return paid Ounces actually sent.
     function payOut(address to, uint256 requested) external returns (uint256 paid) {
@@ -524,10 +532,19 @@ contract CounterpartyPool {
         if (request.kind != kind) {
             revert WrongKind(id);
         }
-        // The target time is the earliest a report can cover, in slot time.
+        // The target time is the earliest a report can cover, and the expiry
+        // that follows it is the first instant that belongs to `expire`
+        // instead, so the two meet without a gap and without an overlap. Both
+        // are deadlines in slot time, which post merge Ethereum fixes
+        // (consensus-specs specs/bellatrix/beacon-chain.md:446 at 9a8fdd0).
         // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp < request.targetTime) {
             revert TooEarly(request.targetTime);
+        }
+        uint256 expiresAt = request.targetTime + REQUEST_EXPIRY;
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp >= expiresAt) {
+            revert TooLate(expiresAt);
         }
     }
 

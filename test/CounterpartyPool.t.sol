@@ -436,6 +436,67 @@ contract CounterpartyPoolTest is Test {
         assertEq(book.settleDeposit(id, PRICE), TEN);
     }
 
+    /// @dev Section 7 rule 4: the window runs from the target up to the expiry
+    ///      and stops there. One second earlier settles.
+    function test_SettlementSucceedsTheSecondBeforeTheDeadline() public {
+        uint256 id = _requestDeposit(alice, TEN);
+        // forge-lint: disable-next-line(unused-return)
+        (,, uint256 targetTime,,) = pool.requestAt(id);
+
+        vm.warp(targetTime + EXPIRY - 1);
+
+        assertEq(book.settleDeposit(id, PRICE), TEN, "the last second of the window did not settle");
+    }
+
+    /// @dev At the deadline both kinds are refused with the deadline error, and
+    ///      the request is still there for an expiry.
+    function test_SettlementAtTheDeadlineIsRefusedForBothKinds() public {
+        uint256 funded = _requestDeposit(alice, TEN);
+        uint256 minted = book.settleDeposit(funded, PRICE);
+        uint256 deposit = _requestDeposit(bob, TEN);
+        uint256 withdrawal = _requestWithdrawal(alice, minted);
+        // forge-lint: disable-next-line(unused-return)
+        (,, uint256 depositTarget,,) = pool.requestAt(deposit);
+        // forge-lint: disable-next-line(unused-return)
+        (,, uint256 withdrawalTarget,,) = pool.requestAt(withdrawal);
+
+        vm.warp(depositTarget + EXPIRY);
+        vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.TooLate.selector, depositTarget + EXPIRY));
+        // This call reverts by design, so no value comes back.
+        // forge-lint: disable-next-line(unused-return)
+        book.settleDeposit(deposit, PRICE);
+
+        vm.warp(withdrawalTarget + EXPIRY);
+        vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.TooLate.selector, withdrawalTarget + EXPIRY));
+        // forge-lint: disable-next-line(unused-return)
+        book.settleWithdrawal(withdrawal, PRICE);
+
+        // forge-lint: disable-next-line(unused-return)
+        (,,,, CounterpartyPool.State state) = pool.requestAt(deposit);
+        assertEq(uint256(state), uint256(CounterpartyPool.State.Pending), "the refused request did not stay pending");
+    }
+
+    /// @dev The instant settlement gives up is the instant expiry takes, so the
+    ///      two meet with no gap and no overlap.
+    function test_ExpiryTakesTheInstantSettlementGivesUp() public {
+        uint256 id = _requestDeposit(alice, TEN);
+        // forge-lint: disable-next-line(unused-return)
+        (,, uint256 targetTime,,) = pool.requestAt(id);
+        uint256 deadline = targetTime + EXPIRY;
+
+        vm.warp(deadline - 1);
+        vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.NotExpiredYet.selector, deadline));
+        vm.prank(alice);
+        pool.expire(id);
+
+        vm.warp(deadline);
+        vm.prank(alice);
+        pool.expire(id);
+
+        assertEq(gold.balanceOf(alice), HUNDRED, "the escrow was not refunded at the deadline");
+        assertEq(pool.escrowedOunces(), NOTHING);
+    }
+
     function test_SettlementRefusesTheWrongKindAndAZeroPrice() public {
         uint256 id = _requestDeposit(alice, TEN);
 
