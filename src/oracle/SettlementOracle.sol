@@ -62,10 +62,6 @@ contract SettlementOracle is ReentrancyGuard {
     /// @notice The Pyth price id for the same asset.
     bytes32 public immutable PYTH_PRICE_ID;
 
-    /// @notice The token the verifier bills in, passed through as the
-    ///         verifier's parameter payload.
-    address public immutable FEE_QUOTE_TOKEN;
-
     /// @notice How far the two sources may disagree, in basis points (O5).
     uint256 public immutable DEVIATION_BAND_BPS;
 
@@ -103,10 +99,6 @@ contract SettlementOracle is ReentrancyGuard {
         address calendar,
         bytes32 feedId,
         bytes32 pythPriceId,
-        // Zero is a legitimate value: a verifier billing in the native token
-        // has no quote token address to name.
-        // forge-lint: disable-next-line(missing-zero-check)
-        address feeQuoteToken,
         uint8 streamDecimals,
         uint256 deviationBandBps,
         uint64 maxPythPublishDelay
@@ -134,7 +126,6 @@ contract SettlementOracle is ReentrancyGuard {
         CALENDAR = TradingCalendar(calendar);
         FEED_ID = feedId;
         PYTH_PRICE_ID = pythPriceId;
-        FEE_QUOTE_TOKEN = feeQuoteToken;
         DEVIATION_BAND_BPS = deviationBandBps;
         MAX_PYTH_PUBLISH_DELAY = maxPythPublishDelay;
         STREAM_SCALE = DECIMAL_BASE ** (TARGET_DECIMALS - streamDecimals);
@@ -157,7 +148,7 @@ contract SettlementOracle is ReentrancyGuard {
             revert FeeNotPaid(msg.value, pythFee);
         }
 
-        ReportV8 memory report = _report(streamsPayload, msg.value - pythFee);
+        ReportV8 memory report = _report(streamsPayload);
 
         if (report.feedId != FEED_ID) {
             revert WrongFeed(report.feedId, FEED_ID);
@@ -199,8 +190,8 @@ contract SettlementOracle is ReentrancyGuard {
         // forge-lint: disable-next-line(reentrancy-events)
         emit PriceSettled(targetTime, price18, pythPrice18, deviationBps);
 
-        // Rule 8: this contract keeps nothing. Whatever the two verifications
-        // left goes back to the caller that put it up.
+        // Rule 8: this contract keeps nothing. Whatever is left after the Pyth
+        // fee goes back to the caller that put it up.
         uint256 residual = address(this).balance;
         if (residual != 0) {
             // The recipient is the caller, not an address anyone chose, the
@@ -215,12 +206,14 @@ contract SettlementOracle is ReentrancyGuard {
         }
     }
 
-    /// @dev Verify the payload and decode it as a v8 report.
-    function _report(bytes calldata payload, uint256 value) private returns (ReportV8 memory) {
+    /// @dev Verify the payload and decode it as a v8 report. No value and no
+    ///      parameter bytes: Data Streams bills by subscription, so there is no
+    ///      fee to quote and no fee token to name.
+    function _report(bytes calldata payload) private returns (ReportV8 memory) {
         // The guard is held across this call, and the verifier is the address
         // this contract was deployed against.
         // forge-lint: disable-next-line(reentrancy-no-eth)
-        bytes memory response = VERIFIER.verify{value: value}(payload, abi.encode(FEE_QUOTE_TOKEN));
+        bytes memory response = VERIFIER.verify(payload, "");
         return abi.decode(response, (ReportV8));
     }
 

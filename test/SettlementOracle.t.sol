@@ -48,24 +48,13 @@ contract SettlementOracleTest is Test {
     MockVerifierProxy public verifier;
     MockPyth public pyth;
 
-    address public feeQuote;
-
     function setUp() public {
-        feeQuote = makeAddr("feeQuote");
         calendar = new TradingCalendar(makeAddr("timelock"));
         verifier = new MockVerifierProxy();
         pyth = new MockPyth();
         pyth.setFee(PYTH_FEE);
         oracle = new SettlementOracle(
-            address(verifier),
-            address(pyth),
-            address(calendar),
-            FEED_ID,
-            PYTH_ID,
-            feeQuote,
-            STREAM_DECIMALS,
-            BAND_BPS,
-            PYTH_DELAY
+            address(verifier), address(pyth), address(calendar), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY
         );
         vm.warp(TARGET);
         vm.deal(address(this), 1 ether);
@@ -78,13 +67,19 @@ contract SettlementOracleTest is Test {
         assertEq(deviationBps, NOTHING, "identical prices showed a deviation");
     }
 
-    function test_FeesSplitBetweenPythAndTheVerifierAndNothingIsKept() public {
+    /// @dev Data Streams bills by subscription, so the verifier is called with
+    ///      no value and no parameter bytes, and only Pyth is paid. What the
+    ///      caller put up beyond the Pyth fee comes back.
+    function test_OnlyPythIsPaidAndTheRestComesBack() public {
+        uint256 balanceBefore = address(this).balance;
+
         _settle(_report(), _pythUpdate(PYTH_PRICE, TARGET));
 
         assertEq(pyth.received(), PYTH_FEE, "the pyth fee did not arrive");
-        assertEq(verifier.received(), EXTRA, "the rest did not reach the verifier");
+        assertEq(verifier.received(), NOTHING, "the verifier was sent value");
+        assertEq(verifier.lastParameterPayload().length, NOTHING, "the parameter bytes were not empty");
         assertEq(address(oracle).balance, NOTHING, "the oracle kept a balance");
-        assertEq(abi.decode(verifier.lastParameterPayload(), (address)), feeQuote);
+        assertEq(balanceBefore - address(this).balance, PYTH_FEE, "the caller was not refunded");
     }
 
     function test_RefusesWhenThePythFeeIsNotCovered() public {
@@ -240,7 +235,7 @@ contract SettlementOracleTest is Test {
 
     function test_ScalesAnEightDecimalStream() public {
         SettlementOracle eight = new SettlementOracle(
-            address(verifier), address(pyth), address(calendar), FEED_ID, PYTH_ID, feeQuote, 8, BAND_BPS, PYTH_DELAY
+            address(verifier), address(pyth), address(calendar), FEED_ID, PYTH_ID, 8, BAND_BPS, PYTH_DELAY
         );
 
         ReportV8 memory report = _report();
@@ -263,15 +258,7 @@ contract SettlementOracleTest is Test {
     function test_ConstructorRejectsBadArguments() public {
         vm.expectRevert(SettlementOracle.ZeroAddress.selector);
         new SettlementOracle(
-            address(0),
-            address(pyth),
-            address(calendar),
-            FEED_ID,
-            PYTH_ID,
-            feeQuote,
-            STREAM_DECIMALS,
-            BAND_BPS,
-            PYTH_DELAY
+            address(0), address(pyth), address(calendar), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY
         );
 
         vm.expectRevert(SettlementOracle.ZeroId.selector);
@@ -281,7 +268,6 @@ contract SettlementOracleTest is Test {
             address(calendar),
             bytes32(0),
             PYTH_ID,
-            feeQuote,
             STREAM_DECIMALS,
             BAND_BPS,
             PYTH_DELAY
@@ -289,28 +275,12 @@ contract SettlementOracleTest is Test {
 
         vm.expectRevert(abi.encodeWithSelector(SettlementOracle.BandTooWide.selector, BPS));
         new SettlementOracle(
-            address(verifier),
-            address(pyth),
-            address(calendar),
-            FEED_ID,
-            PYTH_ID,
-            feeQuote,
-            STREAM_DECIMALS,
-            BPS,
-            PYTH_DELAY
+            address(verifier), address(pyth), address(calendar), FEED_ID, PYTH_ID, STREAM_DECIMALS, BPS, PYTH_DELAY
         );
 
         vm.expectRevert(SettlementOracle.ZeroPythDelay.selector);
         new SettlementOracle(
-            address(verifier),
-            address(pyth),
-            address(calendar),
-            FEED_ID,
-            PYTH_ID,
-            feeQuote,
-            STREAM_DECIMALS,
-            BAND_BPS,
-            0
+            address(verifier), address(pyth), address(calendar), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, 0
         );
     }
 
@@ -367,4 +337,8 @@ contract SettlementOracleTest is Test {
         // forge-lint: disable-next-line(arbitrary-send-eth)
         return oracle.settlePrice{value: PYTH_FEE + EXTRA}(target, abi.encode(report), update);
     }
+
+    /// @dev The oracle refunds what the Pyth fee did not use, so this contract
+    ///      has to be able to receive it.
+    receive() external payable {}
 }

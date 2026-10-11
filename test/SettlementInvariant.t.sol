@@ -47,15 +47,7 @@ contract SettlementInvariantTest is Test {
         pyth = new MockPyth();
         pyth.setFee(PYTH_FEE);
         oracle = new SettlementOracle(
-            address(verifier),
-            address(pyth),
-            address(calendar),
-            FEED_ID,
-            PYTH_ID,
-            makeAddr("feeQuote"),
-            STREAM_DECIMALS,
-            BAND_BPS,
-            PYTH_DELAY
+            address(verifier), address(pyth), address(calendar), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY
         );
 
         vm.warp(START);
