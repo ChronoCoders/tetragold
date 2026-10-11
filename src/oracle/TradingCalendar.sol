@@ -69,8 +69,8 @@ contract TradingCalendar {
     /// @notice How many Eastern days the list holds.
     uint256 public holidayCount;
 
-    event HolidayAdded(uint256 indexed etDay, uint64 timestamp);
-    event HolidayRemoved(uint256 indexed etDay, uint64 timestamp);
+    event HolidayAdded(uint256 indexed etDay, uint256 timestamp);
+    event HolidayRemoved(uint256 indexed etDay, uint256 timestamp);
 
     error NotTimelock(address caller);
     error AlreadyListed(uint256 etDay);
@@ -85,7 +85,7 @@ contract TradingCalendar {
     }
 
     /// @notice Whether the market is open at `timestamp`.
-    function isOpen(uint64 timestamp) external view returns (bool) {
+    function isOpen(uint256 timestamp) external view returns (bool) {
         uint256 eastern = _easternSeconds(timestamp);
         if (closedDays[eastern / SECONDS_PER_DAY]) {
             return false;
@@ -107,17 +107,17 @@ contract TradingCalendar {
     }
 
     /// @notice Whether `timestamp` falls on a listed holiday.
-    function isHoliday(uint64 timestamp) external view returns (bool) {
+    function isHoliday(uint256 timestamp) external view returns (bool) {
         return closedDays[etDayOf(timestamp)];
     }
 
     /// @notice The Eastern day `timestamp` falls in, which is the holiday key.
-    function etDayOf(uint64 timestamp) public pure returns (uint256) {
+    function etDayOf(uint256 timestamp) public pure returns (uint256) {
         return _easternSeconds(timestamp) / SECONDS_PER_DAY;
     }
 
     /// @notice Close the Eastern day that `timestamp` falls in.
-    function addHoliday(uint64 timestamp) external {
+    function addHoliday(uint256 timestamp) external {
         if (msg.sender != TIMELOCK) {
             revert NotTimelock(msg.sender);
         }
@@ -131,7 +131,7 @@ contract TradingCalendar {
     }
 
     /// @notice Reopen the Eastern day that `timestamp` falls in.
-    function removeHoliday(uint64 timestamp) external {
+    function removeHoliday(uint256 timestamp) external {
         if (msg.sender != TIMELOCK) {
             revert NotTimelock(msg.sender);
         }
@@ -145,14 +145,14 @@ contract TradingCalendar {
     }
 
     /// @dev Seconds since the epoch shifted into Eastern time.
-    function _easternSeconds(uint64 timestamp) private pure returns (uint256) {
-        return uint256(timestamp) - (_isDaylightSaving(timestamp) ? DAYLIGHT_OFFSET : STANDARD_OFFSET);
+    function _easternSeconds(uint256 timestamp) private pure returns (uint256) {
+        return timestamp - (_isDaylightSaving(timestamp) ? DAYLIGHT_OFFSET : STANDARD_OFFSET);
     }
 
     /// @dev Both transition instants are fixed in UTC: 02:00 standard time is
     ///      07:00 UTC and 02:00 daylight time is 06:00 UTC.
-    function _isDaylightSaving(uint64 timestamp) private pure returns (bool) {
-        uint256 year = _yearFromDays(uint256(timestamp) / SECONDS_PER_DAY);
+    function _isDaylightSaving(uint256 timestamp) private pure returns (bool) {
+        uint256 year = _yearFromDays(timestamp / SECONDS_PER_DAY);
         uint256 start = _nthSunday(year, MARCH, SECOND_SUNDAY) * SECONDS_PER_DAY + DST_START_UTC_HOUR;
         uint256 end = _nthSunday(year, NOVEMBER, FIRST_SUNDAY) * SECONDS_PER_DAY + DST_END_UTC_HOUR;
         return timestamp >= start && timestamp < end;

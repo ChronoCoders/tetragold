@@ -44,15 +44,22 @@ contract PushFallbackHandler is Test {
         FEED.setLatestAnswer(answer);
         FEED.setUpdatedAt(block.timestamp - age);
 
-        // The campaign starts in 2026 and walks forward in hours, so the clock
-        // stays far below what a uint64 holds.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        uint64 asOf = uint64(block.timestamp);
-        try FALLBACK.price(asOf) returns (uint256 price18, uint256 updatedAt) {
+        // The handler keeps its own reference time, read from the chain rather
+        // than from anything the call returns, so a contract that trusted the
+        // wrong clock could not hide it from the ghosts below.
+        // forge-lint: disable-next-line(block-timestamp)
+        uint256 asOf = block.timestamp;
+        try FALLBACK.price() returns (uint256 price18, uint256 updatedAt) {
             successes++;
             assertGt(price18, 0, "a non positive price was returned");
+            // Whether the round postdates the block is the thing being
+            // recorded, so the block's own time is the reference.
+            // forge-lint: disable-next-line(block-timestamp)
             if (updatedAt > asOf) {
                 successesFromAFutureRound++;
+                // The age the invariant checks is measured here rather than
+                // taken from the contract, which is the point of the ghost.
+                // forge-lint: disable-next-line(block-timestamp)
             } else if (asOf - updatedAt > maxObservedAge) {
                 maxObservedAge = asOf - updatedAt;
             }

@@ -52,20 +52,19 @@ contract PushFallbackPriceTest is Test {
     }
 
     function test_FreshRoundInOpenHoursScalesTo18Decimals() public view {
-        (uint256 price18, uint256 updatedAt) = fallbackPrice.price(OPEN_INSTANT);
+        (uint256 price18, uint256 updatedAt) = fallbackPrice.price();
 
         assertEq(price18, ANSWER_18, "the 8 decimal answer did not scale to 18");
         assertEq(updatedAt, OPEN_INSTANT);
     }
 
     function test_RoundAtTheAgeBoundIsAccepted() public {
-        uint64 asOf = OPEN_INSTANT + MAX_AGE;
-        vm.warp(asOf);
+        vm.warp(OPEN_INSTANT + MAX_AGE);
 
-        (uint256 price18, uint256 updatedAt) = fallbackPrice.price(asOf);
-        assertEq(updatedAt, OPEN_INSTANT);
+        (uint256 price18, uint256 updatedAt) = fallbackPrice.price();
 
         assertEq(price18, ANSWER_18, "a round exactly at the bound was refused");
+        assertEq(updatedAt, OPEN_INSTANT);
     }
 
     function test_RoundOneSecondPastTheBoundIsRefused() public {
@@ -75,27 +74,27 @@ contract PushFallbackPriceTest is Test {
         vm.expectRevert(abi.encodeWithSelector(PushFallbackPrice.RoundTooOld.selector, OPEN_INSTANT, asOf, MAX_AGE));
         // This call reverts by design, so no value comes back.
         // forge-lint: disable-next-line(unused-return)
-        fallbackPrice.price(asOf);
+        fallbackPrice.price();
     }
 
     function test_ClosedMarketIsRefusedEvenWithAFreshRound() public {
         vm.warp(CLOSED_INSTANT);
         feed.setLatestAnswer(ANSWER);
 
-        vm.expectRevert(abi.encodeWithSelector(PushFallbackPrice.MarketClosed.selector, CLOSED_INSTANT));
+        vm.expectRevert(abi.encodeWithSelector(PushFallbackPrice.MarketClosed.selector, uint256(CLOSED_INSTANT)));
         // This call reverts by design, so no value comes back.
         // forge-lint: disable-next-line(unused-return)
-        fallbackPrice.price(CLOSED_INSTANT);
+        fallbackPrice.price();
     }
 
     function test_HolidayIsRefusedEvenWithAFreshRound() public {
         vm.prank(timelock);
         calendar.addHoliday(OPEN_INSTANT);
 
-        vm.expectRevert(abi.encodeWithSelector(PushFallbackPrice.MarketClosed.selector, OPEN_INSTANT));
+        vm.expectRevert(abi.encodeWithSelector(PushFallbackPrice.MarketClosed.selector, uint256(OPEN_INSTANT)));
         // This call reverts by design, so no value comes back.
         // forge-lint: disable-next-line(unused-return)
-        fallbackPrice.price(OPEN_INSTANT);
+        fallbackPrice.price();
     }
 
     function test_IncompleteRoundIsRefused() public {
@@ -104,17 +103,19 @@ contract PushFallbackPriceTest is Test {
         vm.expectRevert(PushFallbackPrice.IncompleteRound.selector);
         // This call reverts by design, so no value comes back.
         // forge-lint: disable-next-line(unused-return)
-        fallbackPrice.price(OPEN_INSTANT);
+        fallbackPrice.price();
     }
 
     function test_RoundInTheFutureIsRefused() public {
         uint256 ahead = uint256(OPEN_INSTANT) + 1;
         feed.setUpdatedAt(ahead);
 
-        vm.expectRevert(abi.encodeWithSelector(PushFallbackPrice.RoundInTheFuture.selector, ahead, OPEN_INSTANT));
+        vm.expectRevert(
+            abi.encodeWithSelector(PushFallbackPrice.RoundInTheFuture.selector, ahead, uint256(OPEN_INSTANT))
+        );
         // This call reverts by design, so no value comes back.
         // forge-lint: disable-next-line(unused-return)
-        fallbackPrice.price(OPEN_INSTANT);
+        fallbackPrice.price();
     }
 
     function test_NonPositiveAnswerIsRefused() public {
@@ -123,13 +124,12 @@ contract PushFallbackPriceTest is Test {
         vm.expectRevert(abi.encodeWithSelector(PushFallbackPrice.NonPositivePrice.selector, int256(0)));
         // This call reverts by design, so no value comes back.
         // forge-lint: disable-next-line(unused-return)
-        fallbackPrice.price(OPEN_INSTANT);
+        fallbackPrice.price();
 
         feed.setLatestAnswer(-1);
 
         vm.expectRevert(abi.encodeWithSelector(PushFallbackPrice.NonPositivePrice.selector, int256(-1)));
-        // This call reverts by design, so no value comes back.
         // forge-lint: disable-next-line(unused-return)
-        fallbackPrice.price(OPEN_INSTANT);
+        fallbackPrice.price();
     }
 }

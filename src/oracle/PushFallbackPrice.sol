@@ -41,10 +41,10 @@ contract PushFallbackPrice {
     error ZeroAddress();
     error ZeroMaxAge();
     error UnsupportedDecimals(uint8 feedDecimals);
-    error MarketClosed(uint64 asOf);
+    error MarketClosed(uint256 asOf);
     error IncompleteRound();
-    error RoundInTheFuture(uint256 updatedAt, uint64 asOf);
-    error RoundTooOld(uint256 updatedAt, uint64 asOf, uint256 maxAge);
+    error RoundInTheFuture(uint256 updatedAt, uint256 asOf);
+    error RoundTooOld(uint256 updatedAt, uint256 asOf, uint256 maxAge);
     error NonPositivePrice(int256 answer);
 
     constructor(address feed, address calendar, uint256 maxAge) {
@@ -65,11 +65,15 @@ contract PushFallbackPrice {
         SCALE = 10 ** (TARGET_DECIMALS - feedDecimals);
     }
 
-    /// @notice The current push price at `asOf`, or a refusal.
-    /// @param asOf The instant the caller is acting at.
+    /// @notice The current push price now, or a refusal.
     /// @return price18 The price scaled to 18 decimals.
     /// @return updatedAt The round's own timestamp, which the caller records.
-    function price(uint64 asOf) external view returns (uint256 price18, uint256 updatedAt) {
+    function price() external view returns (uint256 price18, uint256 updatedAt) {
+        // Post merge Ethereum fixes block.timestamp to slot time, so it is the
+        // clock a fallback can be held to, and the only one no caller picks
+        // (consensus-specs specs/bellatrix/beacon-chain.md:446 at 9a8fdd0).
+        // forge-lint: disable-next-line(block-timestamp)
+        uint256 asOf = block.timestamp;
         if (!CALENDAR.isOpen(asOf)) {
             revert MarketClosed(asOf);
         }
@@ -81,9 +85,16 @@ contract PushFallbackPrice {
         if (roundUpdatedAt == 0) {
             revert IncompleteRound();
         }
+        // A round dated after the block is a broken feed, and the comparison
+        // has to be against the chain's clock for that to mean anything
+        // (consensus-specs specs/bellatrix/beacon-chain.md:446 at 9a8fdd0).
+        // forge-lint: disable-next-line(block-timestamp)
         if (roundUpdatedAt > asOf) {
             revert RoundInTheFuture(roundUpdatedAt, asOf);
         }
+        // The age bound of D22 is a statement about now, so the clock is the
+        // only reference that cannot be chosen by a caller (same citation).
+        // forge-lint: disable-next-line(block-timestamp)
         if (asOf - roundUpdatedAt > MAX_AGE) {
             revert RoundTooOld(roundUpdatedAt, asOf, MAX_AGE);
         }

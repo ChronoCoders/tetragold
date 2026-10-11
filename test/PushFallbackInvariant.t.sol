@@ -58,7 +58,7 @@ contract PushFallbackInvariantTest is Test {
         uint64 open = START + 1 hours;
         vm.warp(open);
         feed.setLatestAnswer(ANSWER);
-        (uint256 price18, uint256 updatedAt) = fallbackPrice.price(open);
+        (uint256 price18, uint256 updatedAt) = fallbackPrice.price();
         assertGt(price18, 0, "the open and fresh case did not return a price");
         assertEq(updatedAt, open);
 
@@ -67,14 +67,14 @@ contract PushFallbackInvariantTest is Test {
         vm.expectRevert(abi.encodeWithSelector(PushFallbackPrice.RoundTooOld.selector, open, stale, MAX_AGE));
         // This call reverts by design, so no value comes back.
         // forge-lint: disable-next-line(unused-return)
-        fallbackPrice.price(stale);
+        fallbackPrice.price();
 
-        uint64 closed = SATURDAY_MIDDAY;
+        uint256 closed = SATURDAY_MIDDAY;
         vm.warp(closed);
         feed.setLatestAnswer(ANSWER);
         vm.expectRevert(abi.encodeWithSelector(PushFallbackPrice.MarketClosed.selector, closed));
         // Same here: the refusal is the assertion.
         // forge-lint: disable-next-line(unused-return)
-        fallbackPrice.price(closed);
+        fallbackPrice.price();
     }
 }
