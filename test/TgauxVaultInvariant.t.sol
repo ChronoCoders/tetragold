@@ -99,12 +99,15 @@ contract TgauxVaultInvariantTest is Test {
         uint256 bps = vault.BPS_DENOMINATOR();
         uint256 count = handler.actorCount();
         for (uint256 i = 0; i < count; i++) {
-            // The actor set is four addresses fixed at construction, and
-            // reading each one's totals is what the invariant is.
+            // The actor set is four addresses fixed at construction, so this
+            // read cannot grow with the campaign.
             // forge-lint: disable-next-line(calls-loop)
             address actor = handler.actorAt(i);
+            // This actor's returned total is the left side of the bound, so
+            // reading it per actor is the invariant rather than an aside.
             // forge-lint: disable-next-line(calls-loop)
             uint256 returned = handler.returnedPaxg(actor);
+            // This actor's deposited total is the right side of the same bound.
             // forge-lint: disable-next-line(calls-loop)
             uint256 deposited = handler.depositedPaxg(actor);
             assertLe(
