@@ -18,7 +18,7 @@ while IFS= read -r f; do
         echo "pre-commit: em or en dash in staged $f" >&2
         rc=1
     fi
-done < <(git diff --cached --name-only --diff-filter=ACM)
+done < <(git diff --cached --name-only --diff-filter=ACMR)
 
 if ! "${FORGE:-$HOME/.foundry/bin/forge}" fmt --check >/dev/null 2>&1; then
     echo "pre-commit: forge fmt --check failed" >&2

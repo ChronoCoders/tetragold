@@ -28,5 +28,11 @@ if ! scan_text_dashes "$subject"; then
     rc=1
 fi
 
+cleanup_selftest || { echo "commit-msg: cleanup detector failed its self test" >&2; exit 1; }
+if is_cleanup_subject "$subject"; then
+    echo "commit-msg: subject describes a formatting or cleanup change; it must ride a real change" >&2
+    rc=1
+fi
+
 [ $rc -ne 0 ] && echo "commit-msg: refused" >&2
 exit $rc

@@ -30,6 +30,17 @@ name_selftest() {
     return 0
 }
 
+# A cleanup-only commit subject is refused: such corrections ride inside a
+# commit that changes the file for a real reason. Whole words, case
+# insensitive. is_cleanup_subject returns 0 when the subject is cleanup-only.
+CLEANUP_RE='\b(format|formatting|fmt|whitespace|dash|dashes|punctuation|cleanup|tidy)\b|\bclean up\b'
+is_cleanup_subject() { printf '%s' "$1" | grep -qiE "$CLEANUP_RE"; }
+cleanup_selftest() {
+    is_cleanup_subject 'chore: fix dash in readme' || return 1
+    is_cleanup_subject 'fix: correct oracle staleness bound' && return 1
+    return 0
+}
+
 # scan_tracked_dashes / scan_tracked_name scan every tracked file. They print
 # each offender and return 1 if any is found, 0 if clean, after the control.
 scan_tracked_dashes() {

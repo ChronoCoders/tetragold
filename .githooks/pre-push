@@ -11,27 +11,29 @@ root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 rc=0
 while read -r lref lsha rref rsha; do
     [ -n "${lref:-}" ] || continue
-    [ "$(printf '%s' "$lsha" | tr -d 0)" = "" ] && continue
+    [ "$(printf '%s' "$lsha" | tr -d 0)" = "" ] && continue   # branch deletion
     if [ -z "${rsha:-}" ] || [ "$(printf '%s' "$rsha" | tr -d 0)" = "" ]; then
-        range="$lsha"
+        # new remote branch: only commits not already on any remote
+        commits=$(git rev-list "$lsha" --not --remotes 2>/dev/null || true)
     else
-        range="$rsha..$lsha"
+        commits=$(git rev-list "$rsha..$lsha" 2>/dev/null || true)
     fi
+    [ -n "$commits" ] || continue
 
-    msgs=$(git log --format='%B' "$range" 2>/dev/null || true)
+    # messages and content cover the same commit set
+    msgs=""
+    added=""
+    for c in $commits; do
+        msgs=$(printf '%s\n%s' "$msgs" "$(git log -1 --format='%B' "$c" 2>/dev/null)")
+        added=$(printf '%s\n%s' "$added" "$(git show -U0 --format='' "$c" 2>/dev/null | grep '^+' | grep -v '^+++' || true)")
+    done
+
     if ! scan_text_dashes "$msgs"; then
-        echo "pre-push: em or en dash in a pushed commit message ($range)" >&2
+        echo "pre-push: em or en dash in a pushed commit message" >&2
         rc=1
     fi
-
-    if [ "$range" = "$lsha" ]; then
-        diffsrc=$(git show -U0 --format='' "$lsha" 2>/dev/null || true)
-    else
-        diffsrc=$(git diff -U0 "$range" 2>/dev/null || true)
-    fi
-    added=$(printf '%s\n' "$diffsrc" | grep '^+' | grep -v '^+++' || true)
     if ! scan_text_dashes "$added"; then
-        echo "pre-push: em or en dash in pushed content ($range)" >&2
+        echo "pre-push: em or en dash in pushed content" >&2
         rc=1
     fi
 done
