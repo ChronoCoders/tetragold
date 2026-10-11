@@ -89,26 +89,22 @@ if [ -f "$BROADCAST_FILE" ]; then
     if command -v jq &> /dev/null; then
         USDC=$(jq -r '.transactions[] | select(.contractName == "MockERC20" and .arguments[0] == "USD Coin") | .contractAddress' $BROADCAST_FILE | head -1)
         USDT=$(jq -r '.transactions[] | select(.contractName == "MockERC20" and .arguments[0] == "Tether USD") | .contractAddress' $BROADCAST_FILE | head -1)
-        TGX=$(jq -r '.transactions[] | select(.contractName == "MockERC20" and .arguments[0] == "Tetra Gold Governance") | .contractAddress' $BROADCAST_FILE | head -1)
         TGAUX=$(jq -r '.transactions[] | select(.contractName == "TGAUX") | .contractAddress' $BROADCAST_FILE | head -1)
         ORACLE=$(jq -r '.transactions[] | select(.contractName == "OracleAggregator") | .contractAddress' $BROADCAST_FILE | head -1)
         LIQUIDITY_POOL=$(jq -r '.transactions[] | select(.contractName == "LiquidityPool") | .contractAddress' $BROADCAST_FILE | head -1)
         INSURANCE_FUND=$(jq -r '.transactions[] | select(.contractName == "InsuranceFund") | .contractAddress' $BROADCAST_FILE | head -1)
-        FEE_DISTRIBUTOR=$(jq -r '.transactions[] | select(.contractName == "FeeDistributor") | .contractAddress' $BROADCAST_FILE | head -1)
         VAULT_MANAGER=$(jq -r '.transactions[] | select(.contractName == "VaultManager") | .contractAddress' $BROADCAST_FILE | head -1)
         LIQUIDATION_ENGINE=$(jq -r '.transactions[] | select(.contractName == "LiquidationEngine") | .contractAddress' $BROADCAST_FILE | head -1)
 
         echo "Mock Tokens:"
         echo "  USDC:              $USDC"
         echo "  USDT:              $USDT"
-        echo "  TGX:               $TGX"
         echo ""
         echo "Core Contracts:"
         echo "  TGAUX:             $TGAUX"
         echo "  OracleAggregator:  $ORACLE"
         echo "  LiquidityPool:     $LIQUIDITY_POOL"
         echo "  InsuranceFund:     $INSURANCE_FUND"
-        echo "  FeeDistributor:    $FEE_DISTRIBUTOR"
         echo "  VaultManager:      $VAULT_MANAGER"
         echo "  LiquidationEngine: $LIQUIDATION_ENGINE"
         echo ""
@@ -121,14 +117,12 @@ if [ -f "$BROADCAST_FILE" ]; then
 # Mock Tokens
 USDC_ADDRESS=$USDC
 USDT_ADDRESS=$USDT
-TGX_ADDRESS=$TGX
 
 # Core Contracts
 TGAUX_ADDRESS=$TGAUX
 ORACLE_AGGREGATOR_ADDRESS=$ORACLE
 LIQUIDITY_POOL_ADDRESS=$LIQUIDITY_POOL
 INSURANCE_FUND_ADDRESS=$INSURANCE_FUND
-FEE_DISTRIBUTOR_ADDRESS=$FEE_DISTRIBUTOR
 VAULT_MANAGER_ADDRESS=$VAULT_MANAGER
 LIQUIDATION_ENGINE_ADDRESS=$LIQUIDATION_ENGINE
 

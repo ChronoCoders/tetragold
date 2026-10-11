@@ -13,11 +13,7 @@ tetragold/
 │   ├── LiquidationEngine.sol               # Chainlink Automation-powered liquidations
 │   ├── OracleAggregator.sol                # Multi-source TWAP oracle (Chainlink, Band, API3)
 │   ├── InsuranceFund.sol                   # Bad debt coverage with Aave yield generation
-│   ├── FeeDistributor.sol                  # Protocol revenue distribution
 │   ├── LPToken.sol                         # ERC-20 LP share token
-│   ├── TGX.sol                             # Capped governance / reward token (100M supply)
-│   ├── TGXVesting.sol                      # Linear vesting with cliff for team / contributors
-│   ├── TGXEmissions.sol                    # MasterChef-style TGX stake-to-earn emissions
 │   └── interfaces/
 │       └── AutomationCompatibleInterface.sol
 ├── test/
@@ -27,18 +23,14 @@ tetragold/
 │   ├── LiquidationEngine.t.sol
 │   ├── OracleAggregator.t.sol
 │   ├── InsuranceFund.t.sol
-│   ├── FeeDistributor.t.sol
 │   ├── LPToken.t.sol
-│   ├── TGX.t.sol
-│   ├── TGXVesting.t.sol
-│   ├── TGXEmissions.t.sol
 │   ├── Timelock.t.sol
 │   ├── Integration.t.sol
 │   ├── Invariant.t.sol
 │   ├── DeploySmoke.t.sol
 │   └── mocks/
 ├── script/
-│   ├── Deploy.s.sol                        # Full protocol + TGX ecosystem + timelock
+│   ├── Deploy.s.sol                        # Full protocol + timelock
 │   ├── DeployTGAUX.s.sol
 │   ├── DeployLocal.s.sol
 │   └── VerifyDeploy.s.sol                  # Post-deploy role and wiring checks
@@ -123,17 +115,11 @@ Accumulates protocol reserves to cover bad debt from failed liquidations and oth
 - Target reserve size: 1.5% of protocol TVL; minimum: 0.5%
 - Coverage events recorded on-chain with reason classification
 
-### FeeDistributor
+### Fees
 
-Collects fees from the VaultManager and distributes them according to fixed allocations:
-
-| Recipient | Share |
-|---|---|
-| Insurance Fund | 30% |
-| Treasury | 40% |
-| TGX Stakers | 30% |
-
-TGX stakers earn a pro-rata share of staker fees using a MasterChef-style reward accounting model. Rewards accumulate per supported token and can be claimed at any time.
+There is no protocol token and no fee staking. Each fee and penalty is split
+between the treasury, the insurance fund and the counterparty pool when it is
+charged. The shares are an open parameter.
 
 ## Dependencies
 
@@ -204,7 +190,6 @@ After deploying all contracts, the following roles must be configured:
 | TGAUX | `MINTER_ROLE` | VaultManager |
 | LiquidityPool | `VAULT_MANAGER_ROLE` | VaultManager |
 | VaultManager | `LIQUIDATOR_ROLE` | LiquidationEngine |
-| InsuranceFund | `VAULT_MANAGER_ROLE` | FeeDistributor |
 | InsuranceFund | `LIQUIDATION_ENGINE_ROLE` | LiquidationEngine |
 | InsuranceFund | `COVERAGE_MANAGER_ROLE` | Admin multisig |
 | OracleAggregator | `PARAM_ROLE` | TimelockController |
@@ -220,7 +205,6 @@ All contracts use OpenZeppelin's `AccessControl`. The `DEFAULT_ADMIN_ROLE` canno
 | `MINTER_ROLE` | VaultManager | Mint TGAUX |
 | `PAUSER_ROLE` | Admin multisig | Pause token transfers |
 | `LIQUIDATOR_ROLE` | LiquidationEngine | Execute liquidations |
-| `FEE_COLLECTOR_ROLE` | FeeDistributor | Withdraw collected fees |
 | `VAULT_MANAGER_ROLE` | VaultManager | Borrow/repay from LiquidityPool |
 | `PARAM_ROLE` | TimelockController | Tune slow parameters (oracle deviation / circuit-breaker thresholds, insurance target percentage) behind a 48h delay |
 
