@@ -47,10 +47,6 @@ contract InsuranceFund {
     ///         pool (D20, O11).
     uint256 public immutable TARGET;
 
-    /// @notice The token refuses a transfer below this unless it moves a whole
-    ///         balance (4.4), so a payout under it cannot be sent.
-    uint256 public immutable MIN_TRANSFER;
-
     /// @notice Ounces the fund holds, tracked rather than read from the token.
     uint256 public ounces;
 
@@ -82,7 +78,6 @@ contract InsuranceFund {
         TREASURY = treasury;
         LOCK = ReentrancyLock(lock);
         TARGET = target;
-        MIN_TRANSFER = TGAUX(gold).MINIMUM_TRANSFER_AMOUNT();
     }
 
     /// @notice Take the launch seed from the treasury, once (D49).
@@ -137,9 +132,8 @@ contract InsuranceFund {
 
     /// @notice Send up to `requested` ounces to `to` (D34, D49, D39).
     /// @dev Never reverts for a shortage, which is what I14 asks of every exit
-    ///      path: it pays what it has and reports it. A request under the
-    ///      token's minimum transfer pays nothing, because the token would
-    ///      refuse it and a revert here would strand a liquidation.
+    ///      path: it pays what it has and reports it. Any amount goes out, down
+    ///      to one wei, because the token carries no minimum (4.4, r6.4).
     /// @param to Recipient: the pool for bad debt cover, the keeper for its fee.
     /// @param requested Ounces asked for.
     /// @return paid Ounces actually sent.
@@ -150,9 +144,6 @@ contract InsuranceFund {
         }
 
         paid = requested > ounces ? ounces : requested;
-        if (paid != 0 && paid < MIN_TRANSFER && paid != ounces) {
-            paid = 0;
-        }
 
         if (paid != 0) {
             ounces -= paid;

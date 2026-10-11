@@ -16,6 +16,12 @@ import {MockERC20} from "../mocks/MockERC20.sol";
 contract TgauxVaultHandler is Test {
     uint256 private constant ACTOR_COUNT = 4;
     uint256 private constant MAX_DEPOSIT = 1000 ether;
+    uint256 private constant ONE_WEI = 1;
+    /// @dev Two wei is the smallest deposit that still mints at this suite's
+    ///      entry fee of 50 basis points; one wei rounds to nothing minted and
+    ///      the vault refuses it (4.1, 4.4).
+    uint256 private constant MIN_DEPOSIT = 2;
+    uint256 private constant MODES = 3;
 
     TgauxVault public immutable VAULT;
     TGAUX public immutable TOKEN;
@@ -36,8 +42,16 @@ contract TgauxVaultHandler is Test {
 
     uint256 public deposits;
     uint256 public withdrawals;
-    uint256 public dustLeft;
-    uint256 public dustExits;
+
+    /// @notice Withdrawals of a single wei, the amount a floor would refuse.
+    uint256 public weiWithdrawals;
+
+    /// @notice Withdrawals that took an actor's whole balance.
+    uint256 public wholeBalanceExits;
+
+    /// @notice Withdrawals that left a balance of a few wei behind, which a
+    ///         floor would then have trapped.
+    uint256 public weiBalancesLeft;
 
     mapping(address => uint256) public depositedPaxg;
     mapping(address => uint256) public returnedPaxg;
@@ -63,9 +77,7 @@ contract TgauxVaultHandler is Test {
 
     function deposit(uint256 actorSeed, uint256 amount) external {
         address actor = _actor(actorSeed);
-        // The floor keeps the minted amount above the token's 1 gram minimum
-        // for every fee this suite runs with.
-        amount = bound(amount, TOKEN.MINIMUM_TRANSFER_AMOUNT() * 2, MAX_DEPOSIT);
+        amount = bound(amount, MIN_DEPOSIT, MAX_DEPOSIT);
 
         PAXG.mint(actor, amount);
         paxgMinted += amount;
@@ -83,26 +95,31 @@ contract TgauxVaultHandler is Test {
         deposits++;
     }
 
-    function withdraw(uint256 actorSeed, uint256 amountSeed, bool leaveDust) external {
+    /// @param mode Picks between the three withdrawal shapes I4 has to hold
+    ///        for: the whole balance, a single wei, and an amount in between.
+    ///        A floor on the amount would refuse the second and strand what the
+    ///        third leaves behind, so each is counted and the invariant asserts
+    ///        the campaign reached all three (4.4, r6.4).
+    function withdraw(uint256 actorSeed, uint256 amountSeed, uint8 mode) external {
         address actor = _actor(actorSeed);
         uint256 balance = TOKEN.balanceOf(actor);
         if (balance == 0) {
             return;
         }
 
-        uint256 minimum = TOKEN.MINIMUM_TRANSFER_AMOUNT();
         uint256 amount;
-        if (balance < minimum) {
-            // Only the whole balance exception can clear this one (4.4).
+        if (mode % MODES == 0 || balance == ONE_WEI) {
             amount = balance;
-            dustExits++;
-        } else if (leaveDust && balance > minimum * 2) {
-            // Leave a balance under the minimum on purpose, so the exception
-            // has something to clear on a later call.
-            amount = balance - (minimum - 1);
-            dustLeft++;
+            wholeBalanceExits++;
+        } else if (mode % MODES == 1) {
+            amount = ONE_WEI;
+            weiWithdrawals++;
         } else {
-            amount = bound(amountSeed, minimum, balance);
+            amount = bound(amountSeed, ONE_WEI, balance - ONE_WEI);
+        }
+
+        if (balance - amount != 0 && balance - amount < MIN_DEPOSIT) {
+            weiBalancesLeft++;
         }
 
         uint256 bps = VAULT.BPS_DENOMINATOR();

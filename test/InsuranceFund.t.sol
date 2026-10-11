@@ -19,6 +19,7 @@ contract InsuranceFundTest is Test {
     uint256 private constant SEED = 40 ether;
     uint256 private constant TEN = 10 ether;
     uint256 private constant ONE = 1 ether;
+    uint256 private constant ONE_WEI = 1;
     uint256 private constant NOTHING = 0;
 
     InsuranceFund public fund;
@@ -55,7 +56,6 @@ contract InsuranceFundTest is Test {
         assertEq(fund.TREASURY(), treasury);
         assertEq(address(fund.LOCK()), address(lock));
         assertEq(fund.TARGET(), TARGET);
-        assertEq(fund.MIN_TRANSFER(), gold.MINIMUM_TRANSFER_AMOUNT());
         assertEq(fund.ounces(), NOTHING);
         assertFalse(fund.seeded());
     }
@@ -143,31 +143,27 @@ contract InsuranceFundTest is Test {
         assertEq(_payTo(pool, TEN), NOTHING, "an empty fund paid something");
     }
 
-    /// @dev The token refuses a transfer under one gram unless it moves a whole
-    ///      balance (4.4), so a dust request pays nothing rather than reverting
-    ///      and stranding the liquidation that asked.
-    function test_PayToRefusesDustRatherThanReverting() public {
+    /// @dev 4.4 carries no minimum from r6.4, so the keeper fee and a residual
+    ///      equity of a few wei go out in full rather than being refused.
+    function test_PayToSendsAmountsOfOneWei() public {
         _seed();
-        uint256 dust = gold.MINIMUM_TRANSFER_AMOUNT() - 1;
 
-        uint256 paid = _payTo(keeper, dust);
+        uint256 paid = _payTo(keeper, ONE_WEI);
 
-        assertEq(paid, NOTHING, "a dust payment was attempted");
-        assertEq(fund.ounces(), SEED, "the fund lost ounces on a refused payment");
-        assertEq(gold.balanceOf(keeper), NOTHING);
+        assertEq(paid, ONE_WEI, "a one wei payment was refused");
+        assertEq(gold.balanceOf(keeper), ONE_WEI);
+        assertEq(fund.ounces(), SEED - ONE_WEI, "the fund did not account for the wei it sent");
     }
 
-    /// @dev The whole balance exception does apply, so a fund holding dust can
-    ///      still be emptied.
-    function test_PayToCanEmptyAFundHoldingOnlyDust() public {
-        uint256 dust = gold.MINIMUM_TRANSFER_AMOUNT() - 1;
+    /// @dev The last wei can leave too, so nothing is trapped in the fund.
+    function test_PayToCanEmptyAFundHoldingOneWei() public {
         _seed();
-        _payTo(pool, SEED - dust);
-        assertEq(fund.ounces(), dust);
+        _payTo(pool, SEED - ONE_WEI);
+        assertEq(fund.ounces(), ONE_WEI);
 
-        uint256 paid = _payTo(pool, dust);
+        uint256 paid = _payTo(pool, ONE_WEI);
 
-        assertEq(paid, dust, "the fund could not pay out its last dust");
+        assertEq(paid, ONE_WEI, "the fund could not pay out its last wei");
         assertEq(fund.ounces(), NOTHING);
     }
 

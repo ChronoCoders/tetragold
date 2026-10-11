@@ -16,13 +16,8 @@ contract TGAUXTest is Test {
     uint256 private constant TEN = 10 ether;
     uint256 private constant FUZZ_CEILING = 1_000_000 ether;
     uint256 private constant ONE_WEI = 1;
+    uint256 private constant THREE_WEI = 3;
     uint256 private constant NOTHING = 0;
-
-    /// @dev One troy ounce in grams, scaled by 1e18, for the 4.4 check.
-    uint256 private constant TROY_OUNCE_GRAMS = 31_103_500_000_000_000_000;
-    uint256 private constant ONE_GRAM = 1e18;
-    uint256 private constant GRAM_TOLERANCE = 1e15;
-    uint256 private constant EXPECTED_MINIMUM = 32_150_000_000_000_000;
 
     TGAUX public token;
     VaultStub public vault;
@@ -85,18 +80,12 @@ contract TGAUXTest is Test {
         token.mint(user1, ONE);
     }
 
-    function test_MintRevertsBelowMinimum() public {
-        uint256 under = token.MINIMUM_TRANSFER_AMOUNT() - ONE_WEI;
+    /// @dev 4.4 carries no minimum from r6.4, so one wei mints.
+    function test_MintAcceptsOneWei() public {
+        vault.mint(user1, ONE_WEI);
 
-        vm.expectRevert(abi.encodeWithSelector(TGAUX.BelowMinimum.selector, under));
-        vault.mint(user1, under);
-    }
-
-    function test_MintAtMinimum() public {
-        uint256 minimum = token.MINIMUM_TRANSFER_AMOUNT();
-        vault.mint(user1, minimum);
-
-        assertEq(token.balanceOf(user1), minimum);
+        assertEq(token.balanceOf(user1), ONE_WEI);
+        assertEq(token.totalSupply(), ONE_WEI);
     }
 
     /// @dev The token adds no zero address check of its own, so this asserts
@@ -128,14 +117,15 @@ contract TGAUXTest is Test {
         token.burn(user1, ONE);
     }
 
-    /// @dev The exit path of 4.4: a holder left under the minimum must still be
-    ///      able to leave, so a burn carries no minimum of its own.
-    function test_BurnWholeBalanceBelowMinimum() public {
-        uint256 minimum = token.MINIMUM_TRANSFER_AMOUNT();
-        vault.mint(user1, minimum);
-        vault.burn(user1, ONE_WEI);
+    /// @dev A balance leaves one wei at a time, so nothing can be trapped by
+    ///      the size of what is left (4.4).
+    function test_BurnDownToNothingOneWeiAtATime() public {
+        vault.mint(user1, THREE_WEI);
 
-        vault.burn(user1, minimum - ONE_WEI);
+        vault.burn(user1, ONE_WEI);
+        assertEq(token.balanceOf(user1), THREE_WEI - ONE_WEI);
+        vault.burn(user1, ONE_WEI);
+        vault.burn(user1, ONE_WEI);
 
         assertEq(token.balanceOf(user1), NOTHING);
         assertEq(token.totalSupply(), NOTHING);
@@ -158,40 +148,22 @@ contract TGAUXTest is Test {
         assertEq(token.balanceOf(user2), ONE);
     }
 
-    function test_TransferExactMinimum() public {
-        uint256 minimum = token.MINIMUM_TRANSFER_AMOUNT();
+    /// @dev The transfer half of 4.4: one wei moves, and it moves whether or
+    ///      not it is the sender's whole balance, because no exception is
+    ///      carrying it any more.
+    function test_TransferMovesOneWeiFromAnyBalance() public {
         vault.mint(user1, TEN);
 
         vm.prank(user1);
-        assertTrue(token.transfer(user2, minimum));
+        assertTrue(token.transfer(user2, ONE_WEI));
 
-        assertEq(token.balanceOf(user2), minimum);
-    }
+        assertEq(token.balanceOf(user1), TEN - ONE_WEI);
+        assertEq(token.balanceOf(user2), ONE_WEI);
 
-    /// @dev The transfer half of 4.4.
-    function test_TransferWholeBalanceBelowMinimum() public {
-        uint256 minimum = token.MINIMUM_TRANSFER_AMOUNT();
-        vault.mint(user1, minimum);
-        vault.burn(user1, ONE_WEI);
-        uint256 left = token.balanceOf(user1);
-        assertLt(left, minimum);
+        vm.prank(user2);
+        assertTrue(token.transfer(user1, ONE_WEI));
 
-        vm.prank(user1);
-        assertTrue(token.transfer(user2, left));
-
-        assertEq(token.balanceOf(user1), NOTHING);
-        assertEq(token.balanceOf(user2), left);
-    }
-
-    function test_TransferRevertsBelowMinimum() public {
-        vault.mint(user1, TEN);
-        uint256 under = token.MINIMUM_TRANSFER_AMOUNT() - ONE_WEI;
-
-        vm.prank(user1);
-        vm.expectRevert(abi.encodeWithSelector(TGAUX.BelowMinimum.selector, under));
-        // This call reverts by design, so there is no return value to check.
-        // forge-lint: disable-next-line(erc20-unchecked-transfer)
-        token.transfer(user2, under);
+        assertEq(token.balanceOf(user2), NOTHING);
     }
 
     function test_TransferFromWithApproval() public {
@@ -210,21 +182,21 @@ contract TGAUXTest is Test {
         assertEq(token.allowance(user1, user2), NOTHING);
     }
 
-    /// @dev The minimum lives in the update hook, so the spender's path is held
-    ///      to it as well, not only a direct transfer.
-    function test_TransferFromRevertsBelowMinimum() public {
+    /// @dev The spender's path has no floor of its own either, and it spends
+    ///      exactly the allowance it used.
+    function test_TransferFromMovesOneWei() public {
         vault.mint(user1, TEN);
 
         vm.prank(user1);
         assertTrue(token.approve(user2, TEN));
-        uint256 under = token.MINIMUM_TRANSFER_AMOUNT() - ONE_WEI;
 
         vm.prank(user2);
-        vm.expectRevert(abi.encodeWithSelector(TGAUX.BelowMinimum.selector, under));
-        // Same reason as above: the owner's balance is moved on purpose here,
-        // and the call reverts by design, so no return value comes back.
-        // forge-lint: disable-next-line(arbitrary-send-erc20,erc20-unchecked-transfer)
-        token.transferFrom(user1, user2, under);
+        // The spender moving the owner's balance is the behaviour under test.
+        // forge-lint: disable-next-line(arbitrary-send-erc20)
+        assertTrue(token.transferFrom(user1, user2, ONE_WEI));
+
+        assertEq(token.balanceOf(user2), ONE_WEI);
+        assertEq(token.allowance(user1, user2), TEN - ONE_WEI);
     }
 
     function test_ApproveAndAllowance() public {
@@ -252,16 +224,6 @@ contract TGAUXTest is Test {
         assertEq(token.allowance(user1, user2), NOTHING);
     }
 
-    /// @dev 0.03215 troy ounces is one gram to within a thousandth of a gram,
-    ///      which is what 4.4 fixes the minimum to.
-    function test_MinimumIsOneGram() public view {
-        uint256 minimum = token.MINIMUM_TRANSFER_AMOUNT();
-        assertEq(minimum, EXPECTED_MINIMUM);
-
-        uint256 grams = (minimum * TROY_OUNCE_GRAMS) / ONE_GRAM;
-        assertApproxEqAbs(grams, ONE_GRAM, GRAM_TOLERANCE);
-    }
-
     function test_MintTransferBurnWorkflow() public {
         vault.mint(user1, TEN);
 
@@ -276,33 +238,33 @@ contract TGAUXTest is Test {
         assertEq(token.balanceOf(user2), NOTHING);
     }
 
-    /// @dev D26 removed the roles, the transfer pause and `vaultBurn`, and the
-    ///      rewrite removed ERC20Burnable. Absence is asserted against the
-    ///      deployed bytecode rather than against the source: the token has no
-    ///      fallback, so a call to a selector it does not carry has to fail.
+    /// @dev D26 removed the roles, the transfer pause and `vaultBurn`, the
+    ///      rewrite removed ERC20Burnable, and r6.4 removed the minimum.
+    ///      Absence is asserted against the deployed bytecode rather than
+    ///      against the source: the token has no fallback, so a call to a
+    ///      selector it does not carry has to fail.
     function test_RemovedSurfaceHasNoSelector() public {
-        string[6] memory gone = [
-            "pause()",
-            "unpause()",
-            "vaultBurn(address,uint256)",
-            "grantRole(bytes32,address)",
-            "burn(uint256)",
-            "burnFrom(address,uint256)"
-        ];
+        string[3] memory goneNoArgs = ["pause()", "unpause()", "MINIMUM_TRANSFER_AMOUNT()"];
+        string[4] memory goneWithArgs =
+            ["vaultBurn(address,uint256)", "grantRole(bytes32,address)", "burn(uint256)", "burnFrom(address,uint256)"];
 
-        for (uint256 i = 0; i < gone.length; i++) {
-            bytes memory payload =
-                i < 2 ? abi.encodeWithSignature(gone[i]) : abi.encodeWithSignature(gone[i], NOTHING, NOTHING);
+        for (uint256 i = 0; i < goneNoArgs.length; i++) {
             // One call per removed selector is what the test is for, and a raw
             // call is the only way to reach a function the type does not have.
             // forge-lint: disable-next-line(calls-loop,low-level-calls)
-            (bool ok,) = address(token).call(payload);
-            assertFalse(ok, gone[i]);
+            (bool ok,) = address(token).call(abi.encodeWithSignature(goneNoArgs[i]));
+            assertFalse(ok, goneNoArgs[i]);
+        }
+
+        for (uint256 i = 0; i < goneWithArgs.length; i++) {
+            // forge-lint: disable-next-line(calls-loop,low-level-calls)
+            (bool ok,) = address(token).call(abi.encodeWithSignature(goneWithArgs[i], NOTHING, NOTHING));
+            assertFalse(ok, goneWithArgs[i]);
         }
     }
 
     function testFuzz_MintValidAmounts(uint256 amount) public {
-        amount = bound(amount, token.MINIMUM_TRANSFER_AMOUNT(), FUZZ_CEILING);
+        amount = bound(amount, ONE_WEI, FUZZ_CEILING);
 
         vault.mint(user1, amount);
 
@@ -310,8 +272,8 @@ contract TGAUXTest is Test {
     }
 
     function testFuzz_TransferValidAmounts(uint256 minted, uint256 sent) public {
-        minted = bound(minted, token.MINIMUM_TRANSFER_AMOUNT(), FUZZ_CEILING);
-        sent = bound(sent, token.MINIMUM_TRANSFER_AMOUNT(), minted);
+        minted = bound(minted, ONE_WEI, FUZZ_CEILING);
+        sent = bound(sent, ONE_WEI, minted);
         vault.mint(user1, minted);
 
         vm.prank(user1);
@@ -322,7 +284,7 @@ contract TGAUXTest is Test {
     }
 
     function testFuzz_BurnByVault(uint256 minted, uint256 burned) public {
-        minted = bound(minted, token.MINIMUM_TRANSFER_AMOUNT(), FUZZ_CEILING);
+        minted = bound(minted, ONE_WEI, FUZZ_CEILING);
         burned = bound(burned, NOTHING, minted);
         vault.mint(user1, minted);
 

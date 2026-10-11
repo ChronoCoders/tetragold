@@ -133,17 +133,32 @@ contract TgauxVaultTest is Test {
         vm.stopPrank();
     }
 
-    /// @dev The 1 gram minimum of 4.4 reaches a deposit through the token.
-    function test_DepositRevertsUnderTheOneGramMinimum() public {
-        uint256 tiny = token.MINIMUM_TRANSFER_AMOUNT() - ONE_WEI;
-
+    /// @dev 4.4 sets no minimum from r6.4, so the only deposit refused is one
+    ///      the entry fee would take whole. At f_in of 50 bps that is one wei,
+    ///      which rounds to nothing minted.
+    function test_DepositRevertsWhenTheFeeWouldTakeItAll() public {
         vm.startPrank(alice);
-        assertTrue(paxg.approve(address(vault), tiny));
-        vm.expectRevert(abi.encodeWithSelector(TGAUX.BelowMinimum.selector, (tiny * (BPS - FEE_IN_BPS)) / BPS));
+        assertTrue(paxg.approve(address(vault), ONE_WEI));
+        vm.expectRevert(TgauxVault.NothingMinted.selector);
         // This call reverts by design, so no value comes back.
         // forge-lint: disable-next-line(unused-return)
-        vault.deposit(tiny);
+        vault.deposit(ONE_WEI);
         vm.stopPrank();
+    }
+
+    /// @dev The smallest deposit that mints anything at all does mint, which is
+    ///      the positive half of the check above.
+    function test_DepositAcceptsTheSmallestAmountThatMints() public {
+        uint256 smallest = BPS / (BPS - FEE_IN_BPS) + 1;
+
+        vm.startPrank(alice);
+        assertTrue(paxg.approve(address(vault), smallest));
+        uint256 minted = vault.deposit(smallest);
+        vm.stopPrank();
+
+        assertEq(minted, (smallest * (BPS - FEE_IN_BPS)) / BPS);
+        assertGt(minted, NOTHING, "the smallest minting deposit minted nothing");
+        assertEq(token.balanceOf(alice), minted);
     }
 
     function test_WithdrawPaysTheBurnLessTheExitFee() public {
@@ -178,42 +193,30 @@ contract TgauxVaultTest is Test {
         assertEq(paxg.balanceOf(bob), HUNDRED + expectedPaid);
     }
 
-    /// @dev The exit half of 4.4: a balance left under the minimum must still
-    ///      be able to leave, or the minimum traps it.
-    function test_WithdrawWholeBalanceBelowMinimum() public {
+    /// @dev I4 and 4.4: a withdrawal carries any amount the holder has, and the
+    ///      size of what is left behind never blocks the next one.
+    function test_WithdrawTakesAnyAmountDownToOneWei() public {
         _deposit(alice, TEN);
-        uint256 minimum = token.MINIMUM_TRANSFER_AMOUNT();
         uint256 held = token.balanceOf(alice);
-        uint256 dust = minimum - 1;
 
         vm.prank(alice);
-        uint256 first = vault.withdraw(held - dust);
+        uint256 first = vault.withdraw(held - ONE_WEI);
         assertGt(first, NOTHING);
-        assertEq(token.balanceOf(alice), dust);
+        assertEq(token.balanceOf(alice), ONE_WEI);
 
         vm.prank(alice);
-        uint256 paid = vault.withdraw(dust);
+        uint256 last = vault.withdraw(ONE_WEI);
 
-        assertEq(paid, (dust * (BPS - FEE_OUT_BPS)) / BPS);
+        assertEq(last, (ONE_WEI * (BPS - FEE_OUT_BPS)) / BPS, "the last wei did not pay out at the exit fee");
         assertEq(token.balanceOf(alice), NOTHING);
-    }
-
-    function test_WithdrawRevertsUnderTheMinimumWithMoreHeld() public {
-        _deposit(alice, TEN);
-        uint256 under = token.MINIMUM_TRANSFER_AMOUNT() - 1;
-
-        vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(TgauxVault.BelowMinimum.selector, under));
-        // This call reverts by design, so no value comes back.
-        // forge-lint: disable-next-line(unused-return)
-        vault.withdraw(under);
+        assertEq(token.totalSupply(), NOTHING, "a wei of supply was left behind");
     }
 
     function test_WithdrawRevertsOnZero() public {
         _deposit(alice, TEN);
 
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(TgauxVault.BelowMinimum.selector, NOTHING));
+        vm.expectRevert(TgauxVault.ZeroAmount.selector);
         // This call reverts by design, so no value comes back.
         // forge-lint: disable-next-line(unused-return)
         vault.withdraw(NOTHING);
@@ -323,7 +326,7 @@ contract TgauxVaultTest is Test {
     }
 
     function testFuzz_DepositThenWithdrawNeverReturnsMore(uint256 amount) public {
-        amount = bound(amount, token.MINIMUM_TRANSFER_AMOUNT() * 2, HUNDRED);
+        amount = bound(amount, ONE_WEI * 2, HUNDRED);
 
         vm.startPrank(alice);
         assertTrue(paxg.approve(address(vault), amount));

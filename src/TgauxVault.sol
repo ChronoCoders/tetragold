@@ -58,7 +58,8 @@ contract TgauxVault is ReentrancyGuard {
     error ZeroAddress();
     error FeeTooHigh(uint256 bps);
     error NothingReceived();
-    error BelowMinimum(uint256 amount);
+    error NothingMinted();
+    error ZeroAmount();
     error NotTreasury(address caller);
     error AmountExceedsTreasuryFees(uint256 amount, uint256 available);
 
@@ -107,6 +108,13 @@ contract TgauxVault is ReentrancyGuard {
         }
 
         minted = (received * (BPS_DENOMINATOR - FEE_IN_BPS)) / BPS_DENOMINATOR;
+        // 4.4 sets no minimum, but a deposit so small that the entry fee takes
+        // all of it would leave the depositor with nothing and the treasury
+        // with the lot. Refusing it is not a minimum amount: it is the floor
+        // where rounding down reaches zero, and it is zero when f_in is zero.
+        if (minted == 0) {
+            revert NothingMinted();
+        }
         uint256 fee = received - minted;
         treasuryFeePaxg += fee;
         emit Deposited(msg.sender, received, minted, fee);
@@ -122,20 +130,18 @@ contract TgauxVault is ReentrancyGuard {
     }
 
     /// @notice Burn TGAUX and receive PAXG for it, less the exit fee.
-    /// @dev Any holder may call this, not only the account that deposited (I4).
+    /// @dev Any holder may call this, not only the account that deposited, and
+    ///      for any amount they hold down to one wei (I4, 4.4).
     ///      The payout rounds down and the fee takes the remainder, which goes
     ///      to treasury fee PAXG rather than staying as backing nobody can
     ///      reach (D40, I16).
     /// @param amount TGAUX to burn.
     /// @return paid PAXG sent to the caller.
     function withdraw(uint256 amount) external nonReentrant returns (uint256 paid) {
-        // 4.4: the minimum applies, except to a holder leaving with a whole
-        // balance that the minimum would otherwise trap.
-        // `<` rather than `!=` against the balance: an amount over the balance
-        // is allowed through here and the burn below refuses it, which keeps
-        // the comparison off a strict equality with an external value.
-        if (amount == 0 || (amount < TOKEN.MINIMUM_TRANSFER_AMOUNT() && amount < TOKEN.balanceOf(msg.sender))) {
-            revert BelowMinimum(amount);
+        // No minimum (4.4, revised r6.4). Zero is still refused, because it
+        // would emit a withdrawal that moved nothing.
+        if (amount == 0) {
+            revert ZeroAmount();
         }
 
         paid = (amount * (BPS_DENOMINATOR - FEE_OUT_BPS)) / BPS_DENOMINATOR;

@@ -23,6 +23,16 @@ contract TgauxVaultInvariantTest is Test {
     uint8 private constant STABLE_DECIMALS = 6;
     uint256 private constant SENTINEL_STABLE = 1_000_000e6;
     uint256 private constant SENTINEL_PAXG = 10 ether;
+    uint256 private constant ACTOR = 0;
+    uint256 private constant DRIVE_DEPOSIT = 100 ether;
+    uint256 private constant ONE_WEI = 1;
+    uint256 private constant NOTHING = 0;
+    /// @dev The handler's withdrawal modes: whole balance, one wei, bounded.
+    uint8 private constant MODE_WHOLE = 0;
+    uint8 private constant MODE_ONE_WEI = 1;
+    uint8 private constant MODE_BOUNDED = 2;
+    uint256 private constant HANDLER_SELECTORS = 3;
+    uint256 private constant DRIVEN_WITHDRAWALS = 3;
 
     TgauxVault public vault;
     TGAUX public token;
@@ -58,7 +68,7 @@ contract TgauxVaultInvariantTest is Test {
 
         handler = new TgauxVaultHandler(vault, paxg);
 
-        bytes4[] memory selectors = new bytes4[](3);
+        bytes4[] memory selectors = new bytes4[](HANDLER_SELECTORS);
         selectors[0] = TgauxVaultHandler.deposit.selector;
         selectors[1] = TgauxVaultHandler.withdraw.selector;
         selectors[2] = TgauxVaultHandler.treasuryWithdraw.selector;
@@ -138,23 +148,32 @@ contract TgauxVaultInvariantTest is Test {
     }
 
     /// @dev The invariants above all hold vacuously on a campaign that never
-    ///      withdrew, so this drives the handler by hand and proves the paths
-    ///      they guard are reachable: a withdraw, a balance left under the
-    ///      minimum, and the 4.4 exception clearing it.
+    ///      withdrew, so this drives the handler by hand and proves each path
+    ///      they guard is reachable: a deposit, a partial withdrawal that
+    ///      leaves a wei behind, a single wei out, and a whole balance out.
     ///
     ///      It is a plain test rather than `afterInvariant`, because forge runs
     ///      short sequences and replays shrunk ones, where a coverage claim
     ///      about the campaign is false through no fault of the code.
     function test_HandlerReachesEveryPathTheInvariantsGuard() public {
-        handler.deposit(0, 100 ether);
-        handler.withdraw(0, 0, true);
-        assertGt(handler.dustLeft(), 0, "no balance was left under the minimum");
+        handler.deposit(ACTOR, DRIVE_DEPOSIT);
+        address actor = handler.actorAt(ACTOR);
 
-        handler.withdraw(0, 0, false);
+        // The bounded mode takes everything but a wei when the seed is at the
+        // top of its range, so this leaves the balance a floor would trap.
+        handler.withdraw(ACTOR, type(uint256).max, MODE_BOUNDED);
+        assertEq(token.balanceOf(actor), ONE_WEI, "the partial withdrawal left something else");
+        assertGt(handler.weiBalancesLeft(), NOTHING, "no balance of a few wei was left behind");
 
-        assertGt(handler.deposits(), 0, "no deposit ran");
-        assertGt(handler.withdrawals(), 1, "the dust exit did not run");
-        assertGt(handler.dustExits(), 0, "the whole balance exception never ran");
-        assertEq(token.balanceOf(handler.actorAt(0)), 0, "the actor did not get out");
+        handler.deposit(ACTOR, DRIVE_DEPOSIT);
+        handler.withdraw(ACTOR, NOTHING, MODE_ONE_WEI);
+        assertGt(handler.weiWithdrawals(), NOTHING, "the single wei withdrawal never ran");
+
+        handler.withdraw(ACTOR, NOTHING, MODE_WHOLE);
+
+        assertGt(handler.deposits(), 1, "the second deposit never ran");
+        assertEq(handler.withdrawals(), DRIVEN_WITHDRAWALS, "a withdrawal was lost");
+        assertGt(handler.wholeBalanceExits(), NOTHING, "the whole balance exit never ran");
+        assertEq(token.balanceOf(actor), NOTHING, "the actor did not get out");
     }
 }
