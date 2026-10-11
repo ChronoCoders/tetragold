@@ -4,10 +4,10 @@ pragma solidity 0.8.30;
 import {Test} from "forge-std/Test.sol";
 import {InsuranceFund} from "../src/InsuranceFund.sol";
 import {LiquidityPool} from "../src/LiquidityPool.sol";
+import {ReentrancyLock} from "../src/ReentrancyLock.sol";
 import {TGAUX} from "../src/TGAUX.sol";
 import {TgauxVault} from "../src/TgauxVault.sol";
 import {TgauxVaultHandler} from "./handlers/TgauxVaultHandler.sol";
-import {MockAavePool} from "./mocks/MockAavePool.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
 /// @notice Invariants I4, I5, I11, I16 and the vault side of I20 (section 8).
@@ -48,8 +48,7 @@ contract TgauxVaultInvariantTest is Test {
         usdc = new MockERC20("USD Coin", "USDC", STABLE_DECIMALS);
         usdt = new MockERC20("Tether USD", "USDT", STABLE_DECIMALS);
         pool = new LiquidityPool(address(this), address(usdc), address(usdt));
-        insuranceFund =
-            new InsuranceFund(address(this), makeAddr("positions"), address(pool), address(new MockAavePool()));
+        insuranceFund = new InsuranceFund(address(token), makeAddr("treasury"), address(new ReentrancyLock()), 1 ether);
 
         usdc.mint(address(pool), SENTINEL_STABLE);
         usdt.mint(address(pool), SENTINEL_STABLE);

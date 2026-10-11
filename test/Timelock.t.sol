@@ -3,26 +3,23 @@ pragma solidity 0.8.30;
 
 import {Test} from "forge-std/Test.sol";
 import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
-import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 
-import {InsuranceFund} from "../src/InsuranceFund.sol";
 import {TradingCalendar} from "../src/oracle/TradingCalendar.sol";
-import {MockAavePool} from "./mocks/MockAavePool.sol";
-import {MockVaultManagerTL} from "./mocks/MockVaultManagerTL.sol";
 
 /**
  * @title TimelockTest
- * @notice Verifies that the slow governance parameters sit behind a 48 hour
- *         TimelockController: the trading calendar's holiday list (D22) and the
- *         insurance fund's target percentage. Emergency pause stays on the fast
- *         admin role.
+ * @notice Verifies that the one slow governance parameter left sits behind a
+ *         48 hour TimelockController: the trading calendar's holiday list (D22).
  * @dev The calendar needs no role handover. Its timelock is immutable and set
  *      at construction, so there is no window in which an admin holds the
  *      power and has to give it up, and nothing to renounce.
+ *
+ *      The insurance fund used to be the other half of this test, through
+ *      PARAM_ROLE and its target percentage. The revision 6 fund has no role
+ *      and no parameter to change, so there is nothing left of it to timelock.
  */
 contract TimelockTest is Test {
     uint256 internal constant DELAY = 48 hours;
-    uint256 internal constant TARGET_PERCENTAGE = 200;
     /// @dev 2026-12-25 17:00 UTC, inside the Eastern day of a full closure.
     uint64 internal constant CHRISTMAS = 1_798_650_000;
     /// @dev TimelockController reads a zero predecessor as "no predecessor".
@@ -34,7 +31,6 @@ contract TimelockTest is Test {
 
     TimelockController internal timelock;
     TradingCalendar internal calendar;
-    InsuranceFund internal fund;
 
     address internal admin;
     address internal proposer;
@@ -54,16 +50,6 @@ contract TimelockTest is Test {
         timelock = new TimelockController(DELAY, proposers, executors, address(0));
 
         calendar = new TradingCalendar(address(timelock));
-
-        MockAavePool aave = new MockAavePool();
-        MockVaultManagerTL vault = new MockVaultManagerTL();
-        vm.prank(admin);
-        fund = new InsuranceFund(admin, address(vault), address(this), address(aave));
-
-        vm.startPrank(admin);
-        fund.grantRole(fund.PARAM_ROLE(), address(timelock));
-        fund.renounceRole(fund.PARAM_ROLE(), admin);
-        vm.stopPrank();
     }
 
     function test_AdminCannotEditTheHolidayListDirectly() public {
@@ -117,38 +103,10 @@ contract TimelockTest is Test {
         assertEq(calendar.holidayCount(), 0);
     }
 
-    function test_TimelockSetsTargetPercentageAfterDelay() public {
-        bytes memory data = abi.encodeCall(InsuranceFund.updateTargetPercentage, (TARGET_PERCENTAGE));
-        vm.prank(proposer);
-        timelock.schedule(address(fund), 0, data, NO_PREDECESSOR, SALT_TARGET, DELAY);
-        vm.warp(block.timestamp + DELAY);
-        vm.prank(executor);
-        timelock.execute(address(fund), 0, data, NO_PREDECESSOR, SALT_TARGET);
-
-        assertEq(fund.targetPercentage(), TARGET_PERCENTAGE);
-    }
-
-    function test_AdminCannotSetTargetPercentageAfterRenounce() public {
-        bytes32 paramRole = fund.PARAM_ROLE();
-        vm.prank(admin);
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, admin, paramRole)
-        );
-        fund.updateTargetPercentage(TARGET_PERCENTAGE);
-    }
-
     function test_NonProposerCannotSchedule() public {
         bytes memory data = abi.encodeCall(TradingCalendar.addHoliday, (CHRISTMAS));
         vm.prank(stranger);
         vm.expectRevert();
         timelock.schedule(address(calendar), 0, data, NO_PREDECESSOR, SALT_STRANGER, DELAY);
-    }
-
-    function test_EmergencyPauseStaysImmediate() public {
-        // Pause is on the fund's admin role, untouched by the timelock, so the
-        // admin can still pause instantly without waiting out the delay.
-        vm.prank(admin);
-        fund.pause();
-        assertTrue(fund.paused());
     }
 }

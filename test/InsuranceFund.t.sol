@@ -3,791 +3,221 @@ pragma solidity 0.8.30;
 
 import {Test} from "forge-std/Test.sol";
 import {InsuranceFund} from "../src/InsuranceFund.sol";
-import {MockERC20} from "./mocks/MockERC20.sol";
-import {MockAavePool} from "./mocks/MockAavePool.sol";
-import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {ReentrancyLock} from "../src/ReentrancyLock.sol";
+import {TGAUX} from "../src/TGAUX.sol";
+import {FundDriver} from "./mocks/FundDriver.sol";
+import {VaultStub} from "./mocks/VaultStub.sol";
 
-contract MockVaultManager {
-    uint256 public tvl;
-
-    function setTotalValueLocked(uint256 _tvl) external {
-        tvl = _tvl;
-    }
-
-    function getTotalValueLocked() external view returns (uint256) {
-        return tvl;
-    }
-}
-
-contract MockLiquidityPool {
-    // Empty mock for testing
-}
-
+/// @notice The revision 6 fund: TGAUX only, bad debt cover and the keeper fee.
+/// @dev `FundDriver` stands in for the position manager: it deploys the fund,
+///      so it is the fund's one privileged caller, and it takes the shared lock
+///      before calling in. The driver exists because a test body cannot hold a
+///      transient lock across two calls, and because that is the shape the real
+///      caller has.
 contract InsuranceFundTest is Test {
-    InsuranceFund public fund;
-    MockERC20 public usdc;
-    MockERC20 public usdt;
-    MockAavePool public aavePool;
-    MockVaultManager public vaultManager;
-    MockLiquidityPool public liquidityPool;
+    uint256 private constant TARGET = 100 ether;
+    uint256 private constant SEED = 40 ether;
+    uint256 private constant TEN = 10 ether;
+    uint256 private constant ONE = 1 ether;
+    uint256 private constant NOTHING = 0;
 
-    address public admin = address(1);
-    address public vaultManagerContract = address(2);
-    address public liquidationEngine = address(3);
-    address public coverageManager = address(4);
-    address public user1 = address(5);
+    InsuranceFund public fund;
+    FundDriver public manager;
+    ReentrancyLock public lock;
+    VaultStub public vault;
+    TGAUX public gold;
+
+    address public treasury;
+    address public pool;
+    address public keeper;
+    address public stranger;
 
     function setUp() public {
-        // Deploy mocks
-        usdc = new MockERC20("USD Coin", "USDC", 6);
-        usdt = new MockERC20("Tether USD", "USDT", 6);
-        aavePool = new MockAavePool();
-        vaultManager = new MockVaultManager();
-        liquidityPool = new MockLiquidityPool();
+        treasury = makeAddr("treasury");
+        pool = makeAddr("pool");
+        keeper = makeAddr("keeper");
+        stranger = makeAddr("stranger");
 
-        // Deploy InsuranceFund
-        vm.prank(admin);
-        fund = new InsuranceFund(admin, address(vaultManager), address(liquidityPool), address(aavePool));
+        vault = new VaultStub();
+        gold = vault.TOKEN();
+        lock = new ReentrancyLock();
+        manager = new FundDriver(address(gold), treasury, address(lock), TARGET);
+        fund = manager.FUND();
 
-        // Grant roles
-        vm.startPrank(admin);
-        fund.grantRole(fund.VAULT_MANAGER_ROLE(), vaultManagerContract);
-        fund.grantRole(fund.LIQUIDATION_ENGINE_ROLE(), liquidationEngine);
-        fund.grantRole(fund.COVERAGE_MANAGER_ROLE(), coverageManager);
-        vm.stopPrank();
-
-        // Mint tokens for testing
-        usdc.mint(vaultManagerContract, 1000000e6);
-        usdc.mint(liquidationEngine, 1000000e6);
-        usdc.mint(admin, 1000000e6);
-        usdt.mint(vaultManagerContract, 1000000e6);
-
-        // Set TVL for testing
-        vaultManager.setTotalValueLocked(10000000e6); // $10M TVL
+        vault.mint(treasury, 1000 ether);
+        vm.prank(treasury);
+        assertTrue(gold.approve(address(fund), type(uint256).max));
     }
 
-    // ============ Constructor Tests ============
-
-    function test_Constructor() public view {
-        assertEq(fund.vaultManager(), address(vaultManager));
-        assertEq(fund.liquidityPool(), address(liquidityPool));
-        assertEq(fund.aavePool(), address(aavePool));
-        assertEq(fund.targetPercentage(), 150); // 1.5%
-        assertTrue(fund.hasRole(fund.DEFAULT_ADMIN_ROLE(), admin));
-        assertTrue(fund.hasRole(fund.COVERAGE_MANAGER_ROLE(), admin));
+    function test_ConstructorWiresTheDeployerAsThePositionManager() public view {
+        assertEq(fund.POSITION_MANAGER(), address(manager));
+        assertEq(address(fund.GOLD()), address(gold));
+        assertEq(fund.TREASURY(), treasury);
+        assertEq(address(fund.LOCK()), address(lock));
+        assertEq(fund.TARGET(), TARGET);
+        assertEq(fund.MIN_TRANSFER(), gold.MINIMUM_TRANSFER_AMOUNT());
+        assertEq(fund.ounces(), NOTHING);
+        assertFalse(fund.seeded());
     }
 
-    function test_ConstructorRevertsWithZeroAddresses() public {
-        vm.expectRevert(InsuranceFund.InsuranceFund__ZeroAddress.selector);
-        new InsuranceFund(address(0), address(vaultManager), address(liquidityPool), address(aavePool));
+    function test_ConstructorRejectsBadArguments() public {
+        vm.expectRevert(InsuranceFund.ZeroAddress.selector);
+        new InsuranceFund(address(0), treasury, address(lock), TARGET);
 
-        vm.expectRevert(InsuranceFund.InsuranceFund__ZeroAddress.selector);
-        new InsuranceFund(admin, address(0), address(liquidityPool), address(aavePool));
+        vm.expectRevert(InsuranceFund.ZeroAddress.selector);
+        new InsuranceFund(address(gold), address(0), address(lock), TARGET);
 
-        vm.expectRevert(InsuranceFund.InsuranceFund__ZeroAddress.selector);
-        new InsuranceFund(admin, address(vaultManager), address(0), address(aavePool));
+        vm.expectRevert(InsuranceFund.ZeroAddress.selector);
+        new InsuranceFund(address(gold), treasury, address(0), TARGET);
 
-        vm.expectRevert(InsuranceFund.InsuranceFund__ZeroAddress.selector);
-        new InsuranceFund(admin, address(vaultManager), address(liquidityPool), address(0));
+        vm.expectRevert(InsuranceFund.ZeroTarget.selector);
+        new InsuranceFund(address(gold), treasury, address(lock), NOTHING);
     }
 
-    // ============ Deposit Tests ============
+    function test_SeedIsTreasuryOnlyAndOnce() public {
+        vm.expectRevert(abi.encodeWithSelector(InsuranceFund.NotTreasury.selector, stranger));
+        vm.prank(stranger);
+        fund.seed(SEED);
 
-    function test_DepositFromFees() public {
-        uint256 depositAmount = 1000e6;
+        vm.prank(treasury);
+        fund.seed(SEED);
 
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), depositAmount);
-        fund.depositFromFees(depositAmount, address(usdc));
-        vm.stopPrank();
+        assertEq(fund.ounces(), SEED, "the seed was not credited");
+        assertEq(gold.balanceOf(address(fund)), SEED, "the ounces did not arrive");
+        assertTrue(fund.seeded());
 
-        assertEq(fund.reserves(address(usdc)), depositAmount);
-
-        InsuranceFund.FundingSources memory sources = fund.getFundingSources(address(usdc));
-        assertEq(sources.fromProtocolFees, depositAmount);
-        assertEq(sources.totalCollected, depositAmount);
+        vm.prank(treasury);
+        vm.expectRevert(InsuranceFund.AlreadySeeded.selector);
+        fund.seed(ONE);
     }
 
-    function test_DepositFromFeesRevertsWhenNotVaultManager() public {
-        vm.prank(user1);
-        vm.expectRevert();
-        fund.depositFromFees(1000e6, address(usdc));
+    function test_SyncCreditTakesWhatArrivedAndNothingMore() public {
+        _seed();
+        vault.mint(address(fund), TEN);
+
+        uint256 credited = _syncCredit();
+
+        assertEq(credited, TEN, "the arrival was not credited");
+        assertEq(fund.ounces(), SEED + TEN);
+        assertEq(fund.ounces(), gold.balanceOf(address(fund)), "tracked and held disagree");
+
+        uint256 second = _syncCredit();
+        assertEq(second, NOTHING, "a second sync credited something twice");
     }
 
-    function test_DepositFromFeesRevertsWithZeroAmount() public {
-        vm.prank(vaultManagerContract);
-        vm.expectRevert(InsuranceFund.InsuranceFund__ZeroAmount.selector);
-        fund.depositFromFees(0, address(usdc));
+    function test_SyncCreditIsPositionManagerOnlyAndNeedsTheSection() public {
+        _seed();
+
+        vm.expectRevert(abi.encodeWithSelector(InsuranceFund.NotPositionManager.selector, stranger));
+        vm.prank(stranger);
+        // forge-lint: disable-next-line(unused-return)
+        fund.syncCredit();
+
+        // The privileged caller, but outside the shared section.
+        vm.expectRevert(abi.encodeWithSelector(InsuranceFund.LockNotHeld.selector, address(manager), address(0)));
+        // forge-lint: disable-next-line(unused-return)
+        manager.syncCreditOutsideTheSection();
     }
 
-    function test_DepositFromLiquidation() public {
-        uint256 depositAmount = 500e6;
+    function test_PayToSendsWhatItHasAndReportsIt() public {
+        _seed();
 
-        vm.startPrank(liquidationEngine);
-        usdc.approve(address(fund), depositAmount);
-        fund.depositFromLiquidation(depositAmount, address(usdc));
-        vm.stopPrank();
+        uint256 paid = _payTo(pool, TEN);
 
-        assertEq(fund.reserves(address(usdc)), depositAmount);
-
-        InsuranceFund.FundingSources memory sources = fund.getFundingSources(address(usdc));
-        assertEq(sources.fromLiquidations, depositAmount);
-        assertEq(sources.totalCollected, depositAmount);
+        assertEq(paid, TEN);
+        assertEq(gold.balanceOf(pool), TEN, "the pool was not paid");
+        assertEq(fund.ounces(), SEED - TEN);
+        assertEq(fund.ounces(), gold.balanceOf(address(fund)), "tracked and held disagree");
     }
 
-    function test_DepositFromLiquidationRevertsWhenNotLiquidationEngine() public {
-        vm.prank(user1);
-        vm.expectRevert();
-        fund.depositFromLiquidation(500e6, address(usdc));
+    /// @dev I14: an exit path never reverts for a shortage. It pays what is
+    ///      there and the caller learns the rest is uncovered.
+    function test_PayToPaysPartiallyWhenShortAndNeverReverts() public {
+        _seed();
+
+        uint256 paid = _payTo(pool, SEED + TEN);
+
+        assertEq(paid, SEED, "the fund did not pay out everything it had");
+        assertEq(fund.ounces(), NOTHING);
+
+        assertEq(_payTo(pool, TEN), NOTHING, "an empty fund paid something");
     }
 
-    function test_DepositMultipleSources() public {
-        uint256 feeAmount = 1000e6;
-        uint256 liquidationAmount = 500e6;
+    /// @dev The token refuses a transfer under one gram unless it moves a whole
+    ///      balance (4.4), so a dust request pays nothing rather than reverting
+    ///      and stranding the liquidation that asked.
+    function test_PayToRefusesDustRatherThanReverting() public {
+        _seed();
+        uint256 dust = gold.MINIMUM_TRANSFER_AMOUNT() - 1;
 
-        // Deposit from fees
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), feeAmount);
-        fund.depositFromFees(feeAmount, address(usdc));
-        vm.stopPrank();
+        uint256 paid = _payTo(keeper, dust);
 
-        // Deposit from liquidations
-        vm.startPrank(liquidationEngine);
-        usdc.approve(address(fund), liquidationAmount);
-        fund.depositFromLiquidation(liquidationAmount, address(usdc));
-        vm.stopPrank();
-
-        assertEq(fund.reserves(address(usdc)), feeAmount + liquidationAmount);
-
-        InsuranceFund.FundingSources memory sources = fund.getFundingSources(address(usdc));
-        assertEq(sources.fromProtocolFees, feeAmount);
-        assertEq(sources.fromLiquidations, liquidationAmount);
-        assertEq(sources.totalCollected, feeAmount + liquidationAmount);
+        assertEq(paid, NOTHING, "a dust payment was attempted");
+        assertEq(fund.ounces(), SEED, "the fund lost ounces on a refused payment");
+        assertEq(gold.balanceOf(keeper), NOTHING);
     }
 
-    // ============ Coverage Tests ============
+    /// @dev The whole balance exception does apply, so a fund holding dust can
+    ///      still be emptied.
+    function test_PayToCanEmptyAFundHoldingOnlyDust() public {
+        uint256 dust = gold.MINIMUM_TRANSFER_AMOUNT() - 1;
+        _seed();
+        _payTo(pool, SEED - dust);
+        assertEq(fund.ounces(), dust);
 
-    function test_CoverLoss() public {
-        // Deposit funds first
-        uint256 depositAmount = 10000e6;
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), depositAmount);
-        fund.depositFromFees(depositAmount, address(usdc));
-        vm.stopPrank();
+        uint256 paid = _payTo(pool, dust);
 
-        // Approve liquidity pool to receive funds
-        uint256 coverageAmount = 2000e6;
-        uint256 positionId = 123;
-
-        vm.prank(coverageManager);
-        uint256 eventId =
-            fund.coverLoss(positionId, coverageAmount, address(usdc), InsuranceFund.CoverageReason.FAILED_LIQUIDATION);
-
-        assertEq(eventId, 1);
-        assertEq(fund.reserves(address(usdc)), depositAmount - coverageAmount);
-        assertEq(fund.totalCoverage(address(usdc)), coverageAmount);
-        assertEq(usdc.balanceOf(address(liquidityPool)), coverageAmount);
-
-        // Check coverage event
-        InsuranceFund.CoverageEvent memory eventData = fund.getCoverageEvent(eventId);
-        assertEq(eventData.eventId, eventId);
-        assertEq(eventData.positionId, positionId);
-        assertEq(eventData.token, address(usdc));
-        assertEq(eventData.amountCovered, coverageAmount);
-        assertEq(uint256(eventData.reason), uint256(InsuranceFund.CoverageReason.FAILED_LIQUIDATION));
+        assertEq(paid, dust, "the fund could not pay out its last dust");
+        assertEq(fund.ounces(), NOTHING);
     }
 
-    function test_CoverLossWithAaveWithdrawal() public {
-        // Deposit and deploy to Aave
-        uint256 depositAmount = 10000e6;
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), depositAmount);
-        fund.depositFromFees(depositAmount, address(usdc));
-        vm.stopPrank();
+    function test_PayToIsPositionManagerOnlyAndNeedsTheSection() public {
+        _seed();
 
-        // Deploy to Aave
-        vm.prank(admin);
-        fund.deployToAave(8000e6, address(usdc));
+        vm.expectRevert(abi.encodeWithSelector(InsuranceFund.NotPositionManager.selector, stranger));
+        vm.prank(stranger);
+        // forge-lint: disable-next-line(unused-return)
+        fund.payTo(pool, TEN);
 
-        // Fund aave pool for yield
-        usdc.mint(address(aavePool), 1000e6);
-
-        // Now only 2000e6 in reserves, 8000e6 in Aave
-        // Coverage needs 5000e6, so must withdraw from Aave
-        uint256 coverageAmount = 5000e6;
-
-        vm.prank(coverageManager);
-        fund.coverLoss(123, coverageAmount, address(usdc), InsuranceFund.CoverageReason.ORACLE_MANIPULATION);
-
-        assertEq(fund.totalCoverage(address(usdc)), coverageAmount);
-        assertEq(usdc.balanceOf(address(liquidityPool)), coverageAmount);
+        vm.expectRevert(abi.encodeWithSelector(InsuranceFund.LockNotHeld.selector, address(manager), address(0)));
+        // forge-lint: disable-next-line(unused-return)
+        manager.payToOutsideTheSection(pool, TEN);
     }
 
-    function test_CoverLossRevertsWhenInsufficientFunds() public {
-        // Only deposit small amount
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), 1000e6);
-        fund.depositFromFees(1000e6, address(usdc));
-        vm.stopPrank();
+    function test_PayToRejectsTheZeroRecipient() public {
+        _seed();
 
-        // Try to cover more than available
-        vm.prank(coverageManager);
-        vm.expectRevert(InsuranceFund.InsuranceFund__InsufficientFunds.selector);
-        fund.coverLoss(123, 2000e6, address(usdc), InsuranceFund.CoverageReason.FAILED_LIQUIDATION);
+        vm.expectRevert(InsuranceFund.ZeroAddress.selector);
+        // forge-lint: disable-next-line(unused-return)
+        manager.payTo(address(0), TEN);
     }
 
-    function test_CoverLossRevertsWhenNotCoverageManager() public {
-        vm.prank(user1);
-        vm.expectRevert();
-        fund.coverLoss(123, 1000e6, address(usdc), InsuranceFund.CoverageReason.FAILED_LIQUIDATION);
+    /// @dev D20: the target is a routing ceiling, so the fund may hold more.
+    function test_TargetIsARoutingCeiling() public {
+        assertEq(fund.shortfallToTarget(), TARGET);
+        assertFalse(fund.atTarget());
+
+        _seed();
+        assertEq(fund.shortfallToTarget(), TARGET - SEED);
+
+        vault.mint(address(fund), TARGET);
+        _syncCredit();
+
+        assertTrue(fund.atTarget(), "the fund did not reach its target");
+        assertEq(fund.shortfallToTarget(), NOTHING, "a fund past target still asks for more");
+        assertGt(fund.ounces(), TARGET, "the ceiling refused a lump credit");
     }
 
-    function test_MultipleCoverageEvents() public {
-        // Deposit funds
-        uint256 depositAmount = 20000e6;
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), depositAmount);
-        fund.depositFromFees(depositAmount, address(usdc));
-        vm.stopPrank();
-
-        // Create multiple coverage events
-        vm.startPrank(coverageManager);
-        fund.coverLoss(100, 1000e6, address(usdc), InsuranceFund.CoverageReason.FAILED_LIQUIDATION);
-        fund.coverLoss(101, 2000e6, address(usdc), InsuranceFund.CoverageReason.ORACLE_MANIPULATION);
-        fund.coverLoss(102, 1500e6, address(usdc), InsuranceFund.CoverageReason.FLASH_CRASH);
-        vm.stopPrank();
-
-        InsuranceFund.CoverageEvent[] memory history = fund.getCoverageHistory();
-        assertEq(history.length, 3);
-        assertEq(history[0].positionId, 100);
-        assertEq(history[1].positionId, 101);
-        assertEq(history[2].positionId, 102);
-        assertEq(fund.totalCoverage(address(usdc)), 4500e6);
+    function _seed() private {
+        vm.prank(treasury);
+        fund.seed(SEED);
     }
 
-    // ============ Aave Yield Tests ============
-
-    function test_DeployToAave() public {
-        // Deposit funds
-        uint256 depositAmount = 10000e6;
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), depositAmount);
-        fund.depositFromFees(depositAmount, address(usdc));
-        vm.stopPrank();
-
-        // Deploy to Aave
-        uint256 deployAmount = 5000e6;
-        vm.prank(admin);
-        fund.deployToAave(deployAmount, address(usdc));
-
-        assertEq(fund.reserves(address(usdc)), depositAmount - deployAmount);
-        assertEq(fund.deployed(address(usdc)), deployAmount);
-        assertEq(aavePool.getSupplied(address(usdc)), deployAmount);
+    function _syncCredit() private returns (uint256 credited) {
+        credited = manager.syncCredit();
     }
 
-    function test_DeployToAaveRevertsWhenNotAdmin() public {
-        vm.prank(user1);
-        vm.expectRevert();
-        fund.deployToAave(1000e6, address(usdc));
-    }
-
-    function test_DeployToAaveRevertsWhenInsufficientReserves() public {
-        vm.prank(admin);
-        vm.expectRevert(InsuranceFund.InsuranceFund__InsufficientFunds.selector);
-        fund.deployToAave(1000e6, address(usdc));
-    }
-
-    function test_WithdrawFromAave() public {
-        // Deposit and deploy
-        uint256 depositAmount = 10000e6;
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), depositAmount);
-        fund.depositFromFees(depositAmount, address(usdc));
-        vm.stopPrank();
-
-        vm.prank(admin);
-        fund.deployToAave(8000e6, address(usdc));
-
-        // Set yield rate (1%)
-        aavePool.setYieldRate(address(usdc), 100);
-
-        // Fund pool for yield
-        usdc.mint(address(aavePool), 1000e6);
-
-        // Withdraw from Aave
-        uint256 withdrawAmount = 4000e6;
-        vm.prank(admin);
-        fund.withdrawFromAave(withdrawAmount, address(usdc));
-
-        // Should have original 2000e6 + withdrawn 4000e6 + 1% yield (40e6)
-        uint256 expectedYield = (withdrawAmount * 100) / 10000; // 1% = 40e6
-        assertEq(fund.reserves(address(usdc)), 2000e6 + withdrawAmount + expectedYield);
-        assertEq(fund.deployed(address(usdc)), 4000e6);
-
-        // Check yield tracking
-        InsuranceFund.FundingSources memory sources = fund.getFundingSources(address(usdc));
-        assertEq(sources.fromYield, expectedYield);
-    }
-
-    function test_WithdrawFromAaveRevertsWhenInsufficientDeployed() public {
-        vm.prank(admin);
-        vm.expectRevert(InsuranceFund.InsuranceFund__InsufficientFunds.selector);
-        fund.withdrawFromAave(1000e6, address(usdc));
-    }
-
-    // ============ Rebalancing Tests ============
-
-    function test_RebalanceToken() public {
-        // Deposit funds
-        uint256 depositAmount = 10000e6;
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), depositAmount);
-        fund.depositFromFees(depositAmount, address(usdc));
-        vm.stopPrank();
-
-        // Initially all in reserves, none deployed
-        // Target is 50/50, so should deploy 5000e6
-        vm.prank(admin);
-        fund.rebalanceToken(address(usdc));
-
-        assertEq(fund.reserves(address(usdc)), 5000e6);
-        assertEq(fund.deployed(address(usdc)), 5000e6);
-    }
-
-    function test_RebalanceTokenFromOverDeployed() public {
-        // Deposit and over-deploy
-        uint256 depositAmount = 10000e6;
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), depositAmount);
-        fund.depositFromFees(depositAmount, address(usdc));
-        vm.stopPrank();
-
-        // Deploy 80% (over target of 50%)
-        vm.prank(admin);
-        fund.deployToAave(8000e6, address(usdc));
-
-        // Fund pool for potential yield
-        usdc.mint(address(aavePool), 1000e6);
-
-        // Rebalance should withdraw to reach 50/50
-        vm.prank(admin);
-        fund.rebalanceToken(address(usdc));
-
-        assertEq(fund.reserves(address(usdc)), 5000e6);
-        assertEq(fund.deployed(address(usdc)), 5000e6);
-    }
-
-    // ============ Query Function Tests ============
-
-    function test_GetTotalReservesForToken() public {
-        // Deposit funds
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), 10000e6);
-        fund.depositFromFees(10000e6, address(usdc));
-        vm.stopPrank();
-
-        // Deploy some to Aave
-        vm.prank(admin);
-        fund.deployToAave(6000e6, address(usdc));
-
-        assertEq(fund.getTotalReservesForToken(address(usdc)), 10000e6);
-    }
-
-    function test_GetAvailableLiquidity() public {
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), 10000e6);
-        fund.depositFromFees(10000e6, address(usdc));
-        vm.stopPrank();
-
-        vm.prank(admin);
-        fund.deployToAave(6000e6, address(usdc));
-
-        assertEq(fund.getAvailableLiquidity(address(usdc)), 10000e6);
-    }
-
-    function test_GetTargetReserve() public view {
-        // TVL is 10M, target is 1.5%
-        uint256 target = fund.getTargetReserve();
-        assertEq(target, 150000e6); // 1.5% of 10M = 150k
-    }
-
-    function test_GetFundHealth() public {
-        // No reserves yet - should be CRITICAL
-        assertEq(uint256(fund.getFundHealth()), uint256(InsuranceFund.FundHealth.CRITICAL));
-
-        // Add to WARNING level (0.75% of TVL = 75k)
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), 75000e6);
-        fund.depositFromFees(75000e6, address(usdc));
-        vm.stopPrank();
-
-        // Still can't check properly as getTotalReserves returns 0
-        // This is expected based on the placeholder implementation
-    }
-
-    function test_CheckMinimumReserve() public view {
-        // With 0 reserves and placeholder getTotalReserves, this will return false
-        // In production with proper TVL calculation, this would work correctly
-        bool sufficient = fund.checkMinimumReserve();
-        // Can't assert much here due to placeholder implementation
-        assertTrue(sufficient || !sufficient); // Tautology, but shows test runs
-    }
-
-    function test_GetYieldStrategy() public {
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), 10000e6);
-        fund.depositFromFees(10000e6, address(usdc));
-        vm.stopPrank();
-
-        vm.prank(admin);
-        fund.deployToAave(6000e6, address(usdc));
-
-        InsuranceFund.YieldStrategy memory strategy = fund.getYieldStrategy(address(usdc));
-        assertEq(strategy.targetUtilization, 5000); // 50%
-        assertEq(strategy.currentDeployed, 6000e6);
-        assertEq(strategy.availableLiquidity, 4000e6);
-    }
-
-    // ============ Admin Function Tests ============
-
-    function test_EmergencyWithdraw() public {
-        // Deposit funds
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), 10000e6);
-        fund.depositFromFees(10000e6, address(usdc));
-        vm.stopPrank();
-
-        uint256 withdrawAmount = 3000e6;
-        address recipient = address(999);
-
-        vm.prank(admin);
-        fund.emergencyWithdraw(address(usdc), withdrawAmount, recipient, "Emergency test");
-
-        assertEq(fund.reserves(address(usdc)), 7000e6);
-        assertEq(usdc.balanceOf(recipient), withdrawAmount);
-    }
-
-    function test_EmergencyWithdrawFromAave() public {
-        // Deposit and deploy
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), 10000e6);
-        fund.depositFromFees(10000e6, address(usdc));
-        vm.stopPrank();
-
-        vm.prank(admin);
-        fund.deployToAave(8000e6, address(usdc));
-
-        // Fund pool for withdrawal
-        usdc.mint(address(aavePool), 1000e6);
-
-        // Emergency withdraw more than reserves (should pull from Aave)
-        address recipient = address(999);
-        vm.prank(admin);
-        fund.emergencyWithdraw(address(usdc), 5000e6, recipient, "Critical situation");
-
-        assertEq(usdc.balanceOf(recipient), 5000e6);
-    }
-
-    function test_EmergencyWithdrawRevertsWhenNotAdmin() public {
-        vm.prank(user1);
-        vm.expectRevert();
-        fund.emergencyWithdraw(address(usdc), 1000e6, user1, "Not authorized");
-    }
-
-    function test_UpdateAavePool() public {
-        address newPool = address(777);
-
-        vm.prank(admin);
-        fund.updateAavePool(newPool);
-
-        assertEq(fund.aavePool(), newPool);
-    }
-
-    function test_UpdateAavePoolRevertsWithZeroAddress() public {
-        vm.prank(admin);
-        vm.expectRevert(InsuranceFund.InsuranceFund__ZeroAddress.selector);
-        fund.updateAavePool(address(0));
-    }
-
-    function test_SetAToken() public {
-        address aUsdc = address(888);
-
-        vm.prank(admin);
-        fund.setAToken(address(usdc), aUsdc);
-
-        assertEq(fund.aTokens(address(usdc)), aUsdc);
-    }
-
-    function test_UpdateTargetPercentage() public {
-        vm.prank(admin);
-        fund.updateTargetPercentage(200); // 2%
-
-        assertEq(fund.targetPercentage(), 200);
-    }
-
-    function test_UpdateTargetPercentageRevertsWithInvalidValue() public {
-        vm.prank(admin);
-        vm.expectRevert(InsuranceFund.InsuranceFund__InvalidPercentage.selector);
-        fund.updateTargetPercentage(0);
-
-        vm.prank(admin);
-        vm.expectRevert(InsuranceFund.InsuranceFund__InvalidPercentage.selector);
-        fund.updateTargetPercentage(1001); // Over 10%
-    }
-
-    function test_UpdateTargetPercentageRevertsForNonParamRole() public {
-        // Read the role before the prank so the prank lands on the gated call.
-        bytes32 role = fund.PARAM_ROLE();
-        vm.prank(user1);
-        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, user1, role));
-        fund.updateTargetPercentage(200);
-    }
-
-    function test_PauseUnpause() public {
-        vm.prank(admin);
-        fund.pause();
-        assertTrue(fund.paused());
-
-        // Cannot deposit when paused
-        vm.prank(vaultManagerContract);
-        vm.expectRevert();
-        fund.depositFromFees(1000e6, address(usdc));
-
-        vm.prank(admin);
-        fund.unpause();
-        assertFalse(fund.paused());
-    }
-
-    function test_PauseRevertsWhenNotAdmin() public {
-        vm.prank(user1);
-        vm.expectRevert();
-        fund.pause();
-    }
-
-    // ============ Multi-Token Tests ============
-
-    function test_MultiTokenOperations() public {
-        // Deposit USDC
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), 5000e6);
-        fund.depositFromFees(5000e6, address(usdc));
-        vm.stopPrank();
-
-        // Deposit USDT
-        vm.startPrank(vaultManagerContract);
-        usdt.approve(address(fund), 3000e6);
-        fund.depositFromFees(3000e6, address(usdt));
-        vm.stopPrank();
-
-        assertEq(fund.reserves(address(usdc)), 5000e6);
-        assertEq(fund.reserves(address(usdt)), 3000e6);
-
-        // Deploy both to Aave
-        vm.prank(admin);
-        fund.deployToAave(2500e6, address(usdc));
-
-        vm.prank(admin);
-        fund.deployToAave(1500e6, address(usdt));
-
-        assertEq(fund.deployed(address(usdc)), 2500e6);
-        assertEq(fund.deployed(address(usdt)), 1500e6);
-    }
-
-    // ============ Integration Tests ============
-
-    function test_CompleteLifecycle() public {
-        // 1. Deposit from fees
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), 10000e6);
-        fund.depositFromFees(10000e6, address(usdc));
-        vm.stopPrank();
-
-        // 2. Deposit from liquidations
-        vm.startPrank(liquidationEngine);
-        usdc.approve(address(fund), 5000e6);
-        fund.depositFromLiquidation(5000e6, address(usdc));
-        vm.stopPrank();
-
-        assertEq(fund.reserves(address(usdc)), 15000e6);
-
-        // 3. Deploy to Aave
-        vm.prank(admin);
-        fund.deployToAave(7500e6, address(usdc));
-
-        // 4. Set yield and fund pool
-        aavePool.setYieldRate(address(usdc), 100); // 1%
-        usdc.mint(address(aavePool), 1000e6);
-
-        // 5. Provide coverage
-        vm.prank(coverageManager);
-        fund.coverLoss(123, 3000e6, address(usdc), InsuranceFund.CoverageReason.FAILED_LIQUIDATION);
-
-        // 6. Rebalance
-        vm.prank(admin);
-        fund.rebalanceToken(address(usdc));
-
-        // Verify final state
-        // After coverage: 12000e6 total (4500e6 reserves + 7500e6 deployed)
-        // Rebalance withdraws 1500e6 from Aave to reach 50/50 (6000e6 each)
-        // Withdrawal earns 1% yield = 15e6
-        // Final total: 12000e6 + 15e6 = 12015e6
-        uint256 expectedTotal = 15000e6 - 3000e6 + 15e6; // 12015e6
-        assertEq(fund.getTotalReservesForToken(address(usdc)), expectedTotal);
-        assertEq(fund.totalCoverage(address(usdc)), 3000e6);
-    }
-
-    /* ============ Branch coverage: zero-token / zero-amount guards ============ */
-
-    function test_DepositFromFeesRevertsZeroToken() public {
-        vm.prank(vaultManagerContract);
-        vm.expectRevert(InsuranceFund.InsuranceFund__InvalidToken.selector);
-        fund.depositFromFees(1000e6, address(0));
-    }
-
-    function test_DepositFromLiquidationRevertsZeroAmount() public {
-        vm.prank(liquidationEngine);
-        vm.expectRevert(InsuranceFund.InsuranceFund__ZeroAmount.selector);
-        fund.depositFromLiquidation(0, address(usdc));
-    }
-
-    function test_DepositFromLiquidationRevertsZeroToken() public {
-        vm.prank(liquidationEngine);
-        vm.expectRevert(InsuranceFund.InsuranceFund__InvalidToken.selector);
-        fund.depositFromLiquidation(1000e6, address(0));
-    }
-
-    function test_DeployToAaveRevertsZeroAmount() public {
-        vm.prank(admin);
-        vm.expectRevert(InsuranceFund.InsuranceFund__ZeroAmount.selector);
-        fund.deployToAave(0, address(usdc));
-    }
-
-    function test_DeployToAaveRevertsZeroToken() public {
-        vm.prank(admin);
-        vm.expectRevert(InsuranceFund.InsuranceFund__InvalidToken.selector);
-        fund.deployToAave(1000e6, address(0));
-    }
-
-    function test_WithdrawFromAaveRevertsZeroAmount() public {
-        vm.prank(admin);
-        vm.expectRevert(InsuranceFund.InsuranceFund__ZeroAmount.selector);
-        fund.withdrawFromAave(0, address(usdc));
-    }
-
-    function test_WithdrawFromAaveRevertsZeroToken() public {
-        vm.prank(admin);
-        vm.expectRevert(InsuranceFund.InsuranceFund__InvalidToken.selector);
-        fund.withdrawFromAave(1000e6, address(0));
-    }
-
-    function test_RebalanceTokenRevertsZeroToken() public {
-        vm.prank(admin);
-        vm.expectRevert(InsuranceFund.InsuranceFund__InvalidToken.selector);
-        fund.rebalanceToken(address(0));
-    }
-
-    function test_AddSupportedTokenRevertsZeroToken() public {
-        vm.prank(admin);
-        vm.expectRevert(InsuranceFund.InsuranceFund__InvalidToken.selector);
-        fund.addSupportedToken(address(0));
-    }
-
-    function test_SetATokenRevertsZeroToken() public {
-        vm.prank(admin);
-        vm.expectRevert(InsuranceFund.InsuranceFund__InvalidToken.selector);
-        fund.setAToken(address(0), address(usdc));
-    }
-
-    function test_SetATokenRevertsZeroAToken() public {
-        vm.prank(admin);
-        vm.expectRevert(InsuranceFund.InsuranceFund__ZeroAddress.selector);
-        fund.setAToken(address(usdc), address(0));
-    }
-
-    /* ============ Branch coverage: emergencyWithdraw ============ */
-
-    function test_EmergencyWithdrawRevertsZeroAmount() public {
-        vm.prank(admin);
-        vm.expectRevert(InsuranceFund.InsuranceFund__ZeroAmount.selector);
-        fund.emergencyWithdraw(address(usdc), 0, admin, "x");
-    }
-
-    function test_EmergencyWithdrawRevertsZeroTo() public {
-        vm.prank(admin);
-        vm.expectRevert(InsuranceFund.InsuranceFund__ZeroAddress.selector);
-        fund.emergencyWithdraw(address(usdc), 1000e6, address(0), "x");
-    }
-
-    function test_EmergencyWithdrawRevertsZeroToken() public {
-        vm.prank(admin);
-        vm.expectRevert(InsuranceFund.InsuranceFund__InvalidToken.selector);
-        fund.emergencyWithdraw(address(0), 1000e6, admin, "x");
-    }
-
-    function test_EmergencyWithdrawPullsFromAaveShortfall() public {
-        // reserves 4000, deployed 6000; withdrawing 5000 pulls 1000 from Aave.
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), 10_000e6);
-        fund.depositFromFees(10_000e6, address(usdc));
-        vm.stopPrank();
-        vm.prank(admin);
-        fund.deployToAave(6_000e6, address(usdc));
-
-        vm.prank(admin);
-        fund.emergencyWithdraw(address(usdc), 5_000e6, admin, "shortfall");
-        assertTrue(usdc.balanceOf(admin) >= 5_000e6);
-    }
-
-    /* ============ Branch coverage: getCoverageEvent / fund health ============ */
-
-    function test_GetCoverageEventRevertsInvalidId() public {
-        vm.expectRevert("InsuranceFund: invalid event ID");
-        fund.getCoverageEvent(0);
-    }
-
-    function test_FundHealthHealthyWhenNoTvl() public {
-        vaultManager.setTotalValueLocked(0);
-        assertEq(uint256(fund.getFundHealth()), uint256(InsuranceFund.FundHealth.HEALTHY));
-    }
-
-    function test_FundHealthStatesAcrossReserveLevels() public {
-        // target = 1.5% of 10M TVL = 150,000e6
-        // CRITICAL: no reserves
-        assertEq(uint256(fund.getFundHealth()), uint256(InsuranceFund.FundHealth.CRITICAL));
-
-        // WARNING: reserves in [target/2, target)
-        _depositFees(80_000e6);
-        assertEq(uint256(fund.getFundHealth()), uint256(InsuranceFund.FundHealth.WARNING));
-
-        // HEALTHY: reserves in [target, target*2)
-        _depositFees(80_000e6); // total 160,000e6
-        assertEq(uint256(fund.getFundHealth()), uint256(InsuranceFund.FundHealth.HEALTHY));
-
-        // OVERCAPITALIZED: reserves >= target*2 (300,000e6)
-        _depositFees(160_000e6); // total 320,000e6
-        assertEq(uint256(fund.getFundHealth()), uint256(InsuranceFund.FundHealth.OVERCAPITALIZED));
-    }
-
-    /* ============ Branch coverage: reserve normalization for non-6-decimal tokens ============ */
-
-    function test_GetTotalReservesNormalizesMixedDecimals() public {
-        MockERC20 token18 = new MockERC20("Eighteen", "E18", 18);
-        MockERC20 token2 = new MockERC20("Two", "T2", 2);
-        vm.startPrank(admin);
-        fund.addSupportedToken(address(usdc)); // 6 decimals (== branch)
-        fund.addSupportedToken(address(token18)); // > 6 branch
-        fund.addSupportedToken(address(token2)); // < 6 branch
-        vm.stopPrank();
-
-        // getTotalReserves iterates all three, exercising each decimal branch.
-        assertEq(fund.getTotalReserves(), 0);
-    }
-
-    function _depositFees(uint256 amount) internal {
-        usdc.mint(vaultManagerContract, amount);
-        vm.startPrank(vaultManagerContract);
-        usdc.approve(address(fund), amount);
-        fund.depositFromFees(amount, address(usdc));
-        vm.stopPrank();
+    function _payTo(address to, uint256 amount) private returns (uint256 paid) {
+        paid = manager.payTo(to, amount);
     }
 }
