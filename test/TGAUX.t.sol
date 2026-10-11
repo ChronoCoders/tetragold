@@ -2,601 +2,333 @@
 pragma solidity 0.8.30;
 
 import {Test} from "forge-std/Test.sol";
+import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {TGAUX} from "../src/TGAUX.sol";
+import {VaultStub} from "./mocks/VaultStub.sol";
 
 contract TGAUXTest is Test {
-    TGAUX public token;
+    uint256 private constant ONE = 1 ether;
+    uint256 private constant TWO = 2 ether;
+    uint256 private constant FOUR = 4 ether;
+    uint256 private constant FIVE = 5 ether;
+    uint256 private constant SIX = 6 ether;
+    uint256 private constant NINE = 9 ether;
+    uint256 private constant TEN = 10 ether;
+    uint256 private constant FUZZ_CEILING = 1_000_000 ether;
+    uint256 private constant ONE_WEI = 1;
+    uint256 private constant NOTHING = 0;
 
-    address public admin;
-    address public minter;
-    address public pauser;
+    /// @dev One troy ounce in grams, scaled by 1e18, for the 4.4 check.
+    uint256 private constant TROY_OUNCE_GRAMS = 31_103_500_000_000_000_000;
+    uint256 private constant ONE_GRAM = 1e18;
+    uint256 private constant GRAM_TOLERANCE = 1e15;
+    uint256 private constant EXPECTED_MINIMUM = 32_150_000_000_000_000;
+
+    TGAUX public token;
+    VaultStub public vault;
+
     address public user1;
     address public user2;
-
-    // Events to test
-    event Minted(address indexed to, uint256 amount, address indexed minter);
-    event Burned(address indexed from, uint256 amount);
-    event Transfer(address indexed from, address indexed to, uint256 value);
-    event Paused(address account);
-    event Unpaused(address account);
+    address public stranger;
 
     function setUp() public {
-        admin = makeAddr("admin");
-        minter = makeAddr("minter");
-        pauser = makeAddr("pauser");
         user1 = makeAddr("user1");
         user2 = makeAddr("user2");
+        stranger = makeAddr("stranger");
 
-        // Deploy token with admin
-        vm.prank(admin);
-        token = new TGAUX(admin);
-
-        // Grant roles
-        vm.startPrank(admin);
-        token.grantRole(token.MINTER_ROLE(), minter);
-        token.grantRole(token.PAUSER_ROLE(), pauser);
-        vm.stopPrank();
+        vault = new VaultStub();
+        token = vault.TOKEN();
     }
 
-    /* ============ Constructor Tests ============ */
+    function test_VaultIsTheDeployer() public view {
+        assertEq(token.VAULT(), address(vault));
+    }
 
-    function test_Constructor() public view {
+    function test_MetadataAndEmptySupply() public view {
         assertEq(token.name(), "Tetra Gold");
         assertEq(token.symbol(), "TGAUX");
         assertEq(token.decimals(), 18);
-        assertEq(token.totalSupply(), 0);
-        assertTrue(token.hasRole(token.DEFAULT_ADMIN_ROLE(), admin));
-        assertTrue(token.hasRole(token.PAUSER_ROLE(), admin));
+        assertEq(token.totalSupply(), NOTHING);
     }
 
-    function test_ConstructorRevertsWithZeroAddress() public {
-        vm.expectRevert("TGAUX: default admin cannot be zero address");
-        new TGAUX(address(0));
-    }
+    function test_MintByVault() public {
+        vault.mint(user1, ONE);
 
-    /* ============ Minting Tests ============ */
-
-    function test_MintByAuthorizedMinter() public {
-        uint256 amount = 1 ether; // 1 TGAUX
-
-        vm.expectEmit(true, true, false, true);
-        emit Minted(user1, amount, minter);
-
-        vm.prank(minter);
-        token.mint(user1, amount);
-
-        assertEq(token.balanceOf(user1), amount);
-        assertEq(token.totalSupply(), amount);
+        assertEq(token.balanceOf(user1), ONE);
+        assertEq(token.totalSupply(), ONE);
     }
 
     function test_MintMultipleTimes() public {
-        uint256 amount1 = 1 ether;
-        uint256 amount2 = 2 ether;
+        vault.mint(user1, ONE);
+        vault.mint(user1, TWO);
 
-        vm.startPrank(minter);
-        token.mint(user1, amount1);
-        token.mint(user1, amount2);
-        vm.stopPrank();
-
-        assertEq(token.balanceOf(user1), amount1 + amount2);
-        assertEq(token.totalSupply(), amount1 + amount2);
+        assertEq(token.balanceOf(user1), ONE + TWO);
+        assertEq(token.totalSupply(), ONE + TWO);
     }
 
     function test_MintToMultipleUsers() public {
-        uint256 amount1 = 1 ether;
-        uint256 amount2 = 2 ether;
+        vault.mint(user1, ONE);
+        vault.mint(user2, FOUR);
 
-        vm.startPrank(minter);
-        token.mint(user1, amount1);
-        token.mint(user2, amount2);
-        vm.stopPrank();
-
-        assertEq(token.balanceOf(user1), amount1);
-        assertEq(token.balanceOf(user2), amount2);
-        assertEq(token.totalSupply(), amount1 + amount2);
+        assertEq(token.balanceOf(user1), ONE);
+        assertEq(token.balanceOf(user2), FOUR);
+        assertEq(token.totalSupply(), FIVE);
     }
 
-    function test_MintRevertsWhenNotAuthorized() public {
-        vm.prank(user1);
-        vm.expectRevert();
-        token.mint(user1, 1 ether);
-    }
-
-    function test_MintRevertsWithBelowMinimumAmount() public {
-        uint256 belowMinimum = token.MINIMUM_TRANSFER_AMOUNT() - 1;
-
-        vm.prank(minter);
-        vm.expectRevert("TGAUX: amount below minimum");
-        token.mint(user1, belowMinimum);
-    }
-
-    function test_MintRevertsWithZeroAddress() public {
-        vm.prank(minter);
-        vm.expectRevert("TGAUX: mint to zero address");
-        token.mint(address(0), 1 ether);
-    }
-
-    function test_MintMinimumAmount() public {
-        uint256 minimumAmount = token.MINIMUM_TRANSFER_AMOUNT();
-
-        vm.prank(minter);
-        token.mint(user1, minimumAmount);
-
-        assertEq(token.balanceOf(user1), minimumAmount);
-    }
-
-    /* ============ Burning Tests ============ */
-
-    function test_VaultBurnByMinterWithoutAllowance() public {
-        uint256 mintAmount = 10 ether;
-        uint256 burnAmount = 3 ether;
-
-        vm.prank(minter);
-        token.mint(user1, mintAmount);
-
-        // user1 grants no allowance to anyone
-        vm.expectEmit(true, false, false, true);
-        emit Burned(user1, burnAmount);
-
-        vm.prank(minter);
-        token.vaultBurn(user1, burnAmount);
-
-        assertEq(token.balanceOf(user1), mintAmount - burnAmount);
-        assertEq(token.totalSupply(), mintAmount - burnAmount);
-    }
-
-    function test_VaultBurnRevertsWhenNotMinter() public {
-        vm.prank(minter);
-        token.mint(user1, 10 ether);
-
-        vm.prank(user2);
-        vm.expectRevert();
-        token.vaultBurn(user1, 1 ether);
-
-        // Even the admin cannot vaultBurn without MINTER_ROLE
-        vm.prank(admin);
-        vm.expectRevert();
-        token.vaultBurn(user1, 1 ether);
-    }
-
-    function test_BurnOwnTokens() public {
-        uint256 mintAmount = 10 ether;
-        uint256 burnAmount = 3 ether;
-
-        vm.prank(minter);
-        token.mint(user1, mintAmount);
-
-        vm.expectEmit(true, false, false, true);
-        emit Burned(user1, burnAmount);
+    function test_MintRevertsWhenCallerIsNotTheVault() public {
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(TGAUX.NotVault.selector, stranger));
+        token.mint(user1, ONE);
 
         vm.prank(user1);
-        token.burn(burnAmount);
-
-        assertEq(token.balanceOf(user1), mintAmount - burnAmount);
-        assertEq(token.totalSupply(), mintAmount - burnAmount);
+        vm.expectRevert(abi.encodeWithSelector(TGAUX.NotVault.selector, user1));
+        token.mint(user1, ONE);
     }
 
-    function test_BurnAllTokens() public {
-        uint256 amount = 10 ether;
+    function test_MintRevertsBelowMinimum() public {
+        uint256 under = token.MINIMUM_TRANSFER_AMOUNT() - ONE_WEI;
 
-        vm.prank(minter);
-        token.mint(user1, amount);
+        vm.expectRevert(abi.encodeWithSelector(TGAUX.BelowMinimum.selector, under));
+        vault.mint(user1, under);
+    }
+
+    function test_MintAtMinimum() public {
+        uint256 minimum = token.MINIMUM_TRANSFER_AMOUNT();
+        vault.mint(user1, minimum);
+
+        assertEq(token.balanceOf(user1), minimum);
+    }
+
+    /// @dev The token adds no zero address check of its own, so this asserts
+    ///      the error OpenZeppelin's _mint already raises.
+    function test_MintToZeroAddressRevertsInERC20() public {
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InvalidReceiver.selector, address(0)));
+        vault.mint(address(0), ONE);
+    }
+
+    function test_BurnByVaultNeedsNoAllowance() public {
+        vault.mint(user1, TEN);
+        assertEq(token.allowance(user1, address(vault)), NOTHING);
+
+        vault.burn(user1, FOUR);
+
+        assertEq(token.balanceOf(user1), SIX);
+        assertEq(token.totalSupply(), SIX);
+    }
+
+    function test_BurnRevertsWhenCallerIsNotTheVault() public {
+        vault.mint(user1, TEN);
 
         vm.prank(user1);
-        token.burn(amount);
+        vm.expectRevert(abi.encodeWithSelector(TGAUX.NotVault.selector, user1));
+        token.burn(user1, ONE);
 
-        assertEq(token.balanceOf(user1), 0);
-        assertEq(token.totalSupply(), 0);
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(TGAUX.NotVault.selector, stranger));
+        token.burn(user1, ONE);
     }
 
-    function test_BurnFromWithAllowance() public {
-        uint256 mintAmount = 10 ether;
-        uint256 burnAmount = 3 ether;
+    /// @dev The exit path of 4.4: a holder left under the minimum must still be
+    ///      able to leave, so a burn carries no minimum of its own.
+    function test_BurnWholeBalanceBelowMinimum() public {
+        uint256 minimum = token.MINIMUM_TRANSFER_AMOUNT();
+        vault.mint(user1, minimum);
+        vault.burn(user1, ONE_WEI);
 
-        vm.prank(minter);
-        token.mint(user1, mintAmount);
+        vault.burn(user1, minimum - ONE_WEI);
 
-        vm.prank(user1);
-        token.approve(user2, burnAmount);
-
-        vm.expectEmit(true, false, false, true);
-        emit Burned(user1, burnAmount);
-
-        vm.prank(user2);
-        token.burnFrom(user1, burnAmount);
-
-        assertEq(token.balanceOf(user1), mintAmount - burnAmount);
-        assertEq(token.totalSupply(), mintAmount - burnAmount);
+        assertEq(token.balanceOf(user1), NOTHING);
+        assertEq(token.totalSupply(), NOTHING);
     }
 
-    function test_BurnRevertsWithInsufficientBalance() public {
-        uint256 amount = 1 ether;
+    function test_BurnRevertsBeyondBalance() public {
+        vault.mint(user1, ONE);
 
-        vm.prank(minter);
-        token.mint(user1, amount);
-
-        vm.prank(user1);
-        vm.expectRevert();
-        token.burn(amount + 1);
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, user1, ONE, TWO));
+        vault.burn(user1, TWO);
     }
-
-    /* ============ Transfer Tests ============ */
 
     function test_TransferAboveMinimum() public {
-        uint256 mintAmount = 10 ether;
-        uint256 transferAmount = 1 ether; // Above minimum
-
-        vm.prank(minter);
-        token.mint(user1, mintAmount);
+        vault.mint(user1, TEN);
 
         vm.prank(user1);
-        bool success = token.transfer(user2, transferAmount);
-        assertTrue(success, "Transfer should succeed");
+        assertTrue(token.transfer(user2, ONE));
 
-        assertEq(token.balanceOf(user1), mintAmount - transferAmount);
-        assertEq(token.balanceOf(user2), transferAmount);
+        assertEq(token.balanceOf(user1), NINE);
+        assertEq(token.balanceOf(user2), ONE);
     }
 
-    function test_TransferExactMinimumAmount() public {
-        uint256 mintAmount = 10 ether;
-        uint256 transferAmount = token.MINIMUM_TRANSFER_AMOUNT();
-
-        vm.prank(minter);
-        token.mint(user1, mintAmount);
+    function test_TransferExactMinimum() public {
+        uint256 minimum = token.MINIMUM_TRANSFER_AMOUNT();
+        vault.mint(user1, TEN);
 
         vm.prank(user1);
-        bool success = token.transfer(user2, transferAmount);
-        assertTrue(success, "Transfer should succeed");
+        assertTrue(token.transfer(user2, minimum));
 
-        assertEq(token.balanceOf(user2), transferAmount);
+        assertEq(token.balanceOf(user2), minimum);
     }
 
-    function test_TransferEntireBalanceBelowMinimum() public {
-        // Mint an amount below minimum directly for testing
-        // We need to mint at least minimum first
-        uint256 minimumAmount = token.MINIMUM_TRANSFER_AMOUNT();
+    /// @dev The transfer half of 4.4.
+    function test_TransferWholeBalanceBelowMinimum() public {
+        uint256 minimum = token.MINIMUM_TRANSFER_AMOUNT();
+        vault.mint(user1, minimum);
+        vault.burn(user1, ONE_WEI);
+        uint256 left = token.balanceOf(user1);
+        assertLt(left, minimum);
 
-        vm.prank(minter);
-        token.mint(user1, minimumAmount);
-
-        // Transfer entire balance (should work even if below minimum)
         vm.prank(user1);
-        bool success = token.transfer(user2, minimumAmount);
-        assertTrue(success, "Transfer should succeed");
+        assertTrue(token.transfer(user2, left));
 
-        assertEq(token.balanceOf(user1), 0);
-        assertEq(token.balanceOf(user2), minimumAmount);
+        assertEq(token.balanceOf(user1), NOTHING);
+        assertEq(token.balanceOf(user2), left);
     }
 
-    function test_TransferRevertsWhenBelowMinimum() public {
-        uint256 mintAmount = 10 ether;
-        uint256 transferAmount = token.MINIMUM_TRANSFER_AMOUNT() - 1;
-
-        vm.prank(minter);
-        token.mint(user1, mintAmount);
+    function test_TransferRevertsBelowMinimum() public {
+        vault.mint(user1, TEN);
+        uint256 under = token.MINIMUM_TRANSFER_AMOUNT() - ONE_WEI;
 
         vm.prank(user1);
-        vm.expectRevert("TGAUX: transfer amount below minimum");
-        (bool success) = token.transfer(user2, transferAmount);
-        success; // Silence unused variable warning
+        vm.expectRevert(abi.encodeWithSelector(TGAUX.BelowMinimum.selector, under));
+        // This call reverts by design, so there is no return value to check.
+        // forge-lint: disable-next-line(erc20-unchecked-transfer)
+        token.transfer(user2, under);
     }
 
     function test_TransferFromWithApproval() public {
-        uint256 mintAmount = 10 ether;
-        uint256 transferAmount = 1 ether;
-
-        vm.prank(minter);
-        token.mint(user1, mintAmount);
+        vault.mint(user1, TEN);
 
         vm.prank(user1);
-        token.approve(user2, transferAmount);
+        assertTrue(token.approve(user2, ONE));
 
         vm.prank(user2);
-        bool success = token.transferFrom(user1, user2, transferAmount);
-        assertTrue(success, "TransferFrom should succeed");
+        // The spender moving the owner's balance is the behaviour under test,
+        // not an unchecked send of someone else's funds.
+        // forge-lint: disable-next-line(arbitrary-send-erc20)
+        assertTrue(token.transferFrom(user1, user2, ONE));
 
-        assertEq(token.balanceOf(user2), transferAmount);
+        assertEq(token.balanceOf(user2), ONE);
+        assertEq(token.allowance(user1, user2), NOTHING);
     }
 
-    /* ============ Pause Tests ============ */
-
-    function test_PauseByAuthorizedPauser() public {
-        vm.expectEmit(false, false, false, true);
-        emit Paused(pauser);
-
-        vm.prank(pauser);
-        token.pause();
-
-        assertTrue(token.paused());
-    }
-
-    function test_UnpauseByAuthorizedPauser() public {
-        vm.prank(pauser);
-        token.pause();
-
-        vm.expectEmit(false, false, false, true);
-        emit Unpaused(pauser);
-
-        vm.prank(pauser);
-        token.unpause();
-
-        assertFalse(token.paused());
-    }
-
-    function test_PauseRevertsWhenNotAuthorized() public {
-        vm.prank(user1);
-        vm.expectRevert();
-        token.pause();
-    }
-
-    function test_TransferRevertsWhenPaused() public {
-        uint256 amount = 1 ether;
-
-        vm.prank(minter);
-        token.mint(user1, amount);
-
-        vm.prank(pauser);
-        token.pause();
+    /// @dev The minimum lives in the update hook, so the spender's path is held
+    ///      to it as well, not only a direct transfer.
+    function test_TransferFromRevertsBelowMinimum() public {
+        vault.mint(user1, TEN);
 
         vm.prank(user1);
-        vm.expectRevert();
-        (bool success) = token.transfer(user2, amount);
-        success; // Silence unused variable warning
+        assertTrue(token.approve(user2, TEN));
+        uint256 under = token.MINIMUM_TRANSFER_AMOUNT() - ONE_WEI;
+
+        vm.prank(user2);
+        vm.expectRevert(abi.encodeWithSelector(TGAUX.BelowMinimum.selector, under));
+        // Same reason as above: the owner's balance is moved on purpose here,
+        // and the call reverts by design, so no return value comes back.
+        // forge-lint: disable-next-line(arbitrary-send-erc20,erc20-unchecked-transfer)
+        token.transferFrom(user1, user2, under);
     }
-
-    function test_MintRevertsWhenPaused() public {
-        vm.prank(pauser);
-        token.pause();
-
-        vm.prank(minter);
-        vm.expectRevert();
-        token.mint(user1, 1 ether);
-    }
-
-    function test_BurnRevertsWhenPaused() public {
-        uint256 amount = 1 ether;
-
-        vm.prank(minter);
-        token.mint(user1, amount);
-
-        vm.prank(pauser);
-        token.pause();
-
-        vm.prank(user1);
-        vm.expectRevert();
-        token.burn(amount);
-    }
-
-    /* ============ Access Control Tests ============ */
-
-    function test_AdminCanGrantMinterRole() public {
-        address newMinter = makeAddr("newMinter");
-        bytes32 minterRole = token.MINTER_ROLE();
-
-        vm.prank(admin);
-        token.grantRole(minterRole, newMinter);
-
-        assertTrue(token.hasRole(minterRole, newMinter));
-    }
-
-    function test_AdminCanRevokeMinterRole() public {
-        bytes32 minterRole = token.MINTER_ROLE();
-
-        vm.prank(admin);
-        token.revokeRole(minterRole, minter);
-
-        assertFalse(token.hasRole(minterRole, minter));
-    }
-
-    function test_AdminCanGrantPauserRole() public {
-        address newPauser = makeAddr("newPauser");
-        bytes32 pauserRole = token.PAUSER_ROLE();
-
-        vm.prank(admin);
-        token.grantRole(pauserRole, newPauser);
-
-        assertTrue(token.hasRole(pauserRole, newPauser));
-    }
-
-    function test_NonAdminCannotGrantRoles() public {
-        address newMinter = makeAddr("newMinter");
-        bytes32 minterRole = token.MINTER_ROLE();
-
-        vm.prank(user1);
-        vm.expectRevert();
-        token.grantRole(minterRole, newMinter);
-    }
-
-    function test_RevokedMinterCannotMint() public {
-        bytes32 minterRole = token.MINTER_ROLE();
-
-        vm.prank(admin);
-        token.revokeRole(minterRole, minter);
-
-        vm.prank(minter);
-        vm.expectRevert();
-        token.mint(user1, 1 ether);
-    }
-
-    function test_AdminCannotRenounceAdminRole() public {
-        bytes32 adminRole = token.DEFAULT_ADMIN_ROLE();
-        vm.prank(admin);
-        vm.expectRevert("TGAUX: cannot renounce admin role");
-        token.renounceRole(adminRole, admin);
-    }
-
-    function test_NonAdminRoleCanBeRenounced() public {
-        bytes32 pauserRole = token.PAUSER_ROLE();
-        vm.prank(pauser);
-        token.renounceRole(pauserRole, pauser);
-        assertFalse(token.hasRole(pauserRole, pauser));
-    }
-
-    /* ============ Decimal Precision Tests ============ */
-
-    function test_DecimalsAre18() public view {
-        assertEq(token.decimals(), 18);
-    }
-
-    function test_MinimumTransferAmountPrecision() public view {
-        // 0.03215 TGAUX = 32150000000000000 wei
-        assertEq(token.MINIMUM_TRANSFER_AMOUNT(), 32150000000000000);
-    }
-
-    function test_MinimumUnit() public {
-        // Minimum transfer unit = 0.03215 TGAUX
-        uint256 minimumUnit = token.MINIMUM_TRANSFER_AMOUNT();
-
-        vm.prank(minter);
-        token.mint(user1, minimumUnit);
-
-        assertEq(token.balanceOf(user1), minimumUnit);
-    }
-
-    function test_OneFullUnit() public {
-        // 1 TGAUX = 1 troy ounce of gold (price unit)
-        uint256 oneUnit = 1 ether;
-
-        vm.prank(minter);
-        token.mint(user1, oneUnit);
-
-        assertEq(token.balanceOf(user1), oneUnit);
-    }
-
-    /* ============ ERC20 Standard Tests ============ */
 
     function test_ApproveAndAllowance() public {
-        uint256 amount = 1 ether;
-
-        vm.prank(minter);
-        token.mint(user1, amount);
-
         vm.prank(user1);
-        token.approve(user2, amount);
+        assertTrue(token.approve(user2, FIVE));
 
-        assertEq(token.allowance(user1, user2), amount);
+        assertEq(token.allowance(user1, user2), FIVE);
     }
 
     function test_ApproveUpdate() public {
-        uint256 initialAmount = 1 ether;
-        uint256 newAmount = 0.5 ether;
-
         vm.startPrank(user1);
-        token.approve(user2, initialAmount);
-        assertEq(token.allowance(user1, user2), initialAmount);
-
-        // Update approval to new amount
-        token.approve(user2, newAmount);
-        assertEq(token.allowance(user1, user2), newAmount);
+        assertTrue(token.approve(user2, FIVE));
+        assertTrue(token.approve(user2, TWO));
         vm.stopPrank();
+
+        assertEq(token.allowance(user1, user2), TWO);
     }
 
     function test_ApproveZeroReset() public {
-        uint256 initialAmount = 1 ether;
-
         vm.startPrank(user1);
-        token.approve(user2, initialAmount);
-        assertEq(token.allowance(user1, user2), initialAmount);
-
-        // Reset approval to zero
-        token.approve(user2, 0);
-        assertEq(token.allowance(user1, user2), 0);
+        assertTrue(token.approve(user2, FIVE));
+        assertTrue(token.approve(user2, NOTHING));
         vm.stopPrank();
+
+        assertEq(token.allowance(user1, user2), NOTHING);
     }
 
-    /* ============ Integration Tests ============ */
+    /// @dev 0.03215 troy ounces is one gram to within a thousandth of a gram,
+    ///      which is what 4.4 fixes the minimum to.
+    function test_MinimumIsOneGram() public view {
+        uint256 minimum = token.MINIMUM_TRANSFER_AMOUNT();
+        assertEq(minimum, EXPECTED_MINIMUM);
 
-    function test_CompleteWorkflow() public {
-        // Mint tokens to user1
-        uint256 mintAmount = 100 ether;
-        vm.prank(minter);
-        token.mint(user1, mintAmount);
-
-        // User1 transfers to user2
-        uint256 transferAmount = 30 ether;
-        vm.prank(user1);
-        bool success = token.transfer(user2, transferAmount);
-        assertTrue(success, "Transfer should succeed");
-
-        // User2 burns some tokens
-        uint256 burnAmount = 10 ether;
-        vm.prank(user2);
-        token.burn(burnAmount);
-
-        // Verify final balances
-        assertEq(token.balanceOf(user1), mintAmount - transferAmount);
-        assertEq(token.balanceOf(user2), transferAmount - burnAmount);
-        assertEq(token.totalSupply(), mintAmount - burnAmount);
+        uint256 grams = (minimum * TROY_OUNCE_GRAMS) / ONE_GRAM;
+        assertApproxEqAbs(grams, ONE_GRAM, GRAM_TOLERANCE);
     }
 
-    function test_PauseUnpauseWorkflow() public {
-        // Mint tokens
-        vm.prank(minter);
-        token.mint(user1, 10 ether);
+    function test_MintTransferBurnWorkflow() public {
+        vault.mint(user1, TEN);
 
-        // Pause
-        vm.prank(pauser);
-        token.pause();
-
-        // Try to transfer (should fail)
         vm.prank(user1);
-        vm.expectRevert();
-        (bool success) = token.transfer(user2, 1 ether);
-        success; // Silence unused variable warning
+        assertTrue(token.transfer(user2, FOUR));
 
-        // Unpause
-        vm.prank(pauser);
-        token.unpause();
+        vault.burn(user1, SIX);
+        vault.burn(user2, FOUR);
 
-        // Transfer should work now
-        vm.prank(user1);
-        bool success2 = token.transfer(user2, 1 ether);
-        assertTrue(success2, "Transfer should succeed");
-
-        assertEq(token.balanceOf(user2), 1 ether);
+        assertEq(token.totalSupply(), NOTHING);
+        assertEq(token.balanceOf(user1), NOTHING);
+        assertEq(token.balanceOf(user2), NOTHING);
     }
 
-    /* ============ Fuzz Tests ============ */
+    /// @dev D26 removed the roles, the transfer pause and `vaultBurn`, and the
+    ///      rewrite removed ERC20Burnable. Absence is asserted against the
+    ///      deployed bytecode rather than against the source: the token has no
+    ///      fallback, so a call to a selector it does not carry has to fail.
+    function test_RemovedSurfaceHasNoSelector() public {
+        string[6] memory gone = [
+            "pause()",
+            "unpause()",
+            "vaultBurn(address,uint256)",
+            "grantRole(bytes32,address)",
+            "burn(uint256)",
+            "burnFrom(address,uint256)"
+        ];
+
+        for (uint256 i = 0; i < gone.length; i++) {
+            bytes memory payload =
+                i < 2 ? abi.encodeWithSignature(gone[i]) : abi.encodeWithSignature(gone[i], NOTHING, NOTHING);
+            // One call per removed selector is what the test is for, and a raw
+            // call is the only way to reach a function the type does not have.
+            // forge-lint: disable-next-line(calls-loop,low-level-calls)
+            (bool ok,) = address(token).call(payload);
+            assertFalse(ok, gone[i]);
+        }
+    }
 
     function testFuzz_MintValidAmounts(uint256 amount) public {
-        // Bound amount to reasonable values
-        amount = bound(amount, token.MINIMUM_TRANSFER_AMOUNT(), 1_000_000 ether);
+        amount = bound(amount, token.MINIMUM_TRANSFER_AMOUNT(), FUZZ_CEILING);
 
-        vm.prank(minter);
-        token.mint(user1, amount);
+        vault.mint(user1, amount);
 
         assertEq(token.balanceOf(user1), amount);
-        assertEq(token.totalSupply(), amount);
     }
 
-    function testFuzz_TransferValidAmounts(uint256 mintAmount, uint256 transferAmount) public {
-        // Ensure mint amount is at least minimum and reasonable
-        mintAmount = bound(mintAmount, token.MINIMUM_TRANSFER_AMOUNT(), 1_000_000 ether);
-        // Ensure transfer amount is between minimum and mint amount
-        transferAmount = bound(transferAmount, token.MINIMUM_TRANSFER_AMOUNT(), mintAmount);
-
-        vm.prank(minter);
-        token.mint(user1, mintAmount);
+    function testFuzz_TransferValidAmounts(uint256 minted, uint256 sent) public {
+        minted = bound(minted, token.MINIMUM_TRANSFER_AMOUNT(), FUZZ_CEILING);
+        sent = bound(sent, token.MINIMUM_TRANSFER_AMOUNT(), minted);
+        vault.mint(user1, minted);
 
         vm.prank(user1);
-        bool success = token.transfer(user2, transferAmount);
-        assertTrue(success, "Transfer should succeed");
+        assertTrue(token.transfer(user2, sent));
 
-        assertEq(token.balanceOf(user1), mintAmount - transferAmount);
-        assertEq(token.balanceOf(user2), transferAmount);
+        assertEq(token.balanceOf(user1), minted - sent);
+        assertEq(token.balanceOf(user2), sent);
     }
 
-    function testFuzz_BurnValidAmounts(uint256 mintAmount, uint256 burnAmount) public {
-        mintAmount = bound(mintAmount, token.MINIMUM_TRANSFER_AMOUNT(), 1_000_000 ether);
-        burnAmount = bound(burnAmount, 1, mintAmount);
+    function testFuzz_BurnByVault(uint256 minted, uint256 burned) public {
+        minted = bound(minted, token.MINIMUM_TRANSFER_AMOUNT(), FUZZ_CEILING);
+        burned = bound(burned, NOTHING, minted);
+        vault.mint(user1, minted);
 
-        vm.prank(minter);
-        token.mint(user1, mintAmount);
+        vault.burn(user1, burned);
 
-        vm.prank(user1);
-        token.burn(burnAmount);
-
-        assertEq(token.balanceOf(user1), mintAmount - burnAmount);
-        assertEq(token.totalSupply(), mintAmount - burnAmount);
+        assertEq(token.balanceOf(user1), minted - burned);
+        assertEq(token.totalSupply(), minted - burned);
     }
 }

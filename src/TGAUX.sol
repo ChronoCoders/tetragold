@@ -2,166 +2,77 @@
 pragma solidity 0.8.30;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
-import {ERC20Pausable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Pausable.sol";
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 
 /**
  * @title TGAUX
- * @dev Tetra Gold token implementation
+ * @notice A gold token backed one to one by PAXG held in the TGAUX vault.
+ * @dev One TGAUX is one troy ounce of PAXG that the vault holds. It tracks PAXG,
+ *      not an oracle price, and nothing here reads a price (D1).
  *
- * Token tracks the gold (XAU/USD) spot price synthetically:
- * - 1 TGAUX = 1 troy ounce of gold (price unit, not physical delivery)
- * - Minimum transferable amount: 0.03215 TGAUX
- *
- * Features:
- * - ERC-20 standard with 18 decimals
- * - Dynamic supply (minted on-demand by authorized VaultManager)
- * - Burnable (users can burn their own tokens)
- * - Pausable (emergency stop functionality)
- * - Non-upgradeable (immutable for security)
- * - Access control for minting and pausing operations
+ *      The vault deploys this token in its own constructor, so VAULT is the
+ *      deployer and is immutable. Only the vault mints and burns, against PAXG
+ *      deposited or released, and there is no role, no admin, no transfer pause
+ *      and no setter of any kind (D26). Supply can therefore change only through
+ *      the vault, and transfers cannot be stopped by anyone.
  */
-contract TGAUX is ERC20, ERC20Burnable, ERC20Pausable, AccessControl {
-    // Role definitions
-    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
-    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+contract TGAUX is ERC20 {
+    /// @notice The only account that may mint or burn.
+    address public immutable VAULT;
 
-    // Minimum transfer amount: 0.03215 TGAUX (protocol minimum unit)
-    uint256 public constant MINIMUM_TRANSFER_AMOUNT = 32_150_000_000_000_000; // 0.03215 * 10^18
+    /// @notice Minimum amount to mint or transfer: 0.03215 TGAUX, which is
+    ///         1.0000 g at 31.1035 g per troy ounce (4.4).
+    uint256 public constant MINIMUM_TRANSFER_AMOUNT = 32_150_000_000_000_000;
 
-    // Custom events
-    event Minted(address indexed to, uint256 amount, address indexed minter);
-    event Burned(address indexed from, uint256 amount);
+    /// @notice Decimals of this token, fixed at the ERC20 default.
+    uint8 private constant DECIMALS = 18;
 
-    /**
-     * @dev Constructor sets up roles and token metadata
-     * @param defaultAdmin Address that will be granted DEFAULT_ADMIN_ROLE
-     */
-    constructor(address defaultAdmin) ERC20("Tetra Gold", "TGAUX") {
-        require(defaultAdmin != address(0), "TGAUX: default admin cannot be zero address");
+    /// @notice The caller is not the vault.
+    error NotVault(address caller);
 
-        _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
-        _grantRole(PAUSER_ROLE, defaultAdmin);
+    /// @notice The amount is under the minimum and is not a whole balance.
+    error BelowMinimum(uint256 amount);
+
+    /// @dev The deployer is the vault, which removes the misconfiguration a
+    ///      constructor argument would allow and leaves nothing to set later.
+    constructor() ERC20("Tetra Gold", "TGAUX") {
+        VAULT = msg.sender;
     }
 
-    /**
-     * @dev Mints new tokens to a specified address
-     * @param to Address to receive the minted tokens
-     * @param amount Amount of tokens to mint (in wei, 18 decimals)
-     *
-     * Requirements:
-     * - Caller must have MINTER_ROLE
-     * - Amount must be at least MINIMUM_TRANSFER_AMOUNT
-     */
-    function mint(address to, uint256 amount) external onlyRole(MINTER_ROLE) {
-        require(amount >= MINIMUM_TRANSFER_AMOUNT, "TGAUX: amount below minimum");
-        require(to != address(0), "TGAUX: mint to zero address");
-
-        _mint(to, amount);
-        emit Minted(to, amount, msg.sender);
-    }
-
-    /**
-     * @dev Burns tokens from the caller's account
-     * @param amount Amount of tokens to burn
-     *
-     * Overrides ERC20Burnable to add custom event
-     */
-    function burn(uint256 amount) public override {
-        super.burn(amount);
-        emit Burned(msg.sender, amount);
-    }
-
-    /**
-     * @dev Burns tokens from a specified account with allowance
-     * @param account Account to burn tokens from
-     * @param amount Amount of tokens to burn
-     *
-     * Overrides ERC20Burnable to add custom event
-     */
-    function burnFrom(address account, uint256 amount) public override {
-        super.burnFrom(account, amount);
-        emit Burned(account, amount);
-    }
-
-    /**
-     * @dev Burns tokens from an account without requiring allowance.
-     *      Used by VaultManager during liquidations so a position owner
-     *      cannot block liquidation by revoking their TGAUX allowance.
-     * @param account Account to burn tokens from
-     * @param amount Amount of tokens to burn
-     *
-     * Requirements:
-     * - Caller must have MINTER_ROLE (VaultManager)
-     */
-    function vaultBurn(address account, uint256 amount) external onlyRole(MINTER_ROLE) {
-        _burn(account, amount);
-        emit Burned(account, amount);
-    }
-
-    /**
-     * @dev Pauses all token transfers
-     *
-     * Requirements:
-     * - Caller must have PAUSER_ROLE
-     */
-    function pause() external onlyRole(PAUSER_ROLE) {
-        _pause();
-    }
-
-    /**
-     * @dev Unpauses all token transfers
-     *
-     * Requirements:
-     * - Caller must have PAUSER_ROLE
-     */
-    function unpause() external onlyRole(PAUSER_ROLE) {
-        _unpause();
-    }
-
-    /**
-     * @dev Enforces minimum transfer amount
-     * @param from Address sending tokens
-     * @param to Address receiving tokens
-     * @param amount Amount being transferred
-     *
-     * Overrides ERC20 transfer hook to enforce minimum transfer amount
-     * Exception: Allows transfers of exact balance (to enable complete withdrawals)
-     */
-    function _update(address from, address to, uint256 amount) internal override(ERC20, ERC20Pausable) {
-        // Minting and burning can be any amount (handled in mint function and burn is user's choice)
-        // For transfers, enforce minimum unless transferring entire balance
-        if (from != address(0) && to != address(0)) {
-            // Allow transfer of full balance even if below minimum
-            if (amount < MINIMUM_TRANSFER_AMOUNT && amount != balanceOf(from)) {
-                revert("TGAUX: transfer amount below minimum");
-            }
+    /// @notice Mint `amount` to `to` against PAXG the vault received.
+    function mint(address to, uint256 amount) external {
+        if (msg.sender != VAULT) {
+            revert NotVault(msg.sender);
         }
-
-        super._update(from, to, amount);
+        if (amount < MINIMUM_TRANSFER_AMOUNT) {
+            revert BelowMinimum(amount);
+        }
+        _mint(to, amount);
     }
 
-    /**
-     * @dev Returns the number of decimals used for token amounts
-     * @return uint8 Number of decimals (18)
-     */
+    /// @notice Burn `amount` from `from` against PAXG the vault releases.
+    /// @dev No minimum and no allowance. The vault applies the withdraw minimum
+    ///      and its whole balance exception (4.4) before it calls this, and the
+    ///      vault is the only caller, so an allowance would add nothing.
+    function burn(address from, uint256 amount) external {
+        if (msg.sender != VAULT) {
+            revert NotVault(msg.sender);
+        }
+        _burn(from, amount);
+    }
+
+    /// @inheritdoc ERC20
     function decimals() public pure override returns (uint8) {
-        return 18;
+        return DECIMALS;
     }
 
-    /**
-     * @dev Prevents renouncing DEFAULT_ADMIN_ROLE to avoid bricking access control
-     */
-    function renounceRole(bytes32 role, address callerConfirmation) public override {
-        require(role != DEFAULT_ADMIN_ROLE, "TGAUX: cannot renounce admin role");
-        super.renounceRole(role, callerConfirmation);
-    }
-
-    /**
-     * @dev See {IERC165-supportsInterface}
-     */
-    function supportsInterface(bytes4 interfaceId) public view override(AccessControl) returns (bool) {
-        return super.supportsInterface(interfaceId);
+    /// @dev A mint or a burn carries any amount, because the vault decides it.
+    ///      A transfer between accounts carries at least the minimum, unless it
+    ///      moves the sender's whole balance, so a holder left below the minimum
+    ///      can still leave the token (4.4).
+    function _update(address from, address to, uint256 amount) internal override {
+        if (from != address(0) && to != address(0) && amount < MINIMUM_TRANSFER_AMOUNT && amount != balanceOf(from)) {
+            revert BelowMinimum(amount);
+        }
+        super._update(from, to, amount);
     }
 }
