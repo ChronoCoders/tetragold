@@ -3,25 +3,39 @@ set -uo pipefail
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 . "$root/scripts/lib/checks.sh"
 
+EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+
 rc=0
 while read -r lref lsha rref rsha; do
     [ -n "${lref:-}" ] || continue
     [ "$(printf '%s' "$lsha" | tr -d 0)" = "" ] && continue
+
     if [ -z "${rsha:-}" ] || [ "$(printf '%s' "$rsha" | tr -d 0)" = "" ]; then
         commits=$(git rev-list "$lsha" --not --remotes 2>/dev/null || true)
+        base=""
+        for r in $(git for-each-ref --format='%(objectname)' refs/remotes/ 2>/dev/null); do
+            b=$(git merge-base "$lsha" "$r" 2>/dev/null) || continue
+            [ -n "$b" ] || continue
+            if [ -z "$base" ] || git merge-base --is-ancestor "$base" "$b" 2>/dev/null; then
+                base="$b"
+            fi
+        done
+        if [ -n "$base" ]; then
+            added=$(git diff "$base" "$lsha" | grep '^+' | grep -v '^+++' || true)
+        else
+            added=$(git diff "$EMPTY_TREE" "$lsha" | grep '^+' | grep -v '^+++' || true)
+        fi
     else
         commits=$(git rev-list "$rsha..$lsha" 2>/dev/null || true)
+        added=$(git diff "$rsha" "$lsha" | grep '^+' | grep -v '^+++' || true)
     fi
-    [ -n "$commits" ] || continue
 
     msgs=""
-    added=""
     for c in $commits; do
         msgs=$(printf '%s\n%s' "$msgs" "$(git log -1 --format='%B' "$c" 2>/dev/null)")
-        added=$(printf '%s\n%s' "$added" "$(git show -U0 --format='' "$c" 2>/dev/null | grep '^+' | grep -v '^+++' || true)")
     done
 
-    if ! scan_text_banned_chars "$msgs"; then
+    if [ -n "$commits" ] && ! scan_text_banned_chars "$msgs"; then
         echo "pre-push: banned character U+2013 or U+2014 or banned word in a pushed commit message" >&2
         rc=1
     fi
