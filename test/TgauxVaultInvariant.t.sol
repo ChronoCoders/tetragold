@@ -3,7 +3,7 @@ pragma solidity 0.8.30;
 
 import {Test} from "forge-std/Test.sol";
 import {InsuranceFund} from "../src/InsuranceFund.sol";
-import {LiquidityPool} from "../src/LiquidityPool.sol";
+import {CounterpartyPool} from "../src/CounterpartyPool.sol";
 import {ReentrancyLock} from "../src/ReentrancyLock.sol";
 import {TGAUX} from "../src/TGAUX.sol";
 import {TgauxVault} from "../src/TgauxVault.sol";
@@ -23,6 +23,8 @@ contract TgauxVaultInvariantTest is Test {
     uint8 private constant STABLE_DECIMALS = 6;
     uint256 private constant SENTINEL_STABLE = 1_000_000e6;
     uint256 private constant SENTINEL_PAXG = 10 ether;
+    uint256 private constant U_MAX_BPS = 8000;
+    uint256 private constant EXPIRY = 600;
     uint256 private constant ACTOR = 0;
     uint256 private constant DRIVE_DEPOSIT = 100 ether;
     uint256 private constant ONE_WEI = 1;
@@ -41,7 +43,7 @@ contract TgauxVaultInvariantTest is Test {
 
     address public treasury;
 
-    LiquidityPool public pool;
+    CounterpartyPool public pool;
     InsuranceFund public insuranceFund;
     MockERC20 public usdc;
     MockERC20 public usdt;
@@ -57,8 +59,9 @@ contract TgauxVaultInvariantTest is Test {
         // the invariant names rather than against stand-ins.
         usdc = new MockERC20("USD Coin", "USDC", STABLE_DECIMALS);
         usdt = new MockERC20("Tether USD", "USDT", STABLE_DECIMALS);
-        pool = new LiquidityPool(address(this), address(usdc), address(usdt));
-        insuranceFund = new InsuranceFund(address(token), makeAddr("treasury"), address(new ReentrancyLock()), 1 ether);
+        ReentrancyLock sentinelLock = new ReentrancyLock();
+        pool = new CounterpartyPool(address(token), address(sentinelLock), makeAddr("guardian"), U_MAX_BPS, EXPIRY);
+        insuranceFund = new InsuranceFund(address(token), makeAddr("treasury"), address(sentinelLock), 1 ether);
 
         usdc.mint(address(pool), SENTINEL_STABLE);
         usdt.mint(address(pool), SENTINEL_STABLE);
