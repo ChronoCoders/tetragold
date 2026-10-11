@@ -33,7 +33,8 @@ contract SettlementHandler is Test {
     int32 private constant PYTH_EXPO = -8;
     uint256 private constant FEE_HEADROOM = 3;
     uint32 private constant MARKET_OPEN = 2;
-    uint32 private constant MISS_EVERY = 4;
+    uint32 private constant MISS_BELOW_EVERY = 4;
+    uint32 private constant MISS_ABOVE_EVERY = 5;
     uint32 private constant AFTER_MIXER = 7;
 
     SettlementOracle public immutable ORACLE;
@@ -94,10 +95,16 @@ contract SettlementHandler is Test {
             marketStatus: status
         });
 
-        // A window that misses the target on purpose, every fourth call.
-        if (windowSeed % MISS_EVERY == 0) {
+        // Windows that miss the target on purpose, on both sides. Without the
+        // second branch the report window's upper bound is never tested: every
+        // other window this builds ends at or after the target, so dropping
+        // that bound from the contract changed nothing a campaign could see.
+        if (windowSeed % MISS_BELOW_EVERY == 0) {
             report.validFromTimestamp = target + 1;
             report.observationsTimestamp = target + 1 + after_;
+        } else if (windowSeed % MISS_ABOVE_EVERY == 0) {
+            report.validFromTimestamp = target - before - 1;
+            report.observationsTimestamp = target - 1;
         }
 
         bytes[] memory update = new bytes[](1);
