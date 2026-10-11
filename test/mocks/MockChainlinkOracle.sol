@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
 
-/**
- * @dev Mock Chainlink Aggregator for testing
- */
-contract MockChainlinkOracle {
+import {IChainlinkAggregator} from "../../src/oracle/interfaces/IChainlinkAggregator.sol";
+
+/// @notice Stands in for the Chainlink push feed the D22 fallback reads.
+/// @dev It implements the interface the fallback holds, so a change to that
+///      interface breaks this mock rather than drifting away from it quietly.
+contract MockChainlinkOracle is IChainlinkAggregator {
     uint8 private _decimals;
     int256 private _answer;
     uint256 private _updatedAt;

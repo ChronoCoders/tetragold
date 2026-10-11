@@ -63,7 +63,7 @@ contract CounterpartyPoolTest is Test {
         assertEq(pool.GUARDIAN(), guardian);
         assertEq(pool.U_MAX_BPS(), U_MAX_BPS);
         assertEq(pool.REQUEST_EXPIRY(), EXPIRY);
-        assertEq(shares.liquidityPool(), address(pool), "the pool is not its share token's only minter");
+        assertEq(shares.LIQUIDITY_POOL(), address(pool), "the pool is not its share token's only minter");
         assertEq(pool.ounces(), NOTHING);
         assertEq(pool.nextRequestId(), FIRST_ID);
         assertFalse(pool.inflowsPaused());

@@ -4,9 +4,9 @@ A terminal dashboard that polls a running Tetra Gold deployment with `cast` and
 renders protocol state on a refresh loop: oracle price, liquidity pools, open
 positions with their health and liquidation status, and the insurance fund.
 
-It is a read-only operations/inspection tool, not a test harness — correctness
-is covered by the Foundry suite (`forge test`). Use this to watch state change
-as you interact with a local or testnet deployment.
+It is a read-only operations and inspection tool rather than a test harness.
+Correctness is covered by the Foundry suite (`forge test`). Use this to watch
+state change as you interact with a local or testnet deployment.
 
 ## Quick start (local)
 
@@ -16,7 +16,7 @@ tools/monitor/start-local.sh
 ```
 
 Then, in another terminal, drive the protocol with `cast` and watch the
-dashboard update — for example, open a 1x position from anvil account 0:
+dashboard update. For example, open a 1x position from anvil account 0:
 
 ```bash
 source tools/monitor/addresses.env
@@ -41,5 +41,5 @@ scripting or a quick check).
 
 ## Requirements
 
-Foundry (`cast`, and `anvil`/`forge` for the local launcher). No other
-dependencies — the dashboard is plain `bash` + `cast`.
+Foundry (`cast`, and `anvil`/`forge` for the local launcher). There are no
+other dependencies: the dashboard is plain `bash` plus `cast`.

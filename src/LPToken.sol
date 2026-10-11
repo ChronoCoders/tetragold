@@ -5,37 +5,48 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 /**
  * @title LPToken
- * @dev ERC20 token representing liquidity provider shares in a pool
+ * @notice Share token of the counterparty pool: one holding is a claim on the
+ *         pool's ounces, valued per D48.
+ * @dev The pool deploys this in its own constructor, so the pool is the
+ *      immutable minter and burner and there is no role, no admin and no
+ *      setter. Supply can change only through the pool.
  */
 contract LPToken is ERC20 {
-    address public immutable liquidityPool;
+    /// @notice The only account that may mint or burn.
+    address public immutable LIQUIDITY_POOL;
 
+    /// @notice The caller is not the pool.
     error LPToken__OnlyPool();
 
     modifier onlyPool() {
-        if (msg.sender != liquidityPool) revert LPToken__OnlyPool();
+        _onlyPool();
         _;
     }
 
     constructor(string memory tokenName, string memory tokenSymbol) ERC20(tokenName, tokenSymbol) {
-        liquidityPool = msg.sender;
+        LIQUIDITY_POOL = msg.sender;
     }
 
-    /**
-     * @dev Mints LP tokens to an address
-     * @param to Recipient address
-     * @param amount Amount to mint
-     */
+    /// @notice Mint `amount` shares to `to`.
+    /// @param to Recipient of the shares.
+    /// @param amount Shares to mint.
     function mint(address to, uint256 amount) external onlyPool {
         _mint(to, amount);
     }
 
-    /**
-     * @dev Burns LP tokens from an address
-     * @param from Address to burn from
-     * @param amount Amount to burn
-     */
+    /// @notice Burn `amount` shares from `from`.
+    /// @param from Account to burn from.
+    /// @param amount Shares to burn.
     function burn(address from, uint256 amount) external onlyPool {
         _burn(from, amount);
+    }
+
+    /// @dev The check lives in a function rather than in the modifier body so
+    ///      that it is one jump at each use site instead of a second copy of
+    ///      the comparison and the revert.
+    function _onlyPool() private view {
+        if (msg.sender != LIQUIDITY_POOL) {
+            revert LPToken__OnlyPool();
+        }
     }
 }
