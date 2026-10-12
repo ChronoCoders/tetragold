@@ -232,6 +232,18 @@ contract PositionManager is IPositionBook {
         State state;
     }
 
+    /// @notice What the settled price decides about an open: its size, the fee
+    ///         it owes, what joins the pool, its claim, and how the fee splits.
+    struct Open {
+        uint256 size;
+        uint256 feeOunces;
+        uint256 joined;
+        uint256 claim;
+        uint256 toTreasury;
+        uint256 toFund;
+        uint256 toPool;
+    }
+
     /// @notice One open position, carrying exactly what the claim book was
     ///         given, so a close can hand the same four values back (D60).
     struct Position {
@@ -247,10 +259,11 @@ contract PositionManager is IPositionBook {
     FeeIndex.Index internal _index;
 
     /// @dev What Pyth took from the value a settler sent, carried from the
-    ///      oracle call to the settler's payment inside one transaction. It is
-    ///      storage rather than an argument because both ends sit in separate
-    ///      private functions, and it is cleared as it is read.
-    uint256 private _pythPaid;
+    ///      oracle call to the settler's payment. It is transient because it
+    ///      lives for one call: every settlement writes it before reading it,
+    ///      and EIP-1153 clears it at the end of the transaction, so there is
+    ///      nothing to reset and nothing to inherit.
+    uint256 private transient _pythPaid;
 
     event InflowsPaused(address indexed guardian);
     event InflowsUnpaused(address indexed guardian);
@@ -275,7 +288,7 @@ contract PositionManager is IPositionBook {
     error ZeroAddress();
     error NotGuardian(address caller);
     error PoolHasNoShares();
-    error FeeTooHigh(uint256 bps);
+    error FeeTooHighForLeverage(uint256 bps, uint256 leverage);
     error SharesDoNotSumToOne(uint256 total);
     error ZeroMinimumNotional();
     error ZeroGasEstimate();
@@ -293,6 +306,7 @@ contract PositionManager is IPositionBook {
     error NothingReceived();
     error NothingToWithdraw();
     error TransferFailed(address to, uint256 amount);
+    error UnexpectedEth(address from);
 
     /// @notice Why a request was rejected at its price (D70). Every one of
     ///         these is a rule the price or the state settled, so waiting could
@@ -334,8 +348,12 @@ contract PositionManager is IPositionBook {
         FEE_CAP_RATE = config.feeCapRate;
         FEE_U_MAX = (config.poolUMaxBps * WAD) / BPS_DENOMINATOR;
         FEE_EXPONENT = config.feeExponent;
-        if (config.positionFeeBps > BPS_DENOMINATOR) {
-            revert FeeTooHigh(config.positionFeeBps);
+        // The open fee is f of the size, and the size is q times the leverage,
+        // so the fee comes to q times f times k. Once that reaches q the fee
+        // would be the whole collateral and the subtraction below would panic
+        // instead of rejecting, so the bound is on the largest tier (D71).
+        if (config.positionFeeBps * LEVERAGE_HIGH >= BPS_DENOMINATOR) {
+            revert FeeTooHighForLeverage(config.positionFeeBps, LEVERAGE_HIGH);
         }
         if (config.treasuryShareBps + config.insuranceShareBps + config.poolShareBps != BPS_DENOMINATOR) {
             revert SharesDoNotSumToOne(config.treasuryShareBps + config.insuranceShareBps + config.poolShareBps);
@@ -377,7 +395,15 @@ contract PositionManager is IPositionBook {
     /// @notice Receive the oracle's refund of whatever Pyth did not take. A
     ///         settlement reads this contract's balance across that call, so
     ///         the refund has to land here rather than revert.
-    receive() external payable {}
+    /// @dev Nothing else may pay this contract. Execution fees arrive as the
+    ///      value on a request, so stray ETH would only sit here unowned, with
+    ///      no path out: the credit ledger pays out what requests put in, and
+    ///      there is no sweep and no owner to add one (D58).
+    receive() external payable {
+        if (msg.sender != address(SETTLEMENT_ORACLE)) {
+            revert UnexpectedEth(msg.sender);
+        }
+    }
 
     /// @notice Pause the inflows the guardian may pause (D58 rule 2).
     /// @dev Nothing reads this yet. The paths it will stop are the position
@@ -457,17 +483,26 @@ contract PositionManager is IPositionBook {
         uint256 gasAtEntry = gasleft();
         Request storage request = _pendingAt(id, Kind.Open);
 
+        // The section covers the whole settlement, including the oracle call
+        // and the settler's payment at the end, which is what D31 asks of a
+        // state changing function that makes an external call. The oracle's
+        // refund lands in `receive`, which takes no lock, so the section is not
+        // re-entered by the refund. A settler whose fallback tries to come back
+        // in finds the section held and fails its own settlement, which is the
+        // only thing it can reach.
+        LOCK.enter();
+
         _advance();
         uint256 price18 = _settlePrice(request.targetTime, streamsPayload, pythUpdate);
 
-        LOCK.enter();
         Reason reason = _openAt(id, request, price18);
         if (reason != Reason.None) {
             _reject(id, request, reason, price18);
         }
-        LOCK.exit();
 
         _payTheSettler(id, request, gasAtEntry);
+
+        LOCK.exit();
     }
 
     /// @notice Refund a request no price ever qualified for (section 7 rule 4).
@@ -489,6 +524,7 @@ contract PositionManager is IPositionBook {
         if (block.timestamp < expiresAt) {
             revert NotExpiredYet(expiresAt);
         }
+        LOCK.enter();
 
         uint256 escrowed = request.escrowed;
         uint256 fee = request.executionFee;
@@ -499,26 +535,42 @@ contract PositionManager is IPositionBook {
         if (fee != 0) {
             ethCredit[request.requester] += fee;
         }
+        // The state, the escrow total and the credit are written above, and
+        // the only external call before this is taking the section, which holds
+        // nothing a caller can turn against this log.
+        // forge-lint: disable-next-line(reentrancy-events)
         emit RequestExpired(id, request.requester, escrowed, fee);
 
         if (escrowed != 0) {
             IERC20(address(GOLD)).safeTransfer(request.requester, escrowed);
         }
+
+        LOCK.exit();
     }
 
     /// @notice Take ETH owed from an execution fee.
     /// @dev Pull rather than push, so an account that cannot receive ETH is its
-    ///      own problem and never a settlement's (D70).
+    ///      own problem and never a settlement's (D70). It holds the shared
+    ///      section like every other path that makes an external call (D31), so
+    ///      a recipient's fallback cannot come back into a settlement.
     function withdrawCredit() external {
         uint256 amount = ethCredit[msg.sender];
         if (amount == 0) {
             revert NothingToWithdraw();
         }
 
+        // The ledger is cleared before anything external happens, so a
+        // recipient's fallback finds nothing left to pull, and the section
+        // below refuses it a second route in anyway.
         ethCredit[msg.sender] = 0;
+        LOCK.enter();
+
+        // forge-lint: disable-next-line(reentrancy-events)
         emit CreditWithdrawn(msg.sender, amount);
 
         _sendEth(msg.sender, amount);
+
+        LOCK.exit();
     }
 
     /// @notice Read a request, for a settler deciding whether to settle it and
@@ -777,21 +829,53 @@ contract PositionManager is IPositionBook {
             return Reason.EntryPriceOutOfRange;
         }
 
-        uint256 escrowed = request.escrowed;
-        uint256 size = escrowed * request.leverage;
-        if (_usd(size, price18) < MIN_NOTIONAL_USD) {
+        Open memory open = _openMath(request.escrowed, request.leverage, price18);
+
+        if (_usd(open.size, price18) < MIN_NOTIONAL_USD) {
             return Reason.BelowMinimumNotional;
         }
-        if (POOL.reservableOunces() < size) {
+        // D46 bounds R after the open, not before it, so the ceiling is
+        // measured against the pool this open is about to make: its own
+        // collateral and its own share of the fee are already on their way in.
+        // Reading `reservableOunces` here instead would refuse an open that
+        // fits once its gold has landed, which is a stricter rule than the one
+        // the spec states. Every figure is computed before any transfer, so a
+        // breach still rejects (D70) rather than reverting inside `reserve`.
+        if (!_fitsTheCeiling(open)) {
             return Reason.ReserveCeiling;
         }
 
+        _commitOpen(id, request, open, price18);
+
+        return Reason.None;
+    }
+
+    /// @dev Everything the settled price decides about an open, in one value so
+    ///      the rules below it and the writes after it read the same figures.
+    function _openMath(uint256 escrowed, uint256 leverage, uint256 price18) private view returns (Open memory open) {
+        open.size = escrowed * leverage;
         // D71 rule 2: the open fee comes out of the posted q, so the claim is
         // what is left times the settled price. The fee rounds up, against the
         // position (D29).
-        uint256 feeOunces = _feeOunces(size);
-        uint256 joined = escrowed - feeOunces;
-        uint256 claim = _usd(joined, price18);
+        open.feeOunces = _feeOunces(open.size);
+        open.joined = escrowed - open.feeOunces;
+        open.claim = _usd(open.joined, price18);
+        (open.toTreasury, open.toFund, open.toPool) = _split(open.feeOunces);
+    }
+
+    /// @dev Whether R would still sit inside u_max of the pool this open makes
+    ///      (D46).
+    function _fitsTheCeiling(Open memory open) private view returns (bool) {
+        uint256 poolAfter = POOL.ounces() + open.joined + open.toPool;
+        return (poolAfter * POOL.U_MAX_BPS()) / BPS_DENOMINATOR >= POOL.reserved() + open.size;
+    }
+
+    /// @dev Write the position, move the gold and take the reserve. The gold
+    ///      goes in before R rises, which is the order D46 measures in.
+    function _commitOpen(uint256 id, Request storage request, Open memory open, uint256 price18) private {
+        uint256 escrowed = request.escrowed;
+        address owner = request.requester;
+        uint256 index = _index.value;
 
         request.state = State.Settled;
         escrowedOunces -= escrowed;
@@ -799,27 +883,25 @@ contract PositionManager is IPositionBook {
         uint256 positionId = nextPositionId;
         nextPositionId = positionId + 1;
         _positions[positionId] = Position({
-            owner: request.requester, size: size, claim: claim, openPrice: price18, openIndex: _index.value, open: true
+            owner: owner, size: open.size, claim: open.claim, openPrice: price18, openIndex: index, open: true
         });
-        _book.add(size, claim, price18, _index.value);
+        _book.add(open.size, open.claim, price18, index);
 
         // Every figure this reports is settled above, and the shared section is
-        // held across the three calls below, so nothing can reach this contract
+        // held across the calls below, so nothing can reach this contract
         // between them to reorder the log.
         // forge-lint: disable-next-line(reentrancy-events)
-        emit OpenSettled(id, positionId, request.requester, size, claim, price18, feeOunces);
+        emit OpenSettled(id, positionId, owner, open.size, open.claim, price18, open.feeOunces);
 
-        IERC20(address(GOLD)).safeTransfer(address(POOL), joined);
+        IERC20(address(GOLD)).safeTransfer(address(POOL), open.joined);
+        _routeFee(open.toTreasury, open.toFund, open.toPool);
         // The escrow and the position are written above, before any of these
         // calls, and the section is held across all of them. The credit's
         // return value is the pool's own figure, which I1 checks on its side.
         // forge-lint: disable-next-line(reentrancy-no-eth,unused-return)
         POOL.syncCredit();
         // forge-lint: disable-next-line(reentrancy-no-eth)
-        POOL.reserve(size);
-        _routeFee(feeOunces);
-
-        return Reason.None;
+        POOL.reserve(open.size);
     }
 
     /// @dev End a request as rejected and give the escrow back in full (D70).
@@ -841,30 +923,26 @@ contract PositionManager is IPositionBook {
         }
     }
 
-    /// @dev Split a collected fee between the treasury, the fund and the pool
-    ///      (D20). The fund's share goes to the pool once the fund is at its
-    ///      target, and the pool's own share and any remainder go together, so
-    ///      one credit covers both.
-    function _routeFee(uint256 feeOunces) private {
+    /// @dev How a collected fee splits between the treasury, the fund and the
+    ///      pool (D20). The fund's share goes to the pool once the fund is at
+    ///      its target, and the remainder of both divisions goes to the pool,
+    ///      which is where an unrouted wei belongs: it is already in the pool's
+    ///      hands. Separate from the transfers so a settlement can weigh the
+    ///      pool's share against the D46 ceiling before moving anything.
+    function _split(uint256 feeOunces) private view returns (uint256 toTreasury, uint256 toFund, uint256 toPool) {
         if (feeOunces == 0) {
-            // Reached from a settlement that has already moved gold, which is
-            // the external call the rule sees; nothing is left to reorder.
-            // forge-lint: disable-next-line(reentrancy-events)
-            emit FeeRouted(0, 0, 0);
-            return;
+            return (0, 0, 0);
         }
 
-        uint256 toTreasury = (feeOunces * TREASURY_SHARE_BPS) / BPS_DENOMINATOR;
-        uint256 toFund = (feeOunces * INSURANCE_SHARE_BPS) / BPS_DENOMINATOR;
-        if (INSURANCE_FUND.atTarget()) {
-            toFund = 0;
-        }
-        // The remainder of both divisions goes to the pool, which is where an
-        // unrouted wei belongs: it is already in the pool's hands.
-        uint256 toPool = feeOunces - toTreasury - toFund;
+        toTreasury = (feeOunces * TREASURY_SHARE_BPS) / BPS_DENOMINATOR;
+        toFund = INSURANCE_FUND.atTarget() ? 0 : (feeOunces * INSURANCE_SHARE_BPS) / BPS_DENOMINATOR;
+        toPool = feeOunces - toTreasury - toFund;
+    }
 
-        // The split is decided above and the section is held across the three
-        // transfers below, as in the settlement that calls this.
+    /// @dev Move a split fee to the three places it goes (D20).
+    function _routeFee(uint256 toTreasury, uint256 toFund, uint256 toPool) private {
+        // The split is decided by the caller and the section is held across the
+        // three transfers below, as in the settlement that calls this.
         // forge-lint: disable-next-line(reentrancy-events)
         emit FeeRouted(toTreasury, toFund, toPool);
 
@@ -909,7 +987,6 @@ contract PositionManager is IPositionBook {
         uint256 credited = fee - paid;
         uint256 surplus = msg.value - pythPaid;
 
-        _pythPaid = 0;
         if (credited != 0) {
             ethCredit[request.requester] += credited;
         }

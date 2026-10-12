@@ -19,6 +19,7 @@ import {MockPaxg} from "./mocks/MockPaxg.sol";
 import {MockPyth} from "./mocks/MockPyth.sol";
 import {MockVerifierProxy} from "./mocks/MockVerifierProxy.sol";
 import {PositionManagerHarness} from "./mocks/PositionManagerHarness.sol";
+import {ReenteringSettler} from "./mocks/ReenteringSettler.sol";
 
 /// @notice The open path: the request, its execution fee, its escrow, and every
 ///         rule its settlement applies (D65, D66, D70, D71, section 5.1).
@@ -75,6 +76,7 @@ contract PositionManagerOpenTest is Test {
     ///      the Fenwick nodes for the entry price's bucket, which is 14 slots
     ///      at this test's price and up to 20 at the bottom of the range, so
     ///      the ceiling leaves room for the deeper walk.
+    uint256 private constant LEVERAGE_HIGH = 5;
     uint256 private constant REQUEST_CEILING = 400_000;
     uint256 private constant SETTLE_CEILING = 1_100_000;
 
@@ -370,16 +372,127 @@ contract PositionManagerOpenTest is Test {
         assertEq(uint256(state), uint256(PositionManager.State.Rejected), "the request did not end as rejected");
     }
 
-    /// @dev D46: an open that would put R past u_max of the pool is rejected.
+    /// @dev D46 bounds R after the open, so an open whose own collateral is
+    ///      what makes it fit must settle. At 3x on a pool of 1000 ounces the
+    ///      old reading of the ceiling stopped at 266 ounces posted; this one
+    ///      posts 300, which only fits because its own 299 join the pool first.
+    function test_AnOpenThatFitsOnlyBecauseOfItsOwnCollateralSettles() public {
+        uint256 post = 300 ether;
+        assertGt(post * LEVERAGE, pool.reservableOunces(), "the old reading would have allowed this anyway");
+
+        uint256 id = _requestOpen(trader, post, LEVERAGE);
+        _settleOpen(id);
+
+        assertEq(pool.reserved(), post * LEVERAGE, "an open that fits was rejected");
+        assertLe(pool.reserved() * BPS, pool.ounces() * U_MAX_BPS, "I7: the open that settled broke the ceiling");
+    }
+
+    /// @dev And one that does not fit even with its own collateral in the pool
+    ///      is rejected rather than reverting inside the reserve (D70).
     function test_AnOpenPastTheReserveCeilingIsRejected() public {
-        uint256 room = pool.reservableOunces();
-        uint256 tooBig = room / LEVERAGE + 1 ether;
-        uint256 id = _requestOpen(trader, tooBig, LEVERAGE);
+        uint256 post = 400 ether;
+        uint256 id = _requestOpen(trader, post, LEVERAGE);
 
         _settleOpen(id);
 
         assertEq(pool.reserved(), NOTHING, "the reserve ceiling let an open through");
         assertEq(gold.balanceOf(trader), SEED, "the escrow was not refunded");
+        // forge-lint: disable-next-line(unused-return)
+        (,,,,,,, PositionManager.State state) = manager.requestAt(id);
+        assertEq(uint256(state), uint256(PositionManager.State.Rejected), "the request did not end as rejected");
+    }
+
+    /// @dev D71: once f times the largest tier reaches one, the open fee would
+    ///      be the whole collateral, so the constructor refuses it rather than
+    ///      letting a settlement panic on the subtraction.
+    function test_TheConstructorBoundsTheFeeAgainstTheLargestTier() public {
+        PositionManager.Config memory config = _config();
+        config.positionFeeBps = BPS / LEVERAGE_HIGH;
+        vm.expectRevert(
+            abi.encodeWithSelector(PositionManager.FeeTooHighForLeverage.selector, BPS / LEVERAGE_HIGH, LEVERAGE_HIGH)
+        );
+        new PositionManagerHarness(config);
+
+        config = _config();
+        config.positionFeeBps = BPS / LEVERAGE_HIGH - 1;
+        PositionManagerHarness justInside = new PositionManagerHarness(config);
+        assertEq(justInside.POSITION_FEE_BPS(), BPS / LEVERAGE_HIGH - 1, "the boundary value was refused");
+    }
+
+    /// @dev D31: the section is held across the settler's payment, so a settler
+    ///      that tries to come back in fails its own settlement and nothing
+    ///      else. It comes back through `requestOpen`, a different locked path,
+    ///      so the lock is what refuses it rather than the state machine of the
+    ///      settlement it is inside.
+    function test_AReenteringSettlerOnlyBreaksItsOwnSettlement() public {
+        uint256 id = _requestOpen(trader, POST, LEVERAGE);
+        // forge-lint: disable-next-line(unused-return)
+        (,,, uint256 target,,,,) = manager.requestAt(id);
+        vm.warp(target);
+
+        ReenteringSettler attacker = new ReenteringSettler(manager);
+        vm.deal(address(attacker), FUNDING);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(PositionManager.TransferFailed.selector, address(attacker), _settlerPay(id))
+        );
+        attacker.settle(
+            id, abi.encode(_report(target)), _pythUpdate(target), PYTH_FEE, POST, LEVERAGE, _feeFloor(GAS_OPEN), true
+        );
+
+        // forge-lint: disable-next-line(unused-return)
+        (,,,,,,, PositionManager.State state) = manager.requestAt(id);
+        assertEq(uint256(state), uint256(PositionManager.State.Pending), "the failed settlement changed the request");
+        assertEq(pool.reserved(), NOTHING, "the failed settlement reserved something");
+
+        _settleOpenRaw(id, target);
+        assertEq(pool.reserved(), POST * LEVERAGE, "an honest settler could not settle afterwards");
+    }
+
+    /// @dev And the thing that refuses the reentry is the shared lock, not the
+    ///      state machine of the settlement it is inside. This settler swallows
+    ///      the refusal instead of passing it on, so its settlement finishes
+    ///      and the reason it recorded survives to be read.
+    function test_TheSharedLockIsWhatRefusesAReentry() public {
+        uint256 id = _requestOpen(trader, POST, LEVERAGE);
+        // forge-lint: disable-next-line(unused-return)
+        (,,, uint256 target,,,,) = manager.requestAt(id);
+        vm.warp(target);
+
+        ReenteringSettler attacker = new ReenteringSettler(manager);
+        vm.deal(address(attacker), FUNDING);
+
+        attacker.settle(
+            id, abi.encode(_report(target)), _pythUpdate(target), PYTH_FEE, POST, LEVERAGE, _feeFloor(GAS_OPEN), false
+        );
+
+        assertEq(
+            attacker.lastReason(),
+            abi.encodeWithSelector(ReentrancyLock.Held.selector, address(manager)),
+            "the reentry was refused by something other than the shared lock"
+        );
+        assertEq(pool.reserved(), POST * LEVERAGE, "the settlement did not finish once the reentry was swallowed");
+    }
+
+    /// @dev Only the oracle may pay this contract, so stray ETH cannot get
+    ///      stuck where nothing can pay it out.
+    function test_OnlyTheOracleMayPayTheManager() public {
+        vm.deal(trader, FUNDING);
+        vm.prank(trader);
+        vm.expectRevert(abi.encodeWithSelector(PositionManager.UnexpectedEth.selector, trader));
+        // The destination is the contract under test, not an address a caller
+        // chose, and the call reverts by design.
+        // forge-lint: disable-next-line(arbitrary-send-eth,low-level-calls,unused-return)
+        (bool sent,) = address(manager).call{value: 1 wei}("");
+        sent;
+
+        address oracle = address(manager.SETTLEMENT_ORACLE());
+        vm.deal(oracle, FUNDING);
+        vm.prank(oracle);
+        // forge-lint: disable-next-line(arbitrary-send-eth,low-level-calls)
+        (bool fromOracle,) = address(manager).call{value: 1 wei}("");
+        assertTrue(fromOracle, "the oracle could not refund the manager");
+        assertEq(address(manager).balance, 1 wei, "the refund did not land");
     }
 
     /// @dev D58 and D50 again, this time at settlement: the brake and PAXG are
@@ -593,6 +706,14 @@ contract PositionManagerOpenTest is Test {
                 emaPrice: IPyth.Price({price: PYTH_PRICE, conf: 0, expo: PYTH_EXPO, publishTime: uint64(target)})
             })
         );
+    }
+
+    /// @dev What the manager owes a settler for a request, which is the whole
+    ///      deposited fee whenever the gas it took exceeds the deposit.
+    function _settlerPay(uint256 id) private view returns (uint256) {
+        // forge-lint: disable-next-line(unused-return)
+        (,, uint256 fee,,,,,) = manager.requestAt(id);
+        return fee;
     }
 
     function _feeFloor(uint256 gasEstimate) private pure returns (uint256) {
