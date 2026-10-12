@@ -11,33 +11,36 @@ import {ClaimBookHarness} from "./mocks/ClaimBookHarness.sol";
 ///      test's own loop over the positions. The book is the thing under test,
 ///      so the loop is the reference and never the other way about.
 ///
-///      The reference for the withdrawal measure is the sum of
-///      max(e_i, C_i - fee_i) with no floor at zero per position, because D60
-///      rule 2 drops that floor on purpose: it binds only past bankruptcy,
-///      where liquidation removes the position. The sum as a whole is still
-///      floored, which both the library and the reference do.
+///      The reference is exact: every term is scaled by one unit of the 1e18
+///      scale squared, so each division becomes an exact integer and nothing
+///      in the reference rounds at all. The reference for the withdrawal
+///      measure is the sum of max(e_i, C_i - fee_i) with no floor at zero per
+///      position, because D60 rule 2 drops that floor on purpose: it binds
+///      only past bankruptcy, where liquidation removes the position. The sum
+///      as a whole is still floored, which both the library and the reference
+///      do.
 ///
-///      Two rounding bounds, both stated rather than guessed:
-///      upward, a measure may exceed the reference by one wei per position,
-///      because the library divides the aggregate once where the reference
-///      divides per position, and floor of a sum is at least the sum of
-///      floors;
-///      downward, a measure may fall under the reference by two wei of ounces
-///      per position plus two for the aggregate, turned into USD at the price.
-///      The derivation, writing x_i for s_i times the index and y_i for s_i
-///      times the position's own opening index, both over one unit of scale:
-///      the library's fee is ceil(sum x_i) less sum floor(y_i), the reference's
-///      is sum floor(x_i - y_i), and the difference between them is at least
-///      zero and at most 2n + 1 wei of ounces. One of the two wei per position
-///      is the library's floored J and the other is the reference's own
-///      per position flooring. Both roundings make the fee the library
-///      subtracts larger, which favours the LPs already in the pool, and that
-///      is what D29 asks of a rounding choice.
+///      The direction is asserted, not a slack (D29, D60 rule 4 and rule 8):
+///      the deposit measure is never above its exact value and the withdrawal
+///      measure never below its own, at every price and not only at an entry
+///      price.
+///
+///      The opposite side of each is bounded. Writing n for the number of open
+///      positions and P for the price, a measure can sit on the wrong side of
+///      exact by at most
+///
+///          2 + n + (n + 1) * (P / 1e18 + 1)
+///
+///      wei of USD: one wei from the aggregate division of P times R, one wei
+///      per position from the notional or the claim rounding carried in D and
+///      in the tree, and one wei of ounces per position plus one for the
+///      aggregate in the fee, each worth up to P over the scale in USD.
 ///
 ///      The withdrawal measure carries one more error on top, from D60 rule 2:
 ///      the bucket holding the price counts its whole size from that bucket's
 ///      low edge, so the measure can be up to the bucket width times that size
-///      above the reference.
+///      above exact. That error is zero when the bucket is empty or the price
+///      sits on its low edge.
 contract ClaimBookTest is Test {
     uint256 private constant WAD = 1e18;
     uint256 private constant WIDTH = 1e18;
@@ -79,6 +82,12 @@ contract ClaimBookTest is Test {
     uint256 private constant ROUND_PARTIAL = 2;
     uint256 private constant ROUND_FEE_OUNCES = 2;
     uint256 private constant ROUND_FEE_USD = 3;
+    /// @dev The wei of the notional's remainder that D now carries against a
+    ///      depositor (D60 rule 8).
+    uint256 private constant ROUND_NOTIONAL = 1;
+    /// @dev One unit of the 1e18 scale squared, which clears both divisions in
+    ///      the exact reference.
+    uint256 private constant SCALE = 1e36;
     uint256 private constant TIERS = 3;
 
     uint256 private constant MIN_SIZE = 0.001 ether;
@@ -181,7 +190,8 @@ contract ClaimBookTest is Test {
         assertEq(reservedAfterAdd, p.size, "the add did not reserve");
         assertEq(book.reserved(), NOTHING, "R survived the removal");
         assertEq(book.notionalDebt(), NOTHING, "D survived the removal");
-        assertEq(book.feeBasis(), NOTHING, "J survived the removal");
+        assertEq(book.feeBasisDown(), NOTHING, "the floored J survived the removal");
+        assertEq(book.feeBasisUp(), NOTHING, "the rounded up J survived the removal");
         assertEq(book.claimTotal(), NOTHING, "sumC survived the removal");
         (uint256 bucketSize, uint256 bucketNotional) = book.bucketTotals(ClaimBook.bucketOf(p.openPrice));
         assertEq(bucketSize, NOTHING, "the bucket kept a size");
@@ -315,25 +325,31 @@ contract ClaimBookTest is Test {
     ///      direction from the other. Every figure below is worked out by hand
     ///      from one position whose arithmetic has a remainder at each step:
     ///
-    ///        s = C_WIDE, P_open = P_WIDE, both one wei above one unit
+    ///        s and P_open are both one wei above one unit of scale
     ///        s * P_open = 1e36 + 2e18 + 1, so the notional floors to 1e18 + 2
-    ///        and the wei of remainder stays with the pool
-    ///        C is half of that notional, 5e17 + 1, so D is 5e17 + 1
+    ///        and ceilings to 1e18 + 3
+    ///        C is half the floored notional, 5e17 + 1
+    ///        D carries the rounded up notional less C, so D is 5e17 + 2
     ///
-    ///      At the entry price with no fee the deposit measure is therefore
-    ///      exactly C, and the withdrawal measure is C plus the two wei its
-    ///      partial bucket rounds up to. With the index one wei above zero the
-    ///      fee rounds up to two wei of ounces for the deposit measure, worth
-    ///      three wei of USD, and down to one and one for the withdrawal
-    ///      measure. Turning any of those four roundings around changes one of
-    ///      these four numbers.
+    ///      At the entry price with no fee the deposit measure is therefore one
+    ///      wei under C, which is the remainder of that division counting
+    ///      against a depositor, and the withdrawal measure is C plus the two
+    ///      wei its partial bucket rounds up to. With the index one wei above
+    ///      zero the fee rounds up to two wei of ounces for the deposit
+    ///      measure, worth three wei of USD, and down to one and one for the
+    ///      withdrawal measure. Turning any of those roundings around changes
+    ///      one of these numbers.
     function test_RoundingGoesAgainstTheUserOnBothMeasures() public {
         uint256 size = ROUND_WIDE;
         uint256 claim = ROUND_CLAIM;
         _add(Position({size: size, claim: claim, openPrice: ROUND_WIDE, openIndex: NOTHING}));
 
-        assertEq(book.notionalDebt(), claim, "the notional did not floor to twice the claim");
-        assertEq(book.depositClaimUsd(ROUND_WIDE, NOTHING), claim, "the deposit measure did not round down");
+        // The notional floors to twice the claim and ceilings one wei above
+        // that, and D carries the rounded up figure (D60 rule 8).
+        assertEq(book.notionalDebt(), claim + ROUND_NOTIONAL, "D did not carry the notional rounded up");
+        assertEq(
+            book.depositClaimUsd(ROUND_WIDE, NOTHING), claim - ROUND_NOTIONAL, "the deposit measure did not round down"
+        );
         assertEq(
             book.withdrawalClaimUsd(ROUND_WIDE, NOTHING),
             claim + ROUND_PARTIAL,
@@ -342,13 +358,45 @@ contract ClaimBookTest is Test {
 
         assertEq(book.accruedFeeOunces(ONE_WEI), ROUND_FEE_OUNCES, "the fee in ounces did not round up");
         assertEq(
-            book.depositClaimUsd(ROUND_WIDE, ONE_WEI), claim - ROUND_FEE_USD, "the deposit measure took the smaller fee"
+            book.depositClaimUsd(ROUND_WIDE, ONE_WEI),
+            claim - ROUND_NOTIONAL - ROUND_FEE_USD,
+            "the deposit measure took the smaller fee"
         );
         assertEq(
             book.withdrawalClaimUsd(ROUND_WIDE, ONE_WEI),
             claim + ROUND_PARTIAL - ONE_WEI,
             "the withdrawal measure took the larger fee"
         );
+    }
+
+    /// @dev D60 rule 8: right after an open at the current index the rounded up
+    ///      J can sit above the floored accrual by rounding alone, with no
+    ///      index below any opening index. The withdrawal measure floors that
+    ///      difference at zero, because a revert there would stop every
+    ///      withdrawal settlement until the index moved. The deposit side keeps
+    ///      its guard, since its own J cannot produce the same shortfall.
+    function test_WithdrawalSettlesRightAfterAnOpenAtTheCurrentIndex() public {
+        uint256 index = ONE_WEI;
+        _add(Position({size: ROUND_WIDE, claim: NOTHING, openPrice: ROUND_WIDE, openIndex: index}));
+
+        assertEq(book.feeBasisUp(), ROUND_FEE_OUNCES, "the rounded up J was not two wei of ounces");
+        assertLt(
+            (index * ROUND_WIDE) / WAD,
+            book.feeBasisUp(),
+            "the floored accrual was not under the rounded up basis, so this proves nothing"
+        );
+
+        assertEq(
+            book.withdrawalClaimUsd(ROUND_WIDE, index),
+            ROUND_PARTIAL,
+            "the withdrawal measure did not floor its fee at zero"
+        );
+
+        // The deposit side is the one that still refuses an index below an
+        // opening index, and this is that case rather than a rounding one.
+        vm.expectRevert(abi.encodeWithSelector(ClaimBook.IndexBelowOpen.selector, NOTHING, ONE_WEI));
+        // forge-lint: disable-next-line(unused-return)
+        book.depositClaimUsd(ROUND_WIDE, NOTHING);
     }
 
     function testFuzz_BothMeasuresMatchTheBruteForceSum(uint256 seed, uint8 count, uint256 priceSeed, uint256 indexSeed)
@@ -403,7 +451,10 @@ contract ClaimBookTest is Test {
     }
 
     /// @dev Every value cast here is a USD or ounce amount far under the signed
-    ///      range, and the bound is checked rather than assumed.
+    ///      range, and the bound is checked rather than assumed. The scaled
+    ///      reference multiplies three of them together, and the widest product
+    ///      a position can produce is about 1e60 against a signed ceiling near
+    ///      5.7e76.
     function _signed(uint256 value) private pure returns (int256) {
         // The signed maximum written as an unsigned bound, which loses nothing.
         // forge-lint: disable-next-line(unsafe-typecast)
@@ -428,53 +479,44 @@ contract ClaimBookTest is Test {
         positions.push(p);
     }
 
-    /// @dev The reference sums, computed over the positions this test holds.
-    function _reference(uint256 price, uint256 index)
-        private
-        view
-        returns (uint256 high, uint256 low, uint256 sizeInBucket)
-    {
-        int256 highSum = 0;
-        int256 lowSum = 0;
+    /// @dev The exact measures over the positions this test holds, scaled by
+    ///      SCALE so that no division rounds. Signed, because either sum can be
+    ///      negative before the floor at zero.
+    function _exact(uint256 price, uint256 index) private view returns (int256 high, int256 low, uint256 sizeInBucket) {
         uint256 bucket = ClaimBook.bucketOf(price);
 
         for (uint256 i = 0; i < positions.length; i++) {
             Position memory p = positions[i];
-            uint256 fee = _feeUsd(p.size, index - p.openIndex, price);
-            int256 equity = _signed(p.claim) + _signed((p.size * price) / WAD) - _signed((p.size * p.openPrice) / WAD)
-                - _signed(fee);
-            highSum += equity;
+            int256 claimTerm = _signed(p.claim) * _signed(SCALE);
+            int256 feeTerm = _signed(p.size) * _signed(index - p.openIndex) * _signed(price);
+            int256 move = _signed(p.size) * (_signed(price) - _signed(p.openPrice)) * _signed(WAD);
 
-            int256 withCollateral = _signed(p.claim) - _signed(fee);
-            lowSum += equity > withCollateral ? equity : withCollateral;
+            high += claimTerm + move - feeTerm;
+            low += claimTerm - feeTerm + (move > 0 ? move : int256(0));
 
             if (ClaimBook.bucketOf(p.openPrice) == bucket) {
                 sizeInBucket += p.size;
             }
         }
-
-        high = _unsigned(highSum);
-        low = _unsigned(lowSum);
     }
 
     function _assertMeasures(uint256 price, uint256 index) private view {
-        (uint256 high, uint256 low, uint256 sizeInBucket) = _reference(price, index);
+        (int256 high, int256 low, uint256 sizeInBucket) = _exact(price, index);
         uint256 count = positions.length;
-        uint256 up = MEASURE_SLACK + count;
-        uint256 down = MEASURE_SLACK + (2 * count + 2) * (price / WAD + 1);
-        uint256 bucketError = (sizeInBucket * WIDTH) / WAD;
+        int256 slack = _signed(2 + count + (count + 1) * (price / WAD + 1)) * _signed(SCALE);
+        int256 bucketError = _signed((sizeInBucket * WIDTH) / WAD) * _signed(SCALE);
 
         // Reached from the loop over entry prices in one of the fuzz tests,
         // over the same bounded set, and again the callee is the book itself.
         // forge-lint: disable-next-line(calls-loop)
-        uint256 deposit = book.depositClaimUsd(price, index);
+        int256 deposit = _signed(book.depositClaimUsd(price, index)) * _signed(SCALE);
         // forge-lint: disable-next-line(calls-loop)
-        uint256 withdrawal = book.withdrawalClaimUsd(price, index);
+        int256 withdrawal = _signed(book.withdrawalClaimUsd(price, index)) * _signed(SCALE);
 
-        assertLe(deposit, high + up, "the deposit measure rose above the reference");
-        assertGe(deposit + down, high, "the deposit measure fell under the reference");
-        assertGe(withdrawal + down, low, "the withdrawal measure fell under the reference");
-        assertLe(withdrawal, low + bucketError + up, "the withdrawal measure rose past the bucket error");
-        assertGe(withdrawal + down, deposit, "I6: the low side fell under the high side");
+        assertLe(deposit, high > 0 ? high : int256(0), "the deposit measure rose above its exact value");
+        assertGe(deposit + slack, high, "the deposit measure fell further under exact than the bound");
+        assertGe(withdrawal, low, "the withdrawal measure fell under its exact value");
+        assertLe(withdrawal, low + bucketError + slack, "the withdrawal measure rose past the bucket error");
+        assertGe(withdrawal + slack + bucketError, deposit, "I6: the low side fell under the high side");
     }
 }

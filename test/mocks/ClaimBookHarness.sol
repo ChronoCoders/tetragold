@@ -40,8 +40,12 @@ contract ClaimBookHarness {
         return _book.notionalDebt;
     }
 
-    function feeBasis() external view returns (uint256) {
-        return _book.feeBasis;
+    function feeBasisDown() external view returns (uint256) {
+        return _book.feeBasisDown;
+    }
+
+    function feeBasisUp() external view returns (uint256) {
+        return _book.feeBasisUp;
     }
 
     function claimTotal() external view returns (uint256) {

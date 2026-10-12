@@ -6,11 +6,16 @@ import {ClaimBook} from "../../src/libraries/ClaimBook.sol";
 import {ClaimBookHarness} from "../mocks/ClaimBookHarness.sol";
 
 /// @notice Drives the claim book and keeps a shadow list of the same positions.
-/// @dev Every step checks all four counters and both measures against the
+/// @dev Every step checks all five counters and both measures against the
 ///      shadow list before returning, so a defect is caught at the step that
 ///      caused it rather than at the end of a sequence. The checks raise
 ///      counters instead of reverting, because a revert inside a handler is
 ///      swallowed by the campaign.
+///
+///      The measures are compared against an exact reference, scaled so that
+///      nothing in the reference rounds, and the direction is asserted rather
+///      than a slack: the deposit measure never above exact, the withdrawal
+///      measure never below it (D29, D60 rule 4 and rule 8).
 ///
 ///      The fee index only ever rises, as a cumulative rate index must (D53),
 ///      and a position opens at whatever it is then.
@@ -22,8 +27,18 @@ contract ClaimBookHandler is Test {
     uint256 private constant MIN_PRICE = 100e18;
     uint256 private constant MAX_PRICE = 20_000e18;
     uint256 private constant MAX_INDEX_STEP = 0.001e18;
-    uint256 private constant MEASURE_SLACK = 4;
+    /// @dev One unit of the 1e18 scale squared, which clears both divisions in
+    ///      the exact reference.
+    uint256 private constant SCALE = 1e36;
     uint256 private constant TIERS = 3;
+
+    struct Counters {
+        uint256 size;
+        uint256 debt;
+        uint256 basisDown;
+        uint256 basisUp;
+        uint256 claims;
+    }
 
     struct Shadow {
         uint256 size;
@@ -129,73 +144,69 @@ contract ClaimBookHandler is Test {
     }
 
     function _check() private {
-        (uint256 size, uint256 debt, uint256 basis, uint256 claims) = _counters();
+        Counters memory want = _counters();
         if (
-            BOOK.reserved() != size || BOOK.notionalDebt() != debt || BOOK.feeBasis() != basis
-                || BOOK.claimTotal() != claims
+            BOOK.reserved() != want.size || BOOK.notionalDebt() != want.debt || BOOK.feeBasisDown() != want.basisDown
+                || BOOK.feeBasisUp() != want.basisUp || BOOK.claimTotal() != want.claims
         ) {
             counterMismatches += 1;
         }
 
-        (uint256 high, uint256 low, uint256 sizeInBucket) = _reference();
+        (int256 high, int256 low, uint256 sizeInBucket) = _exact();
         uint256 count = _open.length;
-        uint256 up = MEASURE_SLACK + count;
-        uint256 down = MEASURE_SLACK + (2 * count + 2) * (price / WAD + 1);
-        uint256 bucketError = (sizeInBucket * WIDTH) / WAD;
+        int256 slack = _signed(2 + count + (count + 1) * (price / WAD + 1)) * _signed(SCALE);
+        int256 bucketError = _signed((sizeInBucket * WIDTH) / WAD) * _signed(SCALE);
 
-        uint256 deposit = BOOK.depositClaimUsd(price, index);
-        uint256 withdrawal = BOOK.withdrawalClaimUsd(price, index);
+        int256 deposit = _signed(BOOK.depositClaimUsd(price, index)) * _signed(SCALE);
+        int256 withdrawal = _signed(BOOK.withdrawalClaimUsd(price, index)) * _signed(SCALE);
 
-        if (deposit > high + up || deposit + down < high) {
+        if (deposit > (high > 0 ? high : int256(0)) || deposit + slack < high) {
             depositMismatches += 1;
         }
-        if (withdrawal + down < low || withdrawal > low + bucketError + up) {
+        if (withdrawal < low || withdrawal > low + bucketError + slack) {
             withdrawalMismatches += 1;
         }
-        if (withdrawal + down < deposit) {
+        if (withdrawal + slack + bucketError < deposit) {
             sideInversions += 1;
         }
     }
 
-    function _counters() private view returns (uint256 size, uint256 debt, uint256 basis, uint256 claims) {
+    /// @dev D60 rule 8: the notional rounds up into D and the fee basis is kept
+    ///      both ways, so the shadow sums each of them the way the library does.
+    function _counters() private view returns (Counters memory want) {
         for (uint256 i = 0; i < _open.length; i++) {
             Shadow memory p = _open[i];
-            size += p.size;
-            debt += (p.size * p.openPrice) / WAD - p.claim;
-            basis += (p.size * p.openIndex) / WAD;
-            claims += p.claim;
+            want.size += p.size;
+            want.debt += _up(p.size, p.openPrice) - p.claim;
+            want.basisDown += (p.size * p.openIndex) / WAD;
+            want.basisUp += _up(p.size, p.openIndex);
+            want.claims += p.claim;
         }
     }
 
-    function _reference() private view returns (uint256 high, uint256 low, uint256 sizeInBucket) {
-        int256 highSum = 0;
-        int256 lowSum = 0;
+    function _up(uint256 a, uint256 b) private pure returns (uint256) {
+        return (a * b + WAD - 1) / WAD;
+    }
+
+    /// @dev The exact measures over the shadow list, scaled by SCALE so that no
+    ///      division rounds. Signed, because either sum can be negative before
+    ///      the floor at zero.
+    function _exact() private view returns (int256 high, int256 low, uint256 sizeInBucket) {
         uint256 bucket = ClaimBook.bucketOf(price);
 
         for (uint256 i = 0; i < _open.length; i++) {
             Shadow memory p = _open[i];
-            uint256 fee = _feeUsd(p.size, index - p.openIndex, price);
-            int256 equity = _signed(p.claim) + _signed((p.size * price) / WAD) - _signed((p.size * p.openPrice) / WAD)
-                - _signed(fee);
-            int256 withCollateral = _signed(p.claim) - _signed(fee);
+            int256 claimTerm = _signed(p.claim) * _signed(SCALE);
+            int256 feeTerm = _signed(p.size) * _signed(index - p.openIndex) * _signed(price);
+            int256 move = _signed(p.size) * (_signed(price) - _signed(p.openPrice)) * _signed(WAD);
 
-            highSum += equity;
-            lowSum += equity > withCollateral ? equity : withCollateral;
+            high += claimTerm + move - feeTerm;
+            low += claimTerm - feeTerm + (move > 0 ? move : int256(0));
 
             if (ClaimBook.bucketOf(p.openPrice) == bucket) {
                 sizeInBucket += p.size;
             }
         }
-
-        high = _unsigned(highSum);
-        low = _unsigned(lowSum);
-    }
-
-    /// @dev The holding fee of D53 in USD: ounces first, then USD, because the
-    ///      fee is a real quantity in ounces and rounds there.
-    function _feeUsd(uint256 size, uint256 indexGap, uint256 atPrice) private pure returns (uint256) {
-        // forge-lint: disable-next-line(divide-before-multiply)
-        return (((size * indexGap) / WAD) * atPrice) / WAD;
     }
 
     /// @dev Every value cast here is a USD or ounce amount far under the signed
@@ -207,12 +218,5 @@ contract ClaimBookHandler is Test {
         // The bound above is what the rule asks for, checked on the line before.
         // forge-lint: disable-next-line(unsafe-typecast)
         return int256(value);
-    }
-
-    /// @dev The aggregate floor at zero, which the library has as well.
-    function _unsigned(int256 value) private pure returns (uint256) {
-        // Negative never reaches the cast; it is turned into zero instead.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        return value > 0 ? uint256(value) : 0;
     }
 }

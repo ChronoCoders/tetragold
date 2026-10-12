@@ -33,14 +33,26 @@ pragma solidity 0.8.30;
  *      Units, all scaled by 1e18: s and R in ounces, P in USD per ounce, C, D
  *      and the two measures in USD, I and J in ounces per ounce of size.
  *
- *      Rounding (D29, D60 rule 4): the deposit measure rounds down as a whole
- *      and the withdrawal measure rounds up as a whole, so each added term
- *      rounds down and each subtracted term rounds up, or the other way about.
- *      J is stored as the sum of each position's floored contribution, which is
- *      what the deposit measure needs, because a smaller J makes the fee it
- *      subtracts larger. The withdrawal measure therefore carries a fee term up
- *      to one wei of USD per open position larger than exact, which lowers it
- *      by that much; the bucket error above dominates it.
+ *      Rounding (D29, D60 rule 4 and rule 8): the deposit measure rounds down
+ *      as a whole and the withdrawal measure rounds up as a whole, at every
+ *      price and not only at an entry price. Two counters are therefore kept in
+ *      both directions:
+ *
+ *      D carries each position's notional rounded up, so the remainder of that
+ *      division counts against a depositor rather than for one, while the tree
+ *      carries the same notional rounded down, so the realised loss term it
+ *      feeds the withdrawal measure is never overstated. The claim is checked
+ *      against the floored notional, which is the stricter of the two.
+ *
+ *      J is kept twice, floored for the deposit measure and ceilinged for the
+ *      withdrawal measure, because a smaller J makes the fee larger. The
+ *      deposit measure takes the larger fee and the withdrawal measure the
+ *      smaller one, so neither rounding moves a measure the user's way.
+ *
+ *      With both in place each measure is on the right side of its exact value
+ *      at any price, and the only error left on the withdrawal measure is the
+ *      bucket error above, which is zero when the bucket holding the price is
+ *      empty or the price sits on its low edge.
  *
  *      A measure is reported as zero when the sum is negative. For the deposit
  *      measure that is D48's floor; for the withdrawal measure it is reached
@@ -79,7 +91,8 @@ library ClaimBook {
     struct Book {
         uint256 reserved;
         uint256 notionalDebt;
-        uint256 feeBasis;
+        uint256 feeBasisDown;
+        uint256 feeBasisUp;
         uint256 claimTotal;
         mapping(uint256 node => uint256 packed) tree;
         mapping(uint256 bucketIndex => uint256 packed) bucketTotals;
@@ -103,7 +116,8 @@ library ClaimBook {
     ///         rule 5 forbid and which D would have to go negative to hold.
     error ClaimAboveNotional(uint256 claim, uint256 notional);
 
-    /// @notice The fee index given is below one a position opened at.
+    /// @notice The fee index given is below one a position opened at. Only the
+    ///         deposit side raises it: see `_withdrawalFeeOunces`.
     error IndexBelowOpen(uint256 accrued, uint256 feeBasis);
 
     /// @notice The tree's prefix sums disagree with each other.
@@ -115,43 +129,44 @@ library ClaimBook {
 
     /// @notice Record a position of `size` ounces with claim `claim`, opened at
     ///         `openPrice` with the fee index at `openIndex`.
-    /// @dev One caller today, the position manager's open path once it exists,
-    ///      which is what the rule about a single use reads as inlinable. It is
-    ///      the library's entry point and inlining it into that one call site
-    ///      would put the tree's arithmetic back in the contract D63 wants it
-    ///      out of.
+    /// @dev A library entry point, whose caller is in another file: the
+    ///      position manager's open path once it exists. The rule counts uses
+    ///      inside this file only, and inlining would not save a byte either,
+    ///      because an internal library function is already compiled into the
+    ///      calling contract (D63 as corrected in r6.11).
     /// @param size s_i, ounces.
     /// @param claim C_i, USD.
     /// @param openPrice P_open,i, USD per ounce.
     /// @param openIndex I_open,i, ounces per ounce of size.
     // forge-lint: disable-next-line(internal-function-used-once)
     function add(Book storage book, uint256 size, uint256 claim, uint256 openPrice, uint256 openIndex) internal {
-        uint256 notional = _position(size, claim, openPrice);
-        uint256 basis = _basis(size, openIndex);
+        (uint256 notionalDown, uint256 notionalUp) = _position(size, claim, openPrice);
 
         book.reserved += size;
-        book.notionalDebt += notional - claim;
-        book.feeBasis += basis;
+        book.notionalDebt += notionalUp - claim;
+        book.feeBasisDown += _mulDown(size, openIndex);
+        book.feeBasisUp += _mulUp(size, openIndex);
         book.claimTotal += claim;
 
-        _move(book, _bucketOf(openPrice), size, notional, true);
+        _move(book, _bucketOf(openPrice), size, notionalDown, true);
     }
 
     /// @notice Drop a position again. It must be called with the same four
     ///         values that recorded it, or a counter or a node underflows and
     ///         the call reverts rather than leaving the book wrong.
-    /// @dev The close and liquidation paths are the one caller, as for `add`.
+    /// @dev A library entry point as well, called by the close and liquidation
+    ///      paths in another file.
     // forge-lint: disable-next-line(internal-function-used-once)
     function remove(Book storage book, uint256 size, uint256 claim, uint256 openPrice, uint256 openIndex) internal {
-        uint256 notional = _position(size, claim, openPrice);
-        uint256 basis = _basis(size, openIndex);
+        (uint256 notionalDown, uint256 notionalUp) = _position(size, claim, openPrice);
 
         book.reserved = _take(book.reserved, size);
-        book.notionalDebt = _take(book.notionalDebt, notional - claim);
-        book.feeBasis = _take(book.feeBasis, basis);
+        book.notionalDebt = _take(book.notionalDebt, notionalUp - claim);
+        book.feeBasisDown = _take(book.feeBasisDown, _mulDown(size, openIndex));
+        book.feeBasisUp = _take(book.feeBasisUp, _mulUp(size, openIndex));
         book.claimTotal = _take(book.claimTotal, claim);
 
-        _move(book, _bucketOf(openPrice), size, notional, false);
+        _move(book, _bucketOf(openPrice), size, notionalDown, false);
     }
 
     /// @notice Add `extraClaim` USD of collateral to a position opened at
@@ -161,7 +176,8 @@ library ClaimBook {
     ///      taken and checked, because a price the tree could not hold means
     ///      the caller is not describing a position this book recorded.
     ///
-    ///      One caller, the D43 add collateral path, as for `add`.
+    ///      A library entry point as well, called by the D43 add collateral
+    ///      path in another file.
     // forge-lint: disable-next-line(internal-function-used-once)
     function addCollateral(Book storage book, uint256 openPrice, uint256 extraClaim) internal {
         if (openPrice >= RANGE_TOP) {
@@ -177,8 +193,9 @@ library ClaimBook {
 
     /// @notice The deposit measure of D48 at `price` with the fee index at
     ///         `index`: the plain sum of equity, rounded down, zero if negative.
-    /// @dev The pool asks for this through the position book interface, so it
-    ///      has one caller by design (D60 rule 7).
+    /// @dev A library entry point, answered through the position book interface
+    ///      the pool holds, so its caller is in another file by design
+    ///      (D60 rule 7).
     // forge-lint: disable-next-line(internal-function-used-once)
     function depositClaimUsd(Book storage book, uint256 price, uint256 index) internal view returns (uint256) {
         if (price == 0) {
@@ -186,7 +203,7 @@ library ClaimBook {
         }
 
         uint256 gross = _mulDown(price, book.reserved);
-        uint256 owed = book.notionalDebt + _mulUp(price, _feeOunces(book, index, true));
+        uint256 owed = book.notionalDebt + _mulUp(price, _depositFeeOunces(book, index));
 
         return gross > owed ? gross - owed : 0;
     }
@@ -194,7 +211,8 @@ library ClaimBook {
     /// @notice The withdrawal measure of D48 at `price` with the fee index at
     ///         `index`: claims less accrued fees plus realised trader losses,
     ///         rounded up, zero if negative.
-    /// @dev The other half of the position book interface, so one caller too.
+    /// @dev The other half of that interface, with its caller in another file
+    ///      for the same reason.
     // forge-lint: disable-next-line(internal-function-used-once)
     function withdrawalClaimUsd(Book storage book, uint256 price, uint256 index) internal view returns (uint256) {
         if (price == 0) {
@@ -208,18 +226,21 @@ library ClaimBook {
         }
 
         uint256 gain = gross - notionalBelow + _mulUp(price - lowEdge, sizeAt);
-        uint256 owed = _mulDown(price, _feeOunces(book, index, false));
+        uint256 owed = _mulDown(price, _withdrawalFeeOunces(book, index));
         uint256 total = book.claimTotal + gain;
 
         return total > owed ? total - owed : 0;
     }
 
-    /// @notice Accrued fees in ounces at `index`, rounded up, which is what the
-    ///         deposit measure subtracts.
-    /// @dev Read by the dashboard of D55 rather than by another function here.
+    /// @notice Accrued fees in ounces at `index` as the deposit measure counts
+    ///         them: the larger of the two figures, because its J is the
+    ///         floored one. The withdrawal measure subtracts a figure up to one
+    ///         wei of ounces per position smaller.
+    /// @dev A library entry point read for the D55 dashboard, so its caller is
+    ///      in another file.
     // forge-lint: disable-next-line(internal-function-used-once)
     function accruedFeeOunces(Book storage book, uint256 index) internal view returns (uint256) {
-        return _feeOunces(book, index, true);
+        return _depositFeeOunces(book, index);
     }
 
     /// @notice The bucket `openPrice` falls in, 1-indexed.
@@ -229,7 +250,7 @@ library ClaimBook {
 
     /// @notice Size and notional recorded in one bucket.
     /// @dev A D55 figure as well, and the only way to see one bucket from
-    ///      outside the library.
+    ///      outside this file, which is where its caller is.
     // forge-lint: disable-next-line(internal-function-used-once)
     function totalsInBucket(Book storage book, uint256 bucketIndex)
         internal
@@ -239,11 +260,17 @@ library ClaimBook {
         return _unpack(book.bucketTotals[bucketIndex]);
     }
 
-    /// @dev One position's notional and fee basis, both floored, and the two
-    ///      checks every caller has to pass: a size and a price the tree can
-    ///      hold, and a claim inside the notional (D46, D43 rule 5), which is
-    ///      what keeps D from going negative.
-    function _position(uint256 size, uint256 claim, uint256 openPrice) private pure returns (uint256 notional) {
+    /// @dev One position's notional both ways and the three checks every caller
+    ///      has to pass: a size and a price the tree can hold, and a claim
+    ///      inside the floored notional (D46, D43 rule 5), which is the
+    ///      stricter of the two bounds and what keeps D from going negative.
+    ///      The floored figure goes to the tree and the rounded up one to D
+    ///      (D60 rule 8).
+    function _position(uint256 size, uint256 claim, uint256 openPrice)
+        private
+        pure
+        returns (uint256 notionalDown, uint256 notionalUp)
+    {
         if (size == 0) {
             revert ZeroSize();
         }
@@ -254,17 +281,11 @@ library ClaimBook {
             revert EntryPriceOutOfRange(openPrice);
         }
 
-        notional = _mulDown(size, openPrice);
-        if (claim > notional) {
-            revert ClaimAboveNotional(claim, notional);
+        notionalDown = _mulDown(size, openPrice);
+        notionalUp = _mulUp(size, openPrice);
+        if (claim > notionalDown) {
+            revert ClaimAboveNotional(claim, notionalDown);
         }
-    }
-
-    /// @dev One position's share of J, floored. Add and remove fold it the same
-    ///      way, so a removal that passes the values it was added with takes
-    ///      back exactly what it put in.
-    function _basis(uint256 size, uint256 openIndex) private pure returns (uint256) {
-        return _mulDown(size, openIndex);
     }
 
     function _take(uint256 held, uint256 asked) private pure returns (uint256) {
@@ -274,16 +295,29 @@ library ClaimBook {
         return held - asked;
     }
 
-    /// @dev Accrued fees in ounces: I * R less J, the sum of each position's
-    ///      own I_open times its size. `up` picks the rounding of the one
-    ///      division, so the deposit measure can take the larger fee and the
-    ///      withdrawal measure the smaller one.
-    function _feeOunces(Book storage book, uint256 index, bool up) private view returns (uint256) {
-        uint256 accrued = up ? _mulUp(index, book.reserved) : _mulDown(index, book.reserved);
-        if (accrued < book.feeBasis) {
-            revert IndexBelowOpen(accrued, book.feeBasis);
+    /// @dev The fee the deposit measure subtracts: I * R rounded up against the
+    ///      floored J, which is the larger of the two figures. It cannot go
+    ///      negative, because the floored J is at most the exact sum and the
+    ///      rounded up accrual is at least it, so a shortfall means the caller
+    ///      passed an index below one a position opened at.
+    function _depositFeeOunces(Book storage book, uint256 index) private view returns (uint256) {
+        uint256 accrued = _mulUp(index, book.reserved);
+        if (accrued < book.feeBasisDown) {
+            revert IndexBelowOpen(accrued, book.feeBasisDown);
         }
-        return accrued - book.feeBasis;
+        return accrued - book.feeBasisDown;
+    }
+
+    /// @dev The fee the withdrawal measure subtracts: I * R rounded down against
+    ///      the rounded up J, which is the smaller of the two figures.
+    ///
+    ///      It floors at zero instead of reverting. Right after an open at the
+    ///      current index the rounded up J can exceed the floored accrual by
+    ///      rounding alone, with no index below any opening index, and a revert
+    ///      there would stop every withdrawal settlement until the index moved.
+    function _withdrawalFeeOunces(Book storage book, uint256 index) private view returns (uint256) {
+        uint256 accrued = _mulDown(index, book.reserved);
+        return accrued > book.feeBasisUp ? accrued - book.feeBasisUp : 0;
     }
 
     /// @dev The prefix sums over every bucket strictly below the one holding
