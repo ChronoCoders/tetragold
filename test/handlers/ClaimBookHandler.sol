@@ -193,14 +193,14 @@ contract ClaimBookHandler is Test {
 
     /// @dev The holding fee of D53 in USD: ounces first, then USD, because the
     ///      fee is a real quantity in ounces and rounds there.
-    function _feeUsd(uint256 size, uint256 indexGap, uint256 price) private pure returns (uint256) {
+    function _feeUsd(uint256 size, uint256 indexGap, uint256 atPrice) private pure returns (uint256) {
         // forge-lint: disable-next-line(divide-before-multiply)
-        return (((size * indexGap) / WAD) * price) / WAD;
+        return (((size * indexGap) / WAD) * atPrice) / WAD;
     }
 
     /// @dev Every value cast here is a USD or ounce amount far under the signed
     ///      range, and the bound is checked rather than assumed.
-    function _signed(uint256 value) private view returns (int256) {
+    function _signed(uint256 value) private pure returns (int256) {
         // The signed maximum written as an unsigned bound, which loses nothing.
         // forge-lint: disable-next-line(unsafe-typecast)
         assertLe(value, uint256(type(int256).max), "a shadow term left the signed range");
