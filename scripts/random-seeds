@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+export LC_ALL=C.UTF-8
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "random-seeds: not a git repo"; exit 1; }
+cd "$root"
+
+FORGE="${FORGE:-$HOME/.foundry/bin/forge}"
+N="${1:-50}"
+filter="${2:-}"
+
+case "$N" in
+    ''|*[!0-9]*) echo "random-seeds: run count must be a positive integer"; exit 1 ;;
+esac
+
+i=0
+while [ "$i" -lt "$N" ]; do
+    i=$((i + 1))
+    seed="0x$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+    rm -rf cache/invariant cache/test-failures
+
+    if [ -n "$filter" ]; then
+        out=$("$FORGE" test --match-contract "$filter" --fuzz-seed "$seed" 2>&1)
+    else
+        out=$("$FORGE" test --fuzz-seed "$seed" 2>&1)
+    fi
+    code=$?
+
+    if [ "$code" -ne 0 ]; then
+        echo "FAIL run $i of $N seed $seed"
+        printf '%s\n' "$out"
+        exit 1
+    fi
+    echo "PASS run $i of $N seed $seed"
+done
+
+echo "all $N runs passed with their own random seed"
