@@ -37,29 +37,29 @@ contract PushFallbackHandler is Test {
     }
 
     function poke(int256 answerSeed, uint256 ageSeed, uint256 jumpSeed) external {
-        vm.warp(block.timestamp + bound(jumpSeed, MIN_JUMP, MAX_JUMP));
+        // The instant this step moves to is computed once, before the clock
+        // moves, and everything below reads that local rather than the clock
+        // again. It is also the handler's own reference time for the ghosts, so
+        // a contract that trusted the wrong clock could not hide it from them.
+        // Read through the cheatcode rather than from the environment, because
+        // the clock moves on the next line and a plain read would be stale.
+        uint256 asOf = vm.getBlockTimestamp() + bound(jumpSeed, MIN_JUMP, MAX_JUMP);
+        vm.warp(asOf);
 
         int256 answer = bound(answerSeed, MIN_ANSWER, MAX_ANSWER);
         uint256 age = bound(ageSeed, 0, MAX_PLANTED_AGE);
         FEED.setLatestAnswer(answer);
-        FEED.setUpdatedAt(block.timestamp - age);
+        FEED.setUpdatedAt(asOf - age);
 
-        // The handler keeps its own reference time, read from the chain rather
-        // than from anything the call returns, so a contract that trusted the
-        // wrong clock could not hide it from the ghosts below.
-        // forge-lint: disable-next-line(block-timestamp)
-        uint256 asOf = block.timestamp;
         try FALLBACK.price() returns (uint256 price18, uint256 updatedAt) {
             successes++;
             assertGt(price18, 0, "a non positive price was returned");
             // Whether the round postdates the block is the thing being
-            // recorded, so the block's own time is the reference.
-            // forge-lint: disable-next-line(block-timestamp)
+            // recorded, and `asOf` is that block's time.
             if (updatedAt > asOf) {
                 successesFromAFutureRound++;
                 // The age the invariant checks is measured here rather than
                 // taken from the contract, which is the point of the ghost.
-                // forge-lint: disable-next-line(block-timestamp)
             } else if (asOf - updatedAt > maxObservedAge) {
                 maxObservedAge = asOf - updatedAt;
             }

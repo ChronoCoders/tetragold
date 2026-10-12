@@ -1,15 +1,30 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
+export LC_ALL=C.UTF-8
+
 root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "gate: not a git repo"; exit 1; }
 cd "$root"
-. scripts/lib/checks.sh
 
 FORGE="${FORGE:-$HOME/.foundry/bin/forge}"
 rc=0
 
 pass() { echo "PASS $1"; }
 fail() { echo "FAIL $1"; rc=1; }
+
+want=$(cat foundry-version)
+have=$("$FORGE" --version 2>&1 | grep -E '^(forge Version|Commit SHA):')
+if [ "$want" != "$have" ]; then
+    fail "toolchain"
+    echo "  pinned in foundry-version:"
+    printf '%s\n' "$want" | sed 's/^/    /'
+    echo "  reported by forge --version:"
+    printf '%s\n' "$have" | sed 's/^/    /'
+    exit $rc
+fi
+pass "toolchain"
+
+. scripts/lib/checks.sh
 
 if "$FORGE" fmt --check >/dev/null 2>&1; then pass "fmt"; else fail "fmt"; fi
 

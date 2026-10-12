@@ -127,7 +127,9 @@ contract TradingCalendarTest is Test {
 
         uint256 day = calendar.etDayOf(WEDNESDAY_MIDDAY);
         uint256 again = _schedule(LATE_SAME_EASTERN_DAY, true);
-        vm.warp(block.timestamp + DELAY);
+        // forge-lint: disable-next-line(unused-return)
+        (, uint256 againAt,,) = calendar.editAt(again);
+        vm.warp(againAt);
         vm.expectRevert(abi.encodeWithSelector(TradingCalendar.AlreadyListed.selector, day));
         calendar.executeHoliday(again);
 
@@ -136,7 +138,9 @@ contract TradingCalendarTest is Test {
         assertTrue(calendar.isOpen(WEDNESDAY_MIDDAY), "the day did not reopen");
 
         uint256 third = _schedule(WEDNESDAY_MIDDAY, false);
-        vm.warp(block.timestamp + DELAY);
+        // forge-lint: disable-next-line(unused-return)
+        (, uint256 thirdAt,,) = calendar.editAt(third);
+        vm.warp(thirdAt);
         vm.expectRevert(abi.encodeWithSelector(TradingCalendar.NotListed.selector, day));
         calendar.executeHoliday(third);
     }
@@ -161,7 +165,9 @@ contract TradingCalendarTest is Test {
     ///      caller of the execution chooses nothing and anyone may be it.
     function test_AnyoneExecutesAScheduledEdit() public {
         uint256 editId = _schedule(WEDNESDAY_MIDDAY, true);
-        vm.warp(block.timestamp + DELAY);
+        // forge-lint: disable-next-line(unused-return)
+        (, uint256 executableAt,,) = calendar.editAt(editId);
+        vm.warp(executableAt);
 
         vm.prank(stranger);
         calendar.executeHoliday(editId);
@@ -173,16 +179,17 @@ contract TradingCalendarTest is Test {
     ///      leaves, so neither a cancelled nor an executed edit can be applied.
     function test_AnEditLeavesPendingExactlyOnce() public {
         uint256 executed = _schedule(WEDNESDAY_MIDDAY, true);
-        vm.warp(block.timestamp + DELAY);
-        calendar.executeHoliday(executed);
+        _executeAfterTheWait(executed);
 
         vm.expectRevert(abi.encodeWithSelector(TradingCalendar.NoSuchEdit.selector, executed));
         calendar.executeHoliday(executed);
 
         uint256 cancelled = _schedule(NEXT_DAY, true);
+        // forge-lint: disable-next-line(unused-return)
+        (, uint256 cancelledAt,,) = calendar.editAt(cancelled);
         vm.prank(proposer);
         calendar.cancelHoliday(cancelled);
-        vm.warp(block.timestamp + DELAY);
+        vm.warp(cancelledAt);
 
         vm.expectRevert(abi.encodeWithSelector(TradingCalendar.NoSuchEdit.selector, cancelled));
         calendar.executeHoliday(cancelled);
@@ -215,15 +222,21 @@ contract TradingCalendarTest is Test {
         editId = calendar.scheduleHoliday(timestamp, add);
     }
 
+    /// @dev The clock moves to the instant the contract itself recorded, not to
+    ///      a second reading of the clock, so the wait under test is the one the
+    ///      edit carries.
     function _listHoliday(uint256 timestamp) private {
-        uint256 editId = _schedule(timestamp, true);
-        vm.warp(block.timestamp + DELAY);
-        calendar.executeHoliday(editId);
+        _executeAfterTheWait(_schedule(timestamp, true));
     }
 
     function _unlistHoliday(uint256 timestamp) private {
-        uint256 editId = _schedule(timestamp, false);
-        vm.warp(block.timestamp + DELAY);
+        _executeAfterTheWait(_schedule(timestamp, false));
+    }
+
+    function _executeAfterTheWait(uint256 editId) private {
+        // forge-lint: disable-next-line(unused-return)
+        (, uint256 executableAt,,) = calendar.editAt(editId);
+        vm.warp(executableAt);
         calendar.executeHoliday(editId);
     }
 

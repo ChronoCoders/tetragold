@@ -89,6 +89,8 @@ contract PushFallbackPriceTest is Test {
 
     function test_HolidayIsRefusedEvenWithAFreshRound() public {
         _listHoliday(OPEN_INSTANT);
+        vm.warp(OPEN_INSTANT);
+        feed.setLatestAnswer(ANSWER);
 
         vm.expectRevert(abi.encodeWithSelector(PushFallbackPrice.MarketClosed.selector, uint256(OPEN_INSTANT)));
         // This call reverts by design, so no value comes back.
@@ -96,17 +98,18 @@ contract PushFallbackPriceTest is Test {
         fallbackPrice.price();
     }
 
-    /// @dev A holiday edit waits 48 hours now (D68), so the test schedules it,
-    ///      waits and executes it, then puts the clock back where it was: the
-    ///      fallback reads the round's own age and the test is about that age,
-    ///      not about the wait.
+    /// @dev A holiday edit waits 48 hours now (D68), so this schedules it and
+    ///      executes it at the instant the contract recorded. The clock is left
+    ///      where that leaves it; the caller warps back to the instant it cares
+    ///      about, which is a constant, because this test is about a round's own
+    ///      age and not about the wait.
     function _listHoliday(uint256 timestamp) private {
-        uint256 at = block.timestamp;
         vm.prank(proposer);
         uint256 editId = calendar.scheduleHoliday(timestamp, true);
-        vm.warp(at + calendar.DELAY());
+        // forge-lint: disable-next-line(unused-return)
+        (, uint256 executableAt,,) = calendar.editAt(editId);
+        vm.warp(executableAt);
         calendar.executeHoliday(editId);
-        vm.warp(at);
     }
 
     function test_IncompleteRoundIsRefused() public {

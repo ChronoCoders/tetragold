@@ -455,12 +455,17 @@ contract CounterpartyPoolTest is Test {
 
     /// @dev Section 7 rule 2: a request cannot settle before its target slot.
     function test_SettlementWaitsForTheTargetSlot() public {
-        uint256 requestedAt = block.timestamp;
-        uint256 id = _requestDeposit(alice, TEN);
+        // The one slot rule is asserted before anything moves the clock, so no
+        // reading of it has to survive a warp.
+        uint256 expected = vm.getBlockTimestamp() + DELAY;
+        vm.prank(alice);
+        assertTrue(gold.approve(address(pool), TEN));
+        uint256 id = book.requestDeposit(alice, TEN);
+
         // Only the target time is under test here.
         // forge-lint: disable-next-line(unused-return)
         (,, uint256 targetTime,,) = pool.requestAt(id);
-        assertEq(targetTime, requestedAt + DELAY, "the target is not one slot out");
+        assertEq(targetTime, expected, "the target is not one slot out");
 
         vm.warp(targetTime - 1);
         vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.TooEarly.selector, targetTime));
@@ -577,13 +582,22 @@ contract CounterpartyPoolTest is Test {
         vm.prank(lp);
         assertTrue(gold.approve(address(pool), amount));
         id = book.requestDeposit(lp, amount);
-        vm.warp(block.timestamp + DELAY);
+        _warpToTheTarget(id);
     }
 
     function _requestWithdrawal(address lp, uint256 amount) private returns (uint256 id) {
         vm.prank(lp);
         assertTrue(shares.approve(address(pool), amount));
         id = book.requestWithdrawal(lp, amount);
-        vm.warp(block.timestamp + DELAY);
+        _warpToTheTarget(id);
+    }
+
+    /// @dev To the target the request itself recorded, rather than to a second
+    ///      reading of the clock, so the slot the test settles at is the one the
+    ///      pool is waiting for.
+    function _warpToTheTarget(uint256 id) private {
+        // forge-lint: disable-next-line(unused-return)
+        (,, uint256 targetTime,,) = pool.requestAt(id);
+        vm.warp(targetTime);
     }
 }
