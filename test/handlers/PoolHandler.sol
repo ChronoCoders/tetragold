@@ -275,6 +275,7 @@ contract PoolHandler is Test {
         creditedTotal += BOOK.syncCredit();
         BOOK.reserve(size);
         opens += 1;
+        _clampClaimsToReserve();
     }
 
     /// @dev A close in the order the pool cannot enforce for itself: the
@@ -298,6 +299,7 @@ contract PoolHandler is Test {
         } catch {
             payOutFailures += 1;
         }
+        _clampClaimsToReserve();
     }
 
     /// @dev D70: a deposit this price would mint nothing for is rejected and
@@ -446,6 +448,26 @@ contract PoolHandler is Test {
         uint256 ceiling = (POOL.reserved() * price) / WAD;
         uint256 depositClaim = bound(depositSeed, 0, ceiling);
         uint256 withdrawalClaim = bound(extraSeed, depositClaim, ceiling);
+        BOOK.setClaims(depositClaim, withdrawalClaim);
+    }
+
+    /// @dev After a reserve change, cap the stand in claims at what the live
+    ///      reserve allows, so the book can never report a claim above its
+    ///      reserve and I15b stays a statement about the pool rather than a
+    ///      stale snapshot from the last price move (D46).
+    function _clampClaimsToReserve() private {
+        uint256 ceiling = (POOL.reserved() * price) / WAD;
+        uint256 depositClaim = BOOK.depositClaimUsd(price);
+        uint256 withdrawalClaim = BOOK.withdrawalClaimUsd(price);
+        if (depositClaim > ceiling) {
+            depositClaim = ceiling;
+        }
+        if (withdrawalClaim > ceiling) {
+            withdrawalClaim = ceiling;
+        }
+        if (withdrawalClaim < depositClaim) {
+            withdrawalClaim = depositClaim;
+        }
         BOOK.setClaims(depositClaim, withdrawalClaim);
     }
 
