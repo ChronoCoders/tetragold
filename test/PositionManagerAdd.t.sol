@@ -161,7 +161,14 @@ contract PositionManagerAddTest is Test {
 
     /// @dev D43: the owner of an open position is the only one who may add to
     ///      it, so a stranger and an unknown identifier are refused apart.
+    ///      The stranger holds gold and has approved it, so the owner rule is
+    ///      the only thing left to refuse the second call. Without that an
+    ///      empty balance would refuse it just as well and the rule could be
+    ///      missing.
     function test_AnAddRequestRefusesWhatIsNotTheOwnersOpenPosition() public {
+        _mint(lp, ADD);
+        assertEq(gold.balanceOf(lp), ADD, "the stranger holds no gold, so the refusal proves nothing");
+
         vm.prank(lp);
         assertTrue(gold.approve(address(manager), SEED));
 
