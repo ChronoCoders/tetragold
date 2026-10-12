@@ -127,6 +127,31 @@ contract ProtocolHandler is Test {
         return _open.length;
     }
 
+    /// @notice The D46 payout the pool must be able to make for every open
+    ///         position at the price in use, summed in ounces. For each the
+    ///         payout is max(0, C + s * (P - P_open) - fee) / P, with the
+    ///         holding fee s * (I_now - I_open) priced at P. This is the
+    ///         deposit side of D48, never the withdrawal side, which keeps
+    ///         C minus fee for a loser and can sit above pool ounces.
+    function i15bPayoutOunces() external view returns (uint256 total) {
+        uint256 idxNow = MANAGER.indexNow();
+        uint256 p = price;
+        uint256 count = _open.length;
+        for (uint256 i = 0; i < count; i++) {
+            (, uint256 size, uint256 claim, uint256 openPrice, uint256 openIndex, bool isOpen) =
+                MANAGER.positionAt(_open[i]);
+            if (!isOpen) {
+                continue;
+            }
+            uint256 assets = claim + (size * p) / WAD;
+            uint256 feeUsd = (((size * (idxNow - openIndex)) / WAD) * p) / WAD;
+            uint256 liabilities = (size * openPrice) / WAD + feeUsd;
+            if (assets > liabilities) {
+                total += ((assets - liabilities) * WAD) / p;
+            }
+        }
+    }
+
     function pendingCount() external view returns (uint256) {
         return _pending.length;
     }

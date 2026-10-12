@@ -160,6 +160,15 @@ contract ProtocolInvariantTest is Test {
         assertGe(pool.ounces(), pool.reserved(), "I15a: and they do right now");
     }
 
+    /// @notice I15b as D46 states it: pool ounces cover the payout every open
+    ///         position would take at the price in use. I15a's reserve bound
+    ///         implies this only while D46 holds, so an add that pushed a
+    ///         position's collateral above its open notional is caught here
+    ///         where the reserve bound would not see it.
+    function invariant_I15b_PoolCoversEveryPayout() public view {
+        assertGe(pool.ounces(), handler.i15bPayoutOunces(), "I15b: pool ounces fell under the payouts it must make");
+    }
+
     /// @notice I7: R stays inside u_max of pool ounces.
     function invariant_I7_ReservedStaysInsideUMax() public view {
         assertLe(pool.reserved() * 10_000, pool.ounces() * U_MAX_BPS, "I7: R rose above u_max of pool ounces");
