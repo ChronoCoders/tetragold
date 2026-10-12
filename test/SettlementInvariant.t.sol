@@ -3,7 +3,6 @@ pragma solidity 0.8.30;
 
 import {Test} from "forge-std/Test.sol";
 import {SettlementOracle} from "../src/oracle/SettlementOracle.sol";
-import {TradingCalendar} from "../src/oracle/TradingCalendar.sol";
 import {SettlementHandler} from "./handlers/SettlementHandler.sol";
 import {MockPyth} from "./mocks/MockPyth.sol";
 import {MockVerifierProxy} from "./mocks/MockVerifierProxy.sol";
@@ -36,18 +35,16 @@ contract SettlementInvariantTest is Test {
     uint64 private constant PUBLISH_AT_TARGET = 30;
 
     SettlementOracle public oracle;
-    TradingCalendar public calendar;
     MockVerifierProxy public verifier;
     MockPyth public pyth;
     SettlementHandler public handler;
 
     function setUp() public {
-        calendar = new TradingCalendar(makeAddr("timelock"));
         verifier = new MockVerifierProxy();
         pyth = new MockPyth();
         pyth.setFee(PYTH_FEE);
         oracle = new SettlementOracle(
-            address(verifier), address(pyth), address(calendar), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY
+            address(verifier), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY
         );
 
         vm.warp(START);
@@ -60,9 +57,10 @@ contract SettlementInvariantTest is Test {
         targetContract(address(handler));
     }
 
-    function invariant_I10_NoSettlementWhileEitherSourceSaysClosed() public view {
+    /// @dev I10 and D61: the report's own market flag is the whole test in
+    ///      settlement, so this is the only closed state a campaign can see.
+    function invariant_I10_NoSettlementWhileTheReportSaysClosed() public view {
         assertEq(handler.successesWithReportClosed(), 0, "I10: a price settled while the report said closed");
-        assertEq(handler.successesWithCalendarClosed(), 0, "I10: a price settled while the calendar said closed");
     }
 
     function invariant_I12_EverySettlementUsedTheReportForTheTarget() public view {

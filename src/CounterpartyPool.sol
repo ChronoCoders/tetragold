@@ -542,6 +542,9 @@ contract CounterpartyPool {
             revert TooEarly(request.targetTime);
         }
         uint256 expiresAt = request.targetTime + REQUEST_EXPIRY;
+        // The deadline is slot time as well, for the same reason as the target
+        // above (consensus-specs specs/bellatrix/beacon-chain.md:446 at
+        // 9a8fdd0).
         // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp >= expiresAt) {
             revert TooLate(expiresAt);

@@ -5,7 +5,6 @@ import {Test} from "forge-std/Test.sol";
 import {IPyth} from "../src/oracle/interfaces/IPyth.sol";
 import {ReportV8} from "../src/oracle/ReportV8.sol";
 import {SettlementOracle} from "../src/oracle/SettlementOracle.sol";
-import {TradingCalendar} from "../src/oracle/TradingCalendar.sol";
 import {MockPyth} from "./mocks/MockPyth.sol";
 import {MockVerifierProxy} from "./mocks/MockVerifierProxy.sol";
 
@@ -44,17 +43,15 @@ contract SettlementOracleTest is Test {
     bytes32 private constant OTHER_ID = bytes32(uint256(0xdead));
 
     SettlementOracle public oracle;
-    TradingCalendar public calendar;
     MockVerifierProxy public verifier;
     MockPyth public pyth;
 
     function setUp() public {
-        calendar = new TradingCalendar(makeAddr("timelock"));
         verifier = new MockVerifierProxy();
         pyth = new MockPyth();
         pyth.setFee(PYTH_FEE);
         oracle = new SettlementOracle(
-            address(verifier), address(pyth), address(calendar), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY
+            address(verifier), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY
         );
         vm.warp(TARGET);
         vm.deal(address(this), 1 ether);
@@ -165,13 +162,31 @@ contract SettlementOracleTest is Test {
         _settle(unknown, _pythUpdate(PYTH_PRICE, TARGET));
     }
 
-    /// @dev The Pyth side of rule 3 is our own calendar (r5.3), so a target on
-    ///      a Saturday is refused even when the report claims the market open.
-    function test_RefusesWhenTheCalendarSaysTheMarketIsClosed() public {
+    /// @dev D61: settlement reads no calendar, so a target on a Saturday is
+    ///      refused by the report that covers it and by nothing else. The Pyth
+    ///      side needs no market flag of its own, which is what this shows: an
+    ///      update published at the target, and one published after it, both
+    ///      stop at the report's market test.
+    function test_RefusesAClosedMarketOnTheReportAloneWhateverPythSays() public {
+        ReportV8 memory report = _reportAt(SATURDAY);
+        report.marketStatus = CLOSED;
+
+        vm.expectRevert(abi.encodeWithSelector(SettlementOracle.MarketClosedByReport.selector, CLOSED));
+        _settleAt(SATURDAY, report, _pythUpdate(PYTH_PRICE, SATURDAY));
+
+        vm.expectRevert(abi.encodeWithSelector(SettlementOracle.MarketClosedByReport.selector, CLOSED));
+        _settleAt(SATURDAY, report, _pythUpdate(PYTH_PRICE, SATURDAY + PYTH_DELAY));
+    }
+
+    /// @dev The other half of D61: a Saturday target settles when the report
+    ///      says the market was open for it, because no holiday list is
+    ///      consulted and no key can stop a close.
+    function test_SettlesWhenOnlyTheReportSaysOpen() public {
         ReportV8 memory report = _reportAt(SATURDAY);
 
-        vm.expectRevert(abi.encodeWithSelector(SettlementOracle.MarketClosedByCalendar.selector, SATURDAY));
-        _settleAt(SATURDAY, report, _pythUpdate(PYTH_PRICE, SATURDAY));
+        (uint256 price18,) = _settleAt(SATURDAY, report, _pythUpdate(PYTH_PRICE, SATURDAY));
+
+        assertEq(price18, PRICE_18, "a report that said open did not settle");
     }
 
     function test_RefusesANonPositiveStreamPrice() public {
@@ -234,9 +249,8 @@ contract SettlementOracleTest is Test {
     }
 
     function test_ScalesAnEightDecimalStream() public {
-        SettlementOracle eight = new SettlementOracle(
-            address(verifier), address(pyth), address(calendar), FEED_ID, PYTH_ID, 8, BAND_BPS, PYTH_DELAY
-        );
+        SettlementOracle eight =
+            new SettlementOracle(address(verifier), address(pyth), FEED_ID, PYTH_ID, 8, BAND_BPS, PYTH_DELAY);
 
         ReportV8 memory report = _report();
         report.midPrice = 4100e8;
@@ -257,31 +271,18 @@ contract SettlementOracleTest is Test {
 
     function test_ConstructorRejectsBadArguments() public {
         vm.expectRevert(SettlementOracle.ZeroAddress.selector);
-        new SettlementOracle(
-            address(0), address(pyth), address(calendar), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY
-        );
+        new SettlementOracle(address(0), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY);
 
         vm.expectRevert(SettlementOracle.ZeroId.selector);
         new SettlementOracle(
-            address(verifier),
-            address(pyth),
-            address(calendar),
-            bytes32(0),
-            PYTH_ID,
-            STREAM_DECIMALS,
-            BAND_BPS,
-            PYTH_DELAY
+            address(verifier), address(pyth), bytes32(0), PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY
         );
 
         vm.expectRevert(abi.encodeWithSelector(SettlementOracle.BandTooWide.selector, BPS));
-        new SettlementOracle(
-            address(verifier), address(pyth), address(calendar), FEED_ID, PYTH_ID, STREAM_DECIMALS, BPS, PYTH_DELAY
-        );
+        new SettlementOracle(address(verifier), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BPS, PYTH_DELAY);
 
         vm.expectRevert(SettlementOracle.ZeroPythDelay.selector);
-        new SettlementOracle(
-            address(verifier), address(pyth), address(calendar), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, 0
-        );
+        new SettlementOracle(address(verifier), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, 0);
     }
 
     function _report() private pure returns (ReportV8 memory) {

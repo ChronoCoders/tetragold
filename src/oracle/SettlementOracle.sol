@@ -6,7 +6,6 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IPyth} from "./interfaces/IPyth.sol";
 import {IVerifierProxy} from "./interfaces/IVerifierProxy.sol";
 import {ReportV8} from "./ReportV8.sol";
-import {TradingCalendar} from "./TradingCalendar.sol";
 
 /**
  * @title SettlementOracle
@@ -16,12 +15,19 @@ import {TradingCalendar} from "./TradingCalendar.sol";
  *      and `parsePriceFeedUpdatesUnique` takes the first update at or after
  *      `minPublishTime`, so neither side leaves the caller a choice of price.
  *
- *      Rule 3: both sources must show the market open and agree inside the
- *      deviation band. The Data Streams side carries `marketStatus`. The Pyth
- *      side has no on chain market flag, so the trading calendar is the test
- *      for it (r5.3), which is why this contract holds the calendar as well.
- *      The band is measured against the Data Streams price, and the Data
- *      Streams price is what settles, because D10 makes it primary.
+ *      Rule 3: the market test is the report's `marketStatus` alone, and the
+ *      two prices must agree inside the deviation band. The band is measured
+ *      against the Data Streams price, and that price is what settles, because
+ *      D10 makes it primary.
+ *
+ *      This contract does not read the trading calendar (D61). The holiday list
+ *      is edited through the timelock, so a settlement that read it would give
+ *      that key the power to stop a close or a liquidation, which D58 denies to
+ *      every key. The calendar now gates the D22 push fallback alone, where a
+ *      bad edit can at most disable the fallback. The Pyth side needs no market
+ *      flag of its own: an update published at or after T cannot settle while
+ *      the market was closed at T, because the report for T fails its own
+ *      market test first.
  *
  *      Rule 7: the report's own `expiresAt` is checked here, because the
  *      verifier checks expiry only inside a fee manager it may not have.
@@ -53,7 +59,6 @@ contract SettlementOracle is ReentrancyGuard {
 
     IVerifierProxy public immutable VERIFIER;
     IPyth public immutable PYTH;
-    TradingCalendar public immutable CALENDAR;
 
     /// @notice The Data Streams stream id this settles, whose first two bytes
     ///         are the report version (v8 for an RWA stream).
@@ -84,7 +89,6 @@ contract SettlementOracle is ReentrancyGuard {
     error ReportExpired(uint32 expiresAt, uint256 at);
     error ReportNotForTarget(uint32 validFrom, uint32 observations, uint64 targetTime);
     error MarketClosedByReport(uint32 marketStatus);
-    error MarketClosedByCalendar(uint64 targetTime);
     error NonPositivePrice(int256 price);
     error UnsupportedExponent(int32 expo);
     error WrongPythFeed(bytes32 reported, bytes32 expected);
@@ -96,14 +100,13 @@ contract SettlementOracle is ReentrancyGuard {
     constructor(
         address verifier,
         address pyth,
-        address calendar,
         bytes32 feedId,
         bytes32 pythPriceId,
         uint8 streamDecimals,
         uint256 deviationBandBps,
         uint64 maxPythPublishDelay
     ) {
-        if (verifier == address(0) || pyth == address(0) || calendar == address(0)) {
+        if (verifier == address(0) || pyth == address(0)) {
             revert ZeroAddress();
         }
         if (feedId == bytes32(0) || pythPriceId == bytes32(0)) {
@@ -123,7 +126,6 @@ contract SettlementOracle is ReentrancyGuard {
 
         VERIFIER = IVerifierProxy(verifier);
         PYTH = IPyth(pyth);
-        CALENDAR = TradingCalendar(calendar);
         FEED_ID = feedId;
         PYTH_PRICE_ID = pythPriceId;
         DEVIATION_BAND_BPS = deviationBandBps;
@@ -165,11 +167,9 @@ contract SettlementOracle is ReentrancyGuard {
         if (targetTime < report.validFromTimestamp || targetTime > report.observationsTimestamp) {
             revert ReportNotForTarget(report.validFromTimestamp, report.observationsTimestamp, targetTime);
         }
+        // Rule 3, and the whole of the market test (D61).
         if (report.marketStatus != MARKET_OPEN) {
             revert MarketClosedByReport(report.marketStatus);
-        }
-        if (!CALENDAR.isOpen(targetTime)) {
-            revert MarketClosedByCalendar(targetTime);
         }
         if (report.midPrice <= 0) {
             revert NonPositivePrice(report.midPrice);

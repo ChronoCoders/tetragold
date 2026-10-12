@@ -5,7 +5,6 @@ import {Test} from "forge-std/Test.sol";
 import {IPyth} from "../../src/oracle/interfaces/IPyth.sol";
 import {ReportV8} from "../../src/oracle/ReportV8.sol";
 import {SettlementOracle} from "../../src/oracle/SettlementOracle.sol";
-import {TradingCalendar} from "../../src/oracle/TradingCalendar.sol";
 
 /// @notice Puts reports and updates of every shape in front of the settlement
 ///         oracle: market status open, closed and unknown, report windows that
@@ -38,7 +37,6 @@ contract SettlementHandler is Test {
     uint32 private constant AFTER_MIXER = 7;
 
     SettlementOracle public immutable ORACLE;
-    TradingCalendar public immutable CALENDAR;
     bytes32 public immutable FEED_ID;
     bytes32 public immutable PYTH_ID;
     uint256 public immutable FEE;
@@ -48,7 +46,6 @@ contract SettlementHandler is Test {
     uint256 public attempts;
     uint256 public successes;
     uint256 public successesWithReportClosed;
-    uint256 public successesWithCalendarClosed;
     uint256 public successesOutsideReportWindow;
     uint256 public successesWithPythBeforeTarget;
     uint256 public successesWithPythPastDelay;
@@ -56,7 +53,6 @@ contract SettlementHandler is Test {
 
     constructor(SettlementOracle oracle, uint32 start, uint256 fee) {
         ORACLE = oracle;
-        CALENDAR = oracle.CALENDAR();
         FEED_ID = oracle.FEED_ID();
         PYTH_ID = oracle.PYTH_PRICE_ID();
         FEE = fee;
@@ -128,9 +124,6 @@ contract SettlementHandler is Test {
 
             if (status != MARKET_OPEN) {
                 successesWithReportClosed++;
-            }
-            if (!CALENDAR.isOpen(target)) {
-                successesWithCalendarClosed++;
             }
             if (target < report.validFromTimestamp || target > report.observationsTimestamp) {
                 successesOutsideReportWindow++;
