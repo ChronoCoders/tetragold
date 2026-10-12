@@ -412,6 +412,41 @@ contract PositionManagerAddTest is Test {
         assertEq(manager.liquidatableAt(positionId, price18), equity < threshold, "the two forms disagree");
     }
 
+    /// @dev 5.4 rule 1 is strict: equity exactly at the maintenance margin of
+    ///      the notional is not liquidatable, and one wei under it is. The
+    ///      position is written straight into the manager because no open
+    ///      settles onto that edge by itself.
+    function test_TheLiquidationThresholdIsStrictAtTheEdge() public {
+        Edge memory edge = _edge();
+        assertTrue(edge.feeOunces * WAD > edge.size * edge.indexDelta, "the fee is whole, so the edge is not one");
+
+        uint256 at = manager.pokePosition(trader, edge.size, edge.claimAtThreshold, PRICE_18, edge.openIndex);
+        uint256 under = manager.pokePosition(trader, edge.size, edge.claimAtThreshold - 1, PRICE_18, edge.openIndex);
+
+        assertFalse(manager.liquidatableAt(at, PRICE_18), "equity exactly at the margin was called liquidatable");
+        assertTrue(manager.liquidatableAt(under, PRICE_18), "equity one wei under the margin was not");
+    }
+
+    /// @dev D29 on the holding fee: a fractional fee is charged as the next
+    ///      whole wei of ounces, which is against the owner. Floored instead,
+    ///      the position below would come out healthy.
+    function test_TheLiquidationCheckRoundsTheHoldingFeeUp() public {
+        Edge memory edge = _edge();
+        uint256 flooredFee = (edge.size * edge.indexDelta) / WAD;
+        uint256 feeUsdUp = _ceilDiv(edge.feeOunces * PRICE_18, WAD);
+        uint256 feeUsdDown = _ceilDiv(flooredFee * PRICE_18, WAD);
+
+        assertGt(edge.feeOunces, flooredFee, "the fee is whole, so the direction cannot be read");
+        // One wei under the edge only tells the two apart if the floored fee
+        // costs at least two wei less than the fee at the ceiling.
+        assertGt(feeUsdUp, feeUsdDown + 1, "the two roundings are too close to read a direction from");
+
+        uint256 positionId =
+            manager.pokePosition(trader, edge.size, edge.claimAtThreshold - 1, PRICE_18, edge.openIndex);
+
+        assertTrue(manager.liquidatableAt(positionId, PRICE_18), "the holding fee was not charged at the ceiling");
+    }
+
     /// @dev Section 7 rule 4: an add that nobody settles inside its window
     ///      gives the gold and the fee back, like any other request (I17).
     function test_AnExpiredAddReturnsTheGoldAndTheFee() public {
@@ -478,6 +513,31 @@ contract PositionManagerAddTest is Test {
         uint256 poolOunces;
         uint256 reserved;
         uint256 deposit;
+    }
+
+    /// @dev A position sitting exactly on its liquidation level at PRICE_18,
+    ///      with a fee that is not a whole wei of ounces so the rounding
+    ///      direction is readable. Built from 5.4 rule 1 directly: equity is
+    ///      C plus the notional now, less the notional at open and the fee
+    ///      owed, and the level is the maintenance margin of the notional.
+    struct Edge {
+        uint256 size;
+        uint256 openIndex;
+        uint256 indexDelta;
+        uint256 feeOunces;
+        uint256 claimAtThreshold;
+    }
+
+    function _edge() private view returns (Edge memory edge) {
+        edge.size = 3.5 ether;
+        edge.indexDelta = 1;
+        edge.openIndex = manager.indexNow() - edge.indexDelta;
+        edge.feeOunces = _ceilDiv(edge.size * edge.indexDelta, WAD);
+
+        uint256 notional = (edge.size * PRICE_18) / WAD;
+        uint256 threshold = _ceilDiv(notional * MAINTENANCE_MARGIN_BPS, BPS);
+        uint256 owed = _ceilDiv(edge.size * PRICE_18, WAD) + _ceilDiv(edge.feeOunces * PRICE_18, WAD) + threshold;
+        edge.claimAtThreshold = owed - notional;
     }
 
     function _snapshot() private view returns (Snapshot memory shot) {

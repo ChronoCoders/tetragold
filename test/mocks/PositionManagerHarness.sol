@@ -68,6 +68,29 @@ contract PositionManagerHarness is PositionManager {
         position.flagged = flagged;
     }
 
+    /// @notice Write a position straight into the manager, so a test can put
+    ///         one exactly on a rule's edge.
+    /// @dev The open path cannot reach every state: s, C and the fee index all
+    ///      come out of one settled price together. This writes no claim book
+    ///      entry, so it is for reading the position rules and nothing else.
+    function pokePosition(address owner, uint256 size, uint256 claim, uint256 openPrice, uint256 openIndex)
+        external
+        returns (uint256 positionId)
+    {
+        positionId = nextPositionId;
+        nextPositionId = positionId + 1;
+        _positions[positionId] = Position({
+            owner: owner,
+            size: size,
+            claim: claim,
+            openPrice: openPrice,
+            openIndex: openIndex,
+            open: true,
+            exitPending: false,
+            flagged: false
+        });
+    }
+
     /// @notice Take a position off the books the way a close will, so a
     ///         settlement against a position that is gone can be tested.
     function pokeClose(uint256 positionId) external {
