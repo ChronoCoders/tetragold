@@ -402,6 +402,91 @@ contract PositionManagerOpenTest is Test {
         assertEq(uint256(state), uint256(PositionManager.State.Rejected), "the request did not end as rejected");
     }
 
+    /// @dev D46 and D70: the manager's own ceiling check and the pool's
+    ///      `reserve` check must agree exactly. If the manager's were the
+    ///      looser of the two, an open at the edge would pass it and then
+    ///      revert inside `reserve`, which leaves the request pending until
+    ///      expiry and wastes the settler's gas instead of rejecting it.
+    ///
+    ///      The pool reserves against its ounces after this open's gold has
+    ///      landed, so the manager predicts that figure: its ounces now, plus
+    ///      what joins, plus the pool's own share of the fee. The fuzz walks q
+    ///      across the edge, with and without the fund at its target so the
+    ///      pool's share of the fee changes, and asserts the settlement never
+    ///      reverts.
+    function testFuzz_TheTwoCeilingChecksNeverDisagree(uint256 postSeed, bool fundAtTarget) public {
+        if (fundAtTarget) {
+            _fillTheFund();
+        }
+        // Either side of the edge, which at 3x on this pool sits near 363
+        // ounces posted.
+        uint256 post = bound(postSeed, 360 ether, 367 ether);
+        _mint(trader, post);
+
+        uint256 id = _requestOpen(trader, post, LEVERAGE);
+        // forge-lint: disable-next-line(unused-return)
+        (,,, uint256 target,,,,) = manager.requestAt(id);
+        vm.warp(target);
+
+        vm.prank(settler);
+        try manager.settleOpen{value: PYTH_FEE}(id, abi.encode(_report(target)), _pythUpdate(target)) {
+        // Settled or rejected: both are answers, and the next lines say
+        // which one it was and that it was a sound one.
+        }
+        catch (bytes memory reason) {
+            assertTrue(
+                bytes4(reason) != CounterpartyPool.ReserveBreaksCoverage.selector,
+                "the manager let an open through that the pool's own check refused"
+            );
+            assertTrue(false, "a settlement reverted instead of settling or rejecting");
+        }
+
+        // forge-lint: disable-next-line(unused-return)
+        (,,,,,,, PositionManager.State state) = manager.requestAt(id);
+        assertTrue(
+            state == PositionManager.State.Settled || state == PositionManager.State.Rejected,
+            "the request neither settled nor was rejected"
+        );
+        if (state == PositionManager.State.Settled) {
+            assertLe(pool.reserved() * BPS, pool.ounces() * U_MAX_BPS, "I7: a settled open broke the ceiling");
+        }
+    }
+
+    /// @dev The edge itself, worked out by hand so the test does not search for
+    ///      it. On a pool of 1100.84 ounces, 400 posted at 3x pays a fee of 1.2
+    ///      and sends 0.36 of it to the pool, so 1500 ounces stand against a
+    ///      reserve of 1200, which is exactly u_max of them. It must settle,
+    ///      and the smallest step up in size must not.
+    function test_AnOpenExactlyAtTheCeilingSettlesAndOneStepMoreDoesNot() public {
+        uint256 extra = 100.84 ether;
+        _mint(lp, extra);
+        _seedPool(extra);
+        assertEq(pool.ounces(), 1100.84 ether, "the pool was not seeded to the figure this test needs");
+
+        uint256 post = 400 ether;
+        uint256 size = post * LEVERAGE;
+        uint256 feeOunces = _feeOunces(size);
+        uint256 poolAfter = pool.ounces() + post - feeOunces + _poolShare(feeOunces);
+        assertEq((poolAfter * U_MAX_BPS) / BPS, size, "this is not the exact edge");
+
+        _mint(trader, post * 2);
+        uint256 id = _requestOpen(trader, post, LEVERAGE);
+        _settleOpen(id);
+
+        assertEq(pool.reserved(), size, "an open exactly at the ceiling was rejected");
+        assertEq(pool.reserved() * BPS, pool.ounces() * U_MAX_BPS, "the settled open is not sitting on the edge");
+
+        // One wei more posted is k wei more of size, which is the smallest step
+        // this tier can take past the edge.
+        uint256 over = _requestOpen(trader, post + 1, LEVERAGE);
+        _settleOpen(over);
+
+        assertEq(pool.reserved(), size, "a step past the ceiling was taken");
+        // forge-lint: disable-next-line(unused-return)
+        (,,,,,,, PositionManager.State state) = manager.requestAt(over);
+        assertEq(uint256(state), uint256(PositionManager.State.Rejected), "the step past the edge was not rejected");
+    }
+
     /// @dev D71: once f times the largest tier reaches one, the open fee would
     ///      be the whole collateral, so the constructor refuses it rather than
     ///      letting a settlement panic on the subtraction.
