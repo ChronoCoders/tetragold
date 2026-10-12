@@ -65,15 +65,15 @@ contract MockPositionBook is IPositionBook {
         return _withdrawalClaimUsd;
     }
 
-    function settleDeposit(uint256 id, uint256 price18) external returns (uint256 shares) {
+    function settleDeposit(uint256 id, uint256 price18) external returns (uint256 shares, bool rejected) {
         POOL.LOCK().enter();
-        shares = POOL.settleDeposit(id, price18);
+        (shares, rejected) = POOL.settleDeposit(id, price18);
         POOL.LOCK().exit();
     }
 
-    function settleWithdrawal(uint256 id, uint256 price18) external returns (uint256 paid) {
+    function settleWithdrawal(uint256 id, uint256 price18) external returns (uint256 paid, bool rejected) {
         POOL.LOCK().enter();
-        paid = POOL.settleWithdrawal(id, price18);
+        (paid, rejected) = POOL.settleWithdrawal(id, price18);
         POOL.LOCK().exit();
     }
 
@@ -114,7 +114,10 @@ contract MockPositionBook is IPositionBook {
     }
 
     function settleDepositOutsideTheSection(uint256 id, uint256 price18) external returns (uint256 shares) {
-        shares = POOL.settleDeposit(id, price18);
+        // This path exists to be refused for want of the section, so the
+        // rejection flag beside the amount says nothing about it.
+        // forge-lint: disable-next-line(unused-return)
+        (shares,) = POOL.settleDeposit(id, price18);
     }
 
     function payOutOutsideTheSection(address to, uint256 requested) external returns (uint256 paid) {

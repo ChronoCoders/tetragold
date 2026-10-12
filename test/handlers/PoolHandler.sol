@@ -66,15 +66,19 @@ contract PoolHandler is Test {
     uint256 public expiries;
     uint256 public opens;
     uint256 public closes;
-    uint256 public coverageRefusals;
+    uint256 public coverageRejections;
     uint256 public reserveRefusals;
+    uint256 public rejections;
     uint256 public lateSettlementRefusals;
 
     uint256 public payOutFailures;
     uint256 public overpaidCalls;
     uint256 public mispricedDeposits;
     uint256 public mispricedWithdrawals;
-    uint256 public doubleFinals;
+    /// @notice Requests that did not land in the terminal state their path
+    ///         produces, and rejections of requests that should have settled.
+    uint256 public wrongEndings;
+    uint256 public wrongRejections;
     uint256 public reserveOvershootsAllowed;
 
     /// @notice Requests tried from outside the manager and refused, which is
@@ -296,72 +300,84 @@ contract PoolHandler is Test {
         }
     }
 
+    /// @dev D70: a deposit this price would mint nothing for is rejected and
+    ///      refunded rather than left pending, so the ghosts record it as an
+    ///      escrow that came back.
     function _settleDeposit(uint256 id, uint256 index, uint256 amount) private {
         uint256 supply = SHARES.totalSupply();
         uint256 value = POOL.depositValue(price);
         uint256 expected = supply == 0 ? amount : (amount * (supply + 1)) / (value + 1);
-        if (expected == 0) {
-            return;
-        }
 
         // Same as the credit path: the ghosts follow the call deliberately.
         // forge-lint: disable-next-line(reentrancy-no-eth)
-        try BOOK.settleDeposit(id, price) returns (uint256 minted) {
-            // The exact figure is the I16 claim, so an approximate comparison
-            // would let a rounding defect through.
-            // forge-lint: disable-next-line(incorrect-strict-equality)
-            if (minted != expected) {
-                mispricedDeposits += 1;
-            }
+        (uint256 minted, bool rejected) = BOOK.settleDeposit(id, price);
 
+        if (rejected) {
+            if (expected != 0) {
+                wrongRejections += 1;
+            }
             _drop(index);
-            depositsSettled += amount;
-            settledDeposits += 1;
-            _settledOnce(id);
-        } catch {
-            assertTrue(false, "a deposit settlement reverted");
+            refundedOut += amount;
+            rejections += 1;
+            _endedOnce(id, CounterpartyPool.State.Rejected);
+            return;
         }
+
+        // The exact figure is the I16 claim, so an approximate comparison
+        // would let a rounding defect through.
+        // forge-lint: disable-next-line(incorrect-strict-equality)
+        if (minted != expected) {
+            mispricedDeposits += 1;
+        }
+
+        _drop(index);
+        depositsSettled += amount;
+        settledDeposits += 1;
+        _endedOnce(id, CounterpartyPool.State.Settled);
     }
 
+    /// @dev D13 as revised and D70: a withdrawal that would leave R above
+    ///      u_max of what is left is rejected and the shares go back, so this
+    ///      records it as an ending rather than as a request still waiting.
     function _settleWithdrawal(uint256 id, uint256 index, uint256 shares) private {
         uint256 value = POOL.withdrawalValue(price);
         uint256 expected = (shares * (value + 1)) / (SHARES.totalSupply() + 1);
         uint256 ouncesBefore = POOL.ounces();
 
         // forge-lint: disable-next-line(reentrancy-no-eth)
-        try BOOK.settleWithdrawal(id, price) returns (uint256 paid) {
-            // The exact figure is the I16 claim, as above.
-            // forge-lint: disable-next-line(incorrect-strict-equality)
-            if (paid != expected) {
-                mispricedWithdrawals += 1;
-            }
-            if (paid > ouncesBefore) {
-                overpaidCalls += 1;
-            }
-            withdrawnTotal += paid;
-            settledWithdrawals += 1;
+        (uint256 paid, bool rejected) = BOOK.settleWithdrawal(id, price);
+
+        if (rejected) {
             _drop(index);
-            _settledOnce(id);
-        } catch {
-            // D13: a withdrawal that would leave R above u_max of what is left
-            // waits. The request stays pending, which the state read asserts.
-            // forge-lint: disable-next-line(unused-return)
-            (,,,, CounterpartyPool.State state) = POOL.requestAt(id);
-            if (state != CounterpartyPool.State.Pending) {
-                doubleFinals += 1;
-            }
-            coverageRefusals += 1;
+            rejections += 1;
+            coverageRejections += 1;
+            _endedOnce(id, CounterpartyPool.State.Rejected);
+            return;
         }
+
+        // The exact figure is the I16 claim, as above.
+        // forge-lint: disable-next-line(incorrect-strict-equality)
+        if (paid != expected) {
+            mispricedWithdrawals += 1;
+        }
+        if (paid > ouncesBefore) {
+            overpaidCalls += 1;
+        }
+        withdrawnTotal += paid;
+        settledWithdrawals += 1;
+        _drop(index);
+        _endedOnce(id, CounterpartyPool.State.Settled);
     }
 
-    /// @dev I17: the pool's own state machine must have moved this request out
-    ///      of pending exactly once, which a second attempt would now refuse.
-    function _settledOnce(uint256 id) private {
+    /// @dev I17 as revised by D70: the request must have left pending for the
+    ///      one terminal state this path produces, and a second attempt would
+    ///      now be refused by that state.
+    function _endedOnce(uint256 id, CounterpartyPool.State want) private {
         // Only the state field answers this question.
         // forge-lint: disable-next-line(unused-return)
         (,,,, CounterpartyPool.State state) = POOL.requestAt(id);
-        if (state != CounterpartyPool.State.Settled) {
-            doubleFinals += 1;
+        if (state != want) {
+            wrongEndings += 1;
         }
     }
 
@@ -370,14 +386,14 @@ contract PoolHandler is Test {
     function _settleTooLate(uint256 id, CounterpartyPool.Kind kind) private {
         if (kind == CounterpartyPool.Kind.Deposit) {
             // forge-lint: disable-next-line(reentrancy-no-eth)
-            try BOOK.settleDeposit(id, price) returns (uint256) {
+            try BOOK.settleDeposit(id, price) returns (uint256, bool) {
                 lateSettlementsAllowed += 1;
             } catch (bytes memory reason) {
                 _countLateRefusal(reason);
             }
         } else {
             // forge-lint: disable-next-line(reentrancy-no-eth)
-            try BOOK.settleWithdrawal(id, price) returns (uint256) {
+            try BOOK.settleWithdrawal(id, price) returns (uint256, bool) {
                 lateSettlementsAllowed += 1;
             } catch (bytes memory reason) {
                 _countLateRefusal(reason);

@@ -123,10 +123,13 @@ contract CounterpartyPoolInvariantTest is Test {
         assertEq(handler.mispricedWithdrawals(), NOTHING, "I16: a withdrawal paid something other than its share");
     }
 
-    /// @notice I17: a request leaves pending exactly once, and a refused
-    ///         withdrawal stays pending rather than being consumed.
+    /// @notice I17 as D70 revises it: a request ends exactly once, as settled,
+    ///         rejected or expired, and the escrow is released exactly once.
+    ///         The second half is the escrow identity in I27 below, which
+    ///         counts a rejected deposit's refund alongside an expired one's.
     function invariant_I17_RequestsReachOneFinalStateOnce() public view {
-        assertEq(handler.doubleFinals(), NOTHING, "I17: a request left pending more than once or not at all");
+        assertEq(handler.wrongEndings(), NOTHING, "I17: a request did not end in the state its path produces");
+        assertEq(handler.wrongRejections(), NOTHING, "D70: a request that could have settled was rejected");
     }
 
     /// @notice Section 7 rule 4: at or after the expiry only expiry remains, so
@@ -200,6 +203,21 @@ contract CounterpartyPoolInvariantTest is Test {
         handler.passTime(EXPIRY);
         handler.settle(0);
         assertGt(handler.settledWithdrawals(), NOTHING, "no withdrawal settled");
+
+        // D70: a withdrawal asked for while the whole pool is reserved is
+        // rejected rather than left pending, and the shares come back.
+        handler.requestDeposit(0, DRIVE_DEPOSIT);
+        handler.passTime(EXPIRY);
+        handler.settle(0);
+        handler.open(DRIVE_SIZE, false);
+        handler.requestWithdrawal(0, type(uint256).max);
+        handler.passTime(EXPIRY);
+        handler.settle(0);
+        assertGt(handler.coverageRejections(), NOTHING, "the coverage rejection was never tested");
+        assertGt(handler.rejections(), NOTHING, "no request was ever rejected");
+        assertEq(handler.wrongEndings(), NOTHING, "I17: a request did not end where its path says");
+
+        handler.close(type(uint256).max, type(uint256).max);
 
         handler.requestDeposit(1, DRIVE_DEPOSIT);
         handler.passTime(PAST_EXPIRY);

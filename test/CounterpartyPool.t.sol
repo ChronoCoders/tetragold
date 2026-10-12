@@ -88,7 +88,7 @@ contract CounterpartyPoolTest is Test {
     ///      share and virtual asset give without a special case for it.
     function test_FirstDepositIsOneSharePerOunce() public {
         uint256 id = _requestDeposit(alice, TEN);
-        uint256 minted = book.settleDeposit(id, PRICE);
+        uint256 minted = _settleDeposit(id, PRICE);
 
         assertEq(minted, TEN, "the first deposit was not one share per ounce");
         assertEq(shares.balanceOf(alice), TEN);
@@ -104,46 +104,81 @@ contract CounterpartyPoolTest is Test {
     ///      donation back out: its own shares are worth less than it put in.
     function test_DonationDoesNotRoundTheNextDepositToNothing() public {
         uint256 first = _requestDeposit(alice, ONE);
-        uint256 donorShares = book.settleDeposit(first, PRICE);
+        uint256 donorShares = _settleDeposit(first, PRICE);
 
         vm.prank(alice);
         assertTrue(gold.transfer(address(pool), TEN));
         assertEq(book.syncCredit(), TEN, "the donation did not land in pool ounces");
 
         uint256 second = _requestDeposit(bob, TEN);
-        uint256 minted = book.settleDeposit(second, PRICE);
+        uint256 minted = _settleDeposit(second, PRICE);
 
         assertGt(minted, NOTHING, "the donation rounded the second deposit to nothing");
         assertLt(minted, TEN, "the donation was not priced in at all");
 
         uint256 out = _requestWithdrawal(alice, donorShares);
-        uint256 back = book.settleWithdrawal(out, PRICE);
+        uint256 back = _settleWithdrawal(out, PRICE);
         assertLt(back, ONE + TEN, "the donor took back more than it deposited and donated");
     }
 
-    /// @dev A donation large enough to price a deposit at zero shares is
-    ///      refused rather than taking the deposit for nothing.
-    function test_DepositThatWouldMintNothingIsRefused() public {
+    /// @dev D70: a donation large enough to price a deposit at zero shares
+    ///      ends the request as rejected and gives the ounces back, rather
+    ///      than taking the deposit for nothing or leaving it pending.
+    function test_DepositThatWouldMintNothingIsRejectedAndRefunded() public {
         uint256 first = _requestDeposit(alice, ONE);
-        assertEq(book.settleDeposit(first, PRICE), ONE, "the first deposit was not one share per ounce");
+        assertEq(_settleDeposit(first, PRICE), ONE, "the first deposit was not one share per ounce");
 
         vm.prank(trader);
         assertTrue(gold.transfer(address(pool), HUNDRED));
         assertEq(book.syncCredit(), HUNDRED, "the donation did not land in pool ounces");
 
         uint256 second = _requestDeposit(bob, ONE_WEI);
+        uint256 heldBefore = gold.balanceOf(bob);
+        uint256 ouncesBefore = pool.ounces();
 
-        vm.expectRevert(CounterpartyPool.MintedNothing.selector);
+        (uint256 minted, bool rejected) = book.settleDeposit(second, PRICE);
+
+        assertTrue(rejected, "a deposit that mints nothing was not rejected");
+        assertEq(minted, NOTHING, "a rejected deposit minted shares");
+        assertEq(gold.balanceOf(bob), heldBefore + ONE_WEI, "the escrow was not refunded");
+        assertEq(pool.escrowedOunces(), NOTHING, "the escrow was not released");
+        assertEq(pool.ounces(), ouncesBefore, "a rejected deposit joined pool ounces");
+        // forge-lint: disable-next-line(unused-return)
+        (,,,, CounterpartyPool.State state) = pool.requestAt(second);
+        assertEq(uint256(state), uint256(CounterpartyPool.State.Rejected), "the request did not end as rejected");
+    }
+
+    /// @dev D70 and I17: a rejected request is terminal, so it can be neither
+    ///      settled nor expired afterwards.
+    function test_ARejectedRequestIsTerminal() public {
+        uint256 first = _requestDeposit(alice, ONE);
+        _settleDeposit(first, PRICE);
+
+        vm.prank(trader);
+        assertTrue(gold.transfer(address(pool), HUNDRED));
+        assertEq(book.syncCredit(), HUNDRED, "the donation did not land in pool ounces");
+
+        uint256 second = _requestDeposit(bob, ONE_WEI);
+        // The flag is the claim here; the amount beside it is zero either way.
+        // forge-lint: disable-next-line(unused-return)
+        (, bool rejected) = book.settleDeposit(second, PRICE);
+        assertTrue(rejected, "the deposit was not rejected");
+
+        vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.NoSuchRequest.selector, second));
         // This call reverts by design, so no value comes back.
         // forge-lint: disable-next-line(unused-return)
         book.settleDeposit(second, PRICE);
+
+        vm.warp(block.timestamp + EXPIRY);
+        vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.NoSuchRequest.selector, second));
+        book.expire(second, bob);
     }
 
     /// @dev I6: the deposit value is never below the withdrawal value, because
     ///      the withdrawal measure counts collateral a trader has not lost yet.
     function test_DepositValueIsNeverBelowWithdrawalValue() public {
         uint256 id = _requestDeposit(alice, HUNDRED);
-        assertGt(book.settleDeposit(id, PRICE), NOTHING, "the deposit minted nothing");
+        assertGt(_settleDeposit(id, PRICE), NOTHING, "the deposit minted nothing");
 
         book.setClaims(10_000e18, 40_000e18);
 
@@ -157,7 +192,7 @@ contract CounterpartyPoolTest is Test {
     ///      better side of a remainder.
     function test_ClaimRoundingFavoursTheStandingLp() public {
         uint256 id = _requestDeposit(alice, TEN);
-        assertEq(book.settleDeposit(id, PRICE), TEN, "the deposit minted something other than its ounces");
+        assertEq(_settleDeposit(id, PRICE), TEN, "the deposit minted something other than its ounces");
 
         book.setClaims(PRICE + 1, PRICE + 1);
 
@@ -169,7 +204,7 @@ contract CounterpartyPoolTest is Test {
     ///      reverting, so a withdrawal can still settle.
     function test_ValueSaturatesAtNothing() public {
         uint256 id = _requestDeposit(alice, TEN);
-        assertEq(book.settleDeposit(id, PRICE), TEN, "the deposit minted something other than its ounces");
+        assertEq(_settleDeposit(id, PRICE), TEN, "the deposit minted something other than its ounces");
 
         book.setClaims(PRICE * HUGE_CLAIM_MULTIPLE, PRICE * HUGE_CLAIM_MULTIPLE);
 
@@ -179,10 +214,10 @@ contract CounterpartyPoolTest is Test {
 
     function test_WithdrawalPaysAtTheLowSideAndBurnsItsShares() public {
         uint256 id = _requestDeposit(alice, TEN);
-        uint256 minted = book.settleDeposit(id, PRICE);
+        uint256 minted = _settleDeposit(id, PRICE);
 
         uint256 out = _requestWithdrawal(alice, minted);
-        uint256 paid = book.settleWithdrawal(out, PRICE);
+        uint256 paid = _settleWithdrawal(out, PRICE);
 
         assertEq(paid, TEN, "the withdrawal did not return the ounces behind the shares");
         assertEq(gold.balanceOf(alice), HUNDRED, "the LP did not get its gold back");
@@ -192,34 +227,39 @@ contract CounterpartyPoolTest is Test {
     }
 
     /// @dev D13: a withdrawal that would leave R above u_max of what is left
-    ///      reverts, and the request stays pending so it can settle later.
-    function test_WithdrawalThatBreaksCoverageWaits() public {
+    ///      is rejected and the LP gets its shares back, so it can ask again
+    ///      once the reserve has gone (D70, D13 as revised).
+    function test_WithdrawalThatBreaksCoverageIsRejected() public {
         uint256 id = _requestDeposit(alice, TEN);
-        uint256 minted = book.settleDeposit(id, PRICE);
-        book.reserve((TEN * U_MAX_BPS) / BPS);
+        uint256 minted = _settleDeposit(id, PRICE);
+        uint256 ceiling = (TEN * U_MAX_BPS) / BPS;
+        book.reserve(ceiling);
 
         uint256 out = _requestWithdrawal(alice, minted);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(CounterpartyPool.WithdrawalBreaksCoverage.selector, (TEN * U_MAX_BPS) / BPS, NOTHING)
-        );
-        // This call reverts by design, so no value comes back.
-        // forge-lint: disable-next-line(unused-return)
-        book.settleWithdrawal(out, PRICE);
+        (uint256 paid, bool rejected) = book.settleWithdrawal(out, PRICE);
 
+        assertTrue(rejected, "a withdrawal that breaks coverage was not rejected");
+        assertEq(paid, NOTHING, "a rejected withdrawal paid out");
+        assertEq(shares.balanceOf(alice), minted, "the shares were not returned");
+        assertEq(pool.escrowedShares(), NOTHING, "the escrow was not released");
+        assertEq(pool.ounces(), TEN, "a rejected withdrawal moved pool ounces");
         // Only the state field is under test here.
         // forge-lint: disable-next-line(unused-return)
         (,,,, CounterpartyPool.State state) = pool.requestAt(out);
-        assertEq(uint256(state), uint256(CounterpartyPool.State.Pending), "the refused request did not stay pending");
+        assertEq(uint256(state), uint256(CounterpartyPool.State.Rejected), "the request did not end as rejected");
 
-        book.release((TEN * U_MAX_BPS) / BPS);
-        assertEq(book.settleWithdrawal(out, PRICE), TEN, "the request could not settle once the reserve went");
+        // The LP asks again once the reserve has gone, which is the path D13
+        // leaves open.
+        book.release(ceiling);
+        uint256 again = _requestWithdrawal(alice, minted);
+        assertEq(_settleWithdrawal(again, PRICE), TEN, "the LP could not ask again after the reserve went");
     }
 
     /// @dev I7: R cannot rise above u_max of pool ounces.
     function test_ReserveStopsAtUMax() public {
         uint256 id = _requestDeposit(alice, TEN);
-        assertEq(book.settleDeposit(id, PRICE), TEN, "the deposit minted something other than its ounces");
+        assertEq(_settleDeposit(id, PRICE), TEN, "the deposit minted something other than its ounces");
         uint256 ceiling = (TEN * U_MAX_BPS) / BPS;
 
         book.reserve(ceiling);
@@ -235,7 +275,7 @@ contract CounterpartyPoolTest is Test {
 
     function test_ReleaseLowersReservedAndRefusesMoreThanItHolds() public {
         uint256 id = _requestDeposit(alice, TEN);
-        assertEq(book.settleDeposit(id, PRICE), TEN, "the deposit minted something other than its ounces");
+        assertEq(_settleDeposit(id, PRICE), TEN, "the deposit minted something other than its ounces");
         book.reserve(ONE);
 
         book.release(ONE_WEI);
@@ -248,7 +288,7 @@ contract CounterpartyPoolTest is Test {
     /// @dev I14: a payout never reverts for a shortage. It reports what it paid.
     function test_PayOutPaysWhatItHasAndNeverReverts() public {
         uint256 id = _requestDeposit(alice, TEN);
-        assertEq(book.settleDeposit(id, PRICE), TEN, "the deposit minted something other than its ounces");
+        assertEq(_settleDeposit(id, PRICE), TEN, "the deposit minted something other than its ounces");
 
         assertEq(book.payOut(trader, ONE), ONE);
         assertEq(gold.balanceOf(trader), HUNDRED + ONE);
@@ -279,7 +319,7 @@ contract CounterpartyPoolTest is Test {
 
         // No share exists yet, so the escrowed deposit prices at one share per
         // ounce and the credited ounce is a windfall to this first LP (D48).
-        assertEq(book.settleDeposit(pending, PRICE), TEN, "the escrow could not settle");
+        assertEq(_settleDeposit(pending, PRICE), TEN, "the escrow could not settle");
         assertEq(pool.ounces(), TEN + ONE, "the credit and the deposit did not both land");
     }
 
@@ -343,7 +383,7 @@ contract CounterpartyPoolTest is Test {
         assertEq(lp, alice, "the request named someone other than the LP");
         assertEq(gold.balanceOf(alice), HUNDRED - TEN, "the gold did not come from the LP");
 
-        uint256 minted = book.settleDeposit(id, PRICE);
+        uint256 minted = _settleDeposit(id, PRICE);
         assertEq(shares.balanceOf(alice), minted, "the shares went to someone other than the LP");
         assertEq(shares.balanceOf(address(book)), NOTHING, "the manager held shares");
         assertEq(gold.balanceOf(address(book)), NOTHING, "the manager held gold");
@@ -368,11 +408,11 @@ contract CounterpartyPoolTest is Test {
     /// @dev I17: a request settles at most once or expires at most once.
     function test_RequestSettlesOrExpiresExactlyOnce() public {
         uint256 id = _requestDeposit(alice, TEN);
-        assertEq(book.settleDeposit(id, PRICE), TEN, "the deposit minted something other than its ounces");
+        assertEq(_settleDeposit(id, PRICE), TEN, "the deposit minted something other than its ounces");
 
         vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.NoSuchRequest.selector, id));
         // forge-lint: disable-next-line(unused-return)
-        book.settleDeposit(id, PRICE);
+        _settleDeposit(id, PRICE);
 
         vm.warp(block.timestamp + DELAY + EXPIRY);
         vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.NoSuchRequest.selector, id));
@@ -399,7 +439,7 @@ contract CounterpartyPoolTest is Test {
 
     function test_ExpiryReturnsEscrowedSharesAndIsOwnerOnly() public {
         uint256 id = _requestDeposit(alice, TEN);
-        uint256 minted = book.settleDeposit(id, PRICE);
+        uint256 minted = _settleDeposit(id, PRICE);
         uint256 out = _requestWithdrawal(alice, minted);
 
         vm.warp(block.timestamp + DELAY + EXPIRY);
@@ -425,10 +465,10 @@ contract CounterpartyPoolTest is Test {
         vm.warp(targetTime - 1);
         vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.TooEarly.selector, targetTime));
         // forge-lint: disable-next-line(unused-return)
-        book.settleDeposit(id, PRICE);
+        _settleDeposit(id, PRICE);
 
         vm.warp(targetTime);
-        assertEq(book.settleDeposit(id, PRICE), TEN);
+        assertEq(_settleDeposit(id, PRICE), TEN);
     }
 
     /// @dev Section 7 rule 4: the window runs from the target up to the expiry
@@ -440,14 +480,14 @@ contract CounterpartyPoolTest is Test {
 
         vm.warp(targetTime + EXPIRY - 1);
 
-        assertEq(book.settleDeposit(id, PRICE), TEN, "the last second of the window did not settle");
+        assertEq(_settleDeposit(id, PRICE), TEN, "the last second of the window did not settle");
     }
 
     /// @dev At the deadline both kinds are refused with the deadline error, and
     ///      the request is still there for an expiry.
     function test_SettlementAtTheDeadlineIsRefusedForBothKinds() public {
         uint256 funded = _requestDeposit(alice, TEN);
-        uint256 minted = book.settleDeposit(funded, PRICE);
+        uint256 minted = _settleDeposit(funded, PRICE);
         uint256 deposit = _requestDeposit(bob, TEN);
         uint256 withdrawal = _requestWithdrawal(alice, minted);
         // forge-lint: disable-next-line(unused-return)
@@ -514,6 +554,21 @@ contract CounterpartyPoolTest is Test {
         vm.expectRevert(CounterpartyPool.ZeroAddress.selector);
         // forge-lint: disable-next-line(unused-return)
         book.requestDeposit(address(0), TEN);
+    }
+
+    /// @dev A settle the test expects to succeed, with the rejection flag
+    ///      asserted false rather than dropped: a rejection returns zero and
+    ///      would otherwise read as a successful settle of nothing.
+    function _settleDeposit(uint256 id, uint256 at) private returns (uint256 minted) {
+        bool rejected;
+        (minted, rejected) = book.settleDeposit(id, at);
+        assertFalse(rejected, "the deposit was rejected");
+    }
+
+    function _settleWithdrawal(uint256 id, uint256 at) private returns (uint256 paid) {
+        bool rejected;
+        (paid, rejected) = book.settleWithdrawal(id, at);
+        assertFalse(rejected, "the withdrawal was rejected");
     }
 
     /// @dev The LP approves the pool and the manager makes the call (D69), so

@@ -65,17 +65,26 @@ contract CounterpartyPool {
     ///         the first deposit one share per ounce.
     uint256 private constant VIRTUAL = 1;
 
+    /// @notice What a rejection returns, named so the two literals in the
+    ///         return are not read as a condition (D70).
+    uint256 private constant NOTHING_PAID = 0;
+    bool private constant REJECTED = true;
+
     /// @notice What a request is for.
     enum Kind {
         Deposit,
         Withdrawal
     }
 
-    /// @notice Where a request is in the state machine of I17.
+    /// @notice Where a request is in the state machine of I17. A request leaves
+    ///         `Pending` exactly once, and the three terminal states are the
+    ///         only ways out: settled at the price, rejected by a rule at that
+    ///         price (D70), or expired because no price ever qualified.
     enum State {
         None,
         Pending,
         Settled,
+        Rejected,
         Expired
     }
 
@@ -139,6 +148,10 @@ contract CounterpartyPool {
         uint256 indexed id, address indexed lp, uint256 shares, uint256 ounces, uint256 price18, uint256 value
     );
     event RequestExpired(uint256 indexed id, address indexed lp, uint256 amount);
+    event DepositRejected(uint256 indexed id, address indexed lp, uint256 ounces, uint256 price18, uint256 value);
+    event WithdrawalRejected(
+        uint256 indexed id, address indexed lp, uint256 shares, uint256 reservedOunces, uint256 allowed
+    );
     event Credited(uint256 credited, uint256 total);
     event PaidOut(address indexed to, uint256 requested, uint256 paid, uint256 total);
     event Reserved(uint256 added, uint256 total);
@@ -157,10 +170,8 @@ contract CounterpartyPool {
     error TooEarly(uint256 targetTime);
     error TooLate(uint256 expiresAt);
     error NotExpiredYet(uint256 expiresAt);
-    error MintedNothing();
     error NothingReceived();
     error PayoutAboveOunces(uint256 paid, uint256 held);
-    error WithdrawalBreaksCoverage(uint256 reservedOunces, uint256 allowed);
     error ReserveBreaksCoverage(uint256 reservedOunces, uint256 allowed);
     error NotReserved(uint256 removed, uint256 reservedOunces);
 
@@ -269,8 +280,9 @@ contract CounterpartyPool {
     ///      them would leave the LP waiting for an expiry (D58).
     /// @param id Request to settle.
     /// @param price18 Settled price, USD per ounce, scaled by 1e18.
-    /// @return shares Shares minted to the LP.
-    function settleDeposit(uint256 id, uint256 price18) external returns (uint256 shares) {
+    /// @return shares Shares minted to the LP, zero when rejected.
+    /// @return rejected Whether a rule at this price ended the request instead.
+    function settleDeposit(uint256 id, uint256 price18) external returns (uint256 shares, bool rejected) {
         _onlyPositionManagerInsideTheSection();
         Request storage request = _pendingAt(id, Kind.Deposit);
 
@@ -283,27 +295,44 @@ contract CounterpartyPool {
         // gold sent in early belongs to whoever deposits first, not to the
         // sender.
         shares = supply == 0 ? request.amount : (request.amount * (supply + VIRTUAL)) / (value + VIRTUAL);
+
+        address lp = request.lp;
+        uint256 amount = request.amount;
+
+        // D70: a deposit this price would mint nothing for is rejected and
+        // refunded in full, not left pending. Waiting could not help, because
+        // the only thing that would change the answer is a later price meeting
+        // a later state, which is exactly what the deadline of section 7 rule 4
+        // exists to stop.
         if (shares == 0) {
-            revert MintedNothing();
+            request.state = State.Rejected;
+            escrowedOunces -= amount;
+            emit DepositRejected(id, lp, amount, price18, value);
+
+            IERC20(address(GOLD)).safeTransfer(lp, amount);
+            return (NOTHING_PAID, REJECTED);
         }
 
         request.state = State.Settled;
-        escrowedOunces -= request.amount;
-        ounces += request.amount;
-        emit DepositSettled(id, request.lp, request.amount, shares, price18, value);
+        escrowedOunces -= amount;
+        ounces += amount;
+        emit DepositSettled(id, lp, amount, shares, price18, value);
 
-        SHARES.mint(request.lp, shares);
+        SHARES.mint(lp, shares);
     }
 
     /// @notice Price a pending withdrawal at `price18` and pay its ounces.
     /// @dev The coverage check of D13 runs after the payout. A withdrawal that
-    ///      would break it reverts and the request stays pending, so the LP can
-    ///      settle it later or let it expire: reserved ounces cannot leave, and
-    ///      LP withdrawal has no liveness guarantee (D54, I14 excludes it).
+    ///      would break it is rejected and the shares go back to the LP (D70,
+    ///      D13 as revised): reserved ounces cannot leave, so waiting would let
+    ///      the settler pick the moment this price meets a smaller reserve, and
+    ///      LP withdrawal has no liveness guarantee anyway (D54, I14 excludes
+    ///      it). The LP can ask again.
     /// @param id Request to settle.
     /// @param price18 Settled price, USD per ounce, scaled by 1e18.
-    /// @return paid Ounces sent to the LP.
-    function settleWithdrawal(uint256 id, uint256 price18) external returns (uint256 paid) {
+    /// @return paid Ounces sent to the LP, zero when rejected.
+    /// @return rejected Whether a rule at this price ended the request instead.
+    function settleWithdrawal(uint256 id, uint256 price18) external returns (uint256 paid, bool rejected) {
         _onlyPositionManagerInsideTheSection();
         Request storage request = _pendingAt(id, Kind.Withdrawal);
 
@@ -318,14 +347,20 @@ contract CounterpartyPool {
             revert PayoutAboveOunces(paid, ounces);
         }
 
+        address lp = request.lp;
+        uint256 shares = request.amount;
+
         uint256 left = ounces - paid;
         uint256 allowed = (left * U_MAX_BPS) / BPS_DENOMINATOR;
         if (reserved > allowed) {
-            revert WithdrawalBreaksCoverage(reserved, allowed);
+            request.state = State.Rejected;
+            escrowedShares -= shares;
+            emit WithdrawalRejected(id, lp, shares, reserved, allowed);
+
+            IERC20(address(SHARES)).safeTransfer(lp, shares);
+            return (NOTHING_PAID, REJECTED);
         }
 
-        address lp = request.lp;
-        uint256 shares = request.amount;
         request.state = State.Settled;
         escrowedShares -= shares;
         ounces = left;
