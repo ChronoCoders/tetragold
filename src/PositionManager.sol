@@ -911,25 +911,27 @@ contract PositionManager is IPositionBook {
     }
 
     /// @dev The price for a target, and the Pyth fee the settlement paid out of
-    ///      what the settler sent. The oracle keeps nothing and returns the
-    ///      remainder here, so the difference in this contract's balance across
-    ///      the call is exactly what Pyth took (section 7 rule 8).
+    ///      what the settler sent. The oracle reports that fee, which is the
+    ///      only figure this contract trusts for it: the fall in its own
+    ///      balance would also count any ETH forced into the oracle by
+    ///      SELFDESTRUCT and refunded on top of what was sent (section 7
+    ///      rule 8).
     function _settlePrice(uint256 targetTime, bytes calldata streamsPayload, bytes[] calldata pythUpdate)
         private
         returns (uint256 price18)
     {
-        uint256 ethBefore = address(this).balance;
-        // The oracle is the address this contract was deployed against, and the
-        // value is what the settler sent for the Pyth fee.
-        // forge-lint: disable-next-line(reentrancy-eth)
-        // The deviation the oracle also returns belongs to the circuit breaker
-        // of section 7 rule 6, which is not written yet. The narrowing cast is
-        // the oracle's own interface: a target is a block timestamp plus twelve
-        // seconds, and 64 bits hold timestamps far beyond any chain this could
-        // run on, so it cannot truncate.
-        // forge-lint: disable-next-line(unused-return,unsafe-typecast)
-        (price18,) = SETTLEMENT_ORACLE.settlePrice{value: msg.value}(uint64(targetTime), streamsPayload, pythUpdate);
-        _pythPaid = ethBefore - address(this).balance;
+        // The narrowing cast is the oracle's own interface: a target is a block
+        // timestamp plus twelve seconds, and 64 bits hold timestamps far beyond
+        // any chain this could run on, so it cannot truncate.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint64 target = uint64(targetTime);
+
+        // The oracle is the address this contract was deployed against, the
+        // value is what the settler sent for the Pyth fee, and the deviation it
+        // also returns belongs to the circuit breaker of section 7 rule 6,
+        // which is not written yet.
+        // forge-lint: disable-next-line(reentrancy-eth,unused-return)
+        (price18,, _pythPaid) = SETTLEMENT_ORACLE.settlePrice{value: msg.value}(target, streamsPayload, pythUpdate);
     }
 
     /// @dev Apply the open rules at `price18`. A reason other than `None` means

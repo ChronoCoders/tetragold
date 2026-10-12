@@ -300,6 +300,38 @@ contract PositionManagerOpenTest is Test {
         assertEq(address(manager).balance, NOTHING, "the manager kept ETH after the credit was pulled");
     }
 
+    /// @dev ETH can be forced into the oracle with SELFDESTRUCT, and the
+    ///      oracle has no sweep. A settlement must not read its own balance to
+    ///      learn what Pyth took: the oracle reports that figure, so the stray
+    ///      ETH stays where it is and no settlement notices it. Measuring by
+    ///      balance difference instead made every settlement revert on panic
+    ///      0x11 once the stray exceeded the Pyth fee, which breaks I14.
+    function test_StrayEthInTheOracleDoesNotDisturbASettlement() public {
+        uint256[3] memory strays = [uint256(1), PYTH_FEE, 1 ether];
+        address oracle = address(manager.SETTLEMENT_ORACLE());
+
+        for (uint256 i = 0; i < strays.length; i++) {
+            uint256 stray = strays[i];
+            vm.deal(oracle, stray);
+
+            uint256 fee = _feeFloor(GAS_OPEN) * 4;
+            uint256 id = _requestOpenWithFee(trader, POST, LEVERAGE, fee);
+            uint256 settlerBefore = settler.balance;
+
+            _settleOpen(id);
+
+            uint256 credited = manager.ethCredit(trader);
+            uint256 paidToSettler = settler.balance - settlerBefore + PYTH_FEE;
+
+            assertEq(paidToSettler + credited, fee, "the fee did not split between the settler and the credit");
+            assertEq(address(manager).balance, credited, "the manager held something besides the credit");
+            assertEq(oracle.balance, stray, "the stray ETH moved");
+
+            vm.prank(trader);
+            manager.withdrawCredit();
+        }
+    }
+
     function test_ACreditCannotBePulledTwiceOrByAnyoneElse() public {
         uint256 id = _requestOpenWithFee(trader, POST, LEVERAGE, _feeFloor(GAS_OPEN) * 4);
         _settleOpen(id);

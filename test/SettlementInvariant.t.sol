@@ -63,6 +63,13 @@ contract SettlementInvariantTest is Test {
         assertEq(handler.successesWithReportClosed(), 0, "I10: a price settled while the report said closed");
     }
 
+    /// @dev Section 7 rule 8: the fee the oracle reports is the fee Pyth
+    ///      charged, whatever ETH the oracle happens to hold. A caller pays
+    ///      its settler from that figure.
+    function invariant_TheReportedPythFeeIsTheFeePythCharged() public view {
+        assertEq(handler.feeMisreports(), 0, "a settlement reported a Pyth fee that was not the one charged");
+    }
+
     function invariant_I12_EverySettlementUsedTheReportForTheTarget() public view {
         assertEq(
             handler.successesOutsideReportWindow(), 0, "I12: a price settled from a report that did not span the target"

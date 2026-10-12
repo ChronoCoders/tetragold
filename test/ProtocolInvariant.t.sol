@@ -31,7 +31,7 @@ import {PositionManagerHarness} from "./mocks/PositionManagerHarness.sol";
 /// forge-config: default.invariant.fail-on-revert = true
 contract ProtocolInvariantTest is Test {
     uint256 private constant NOTHING = 0;
-    uint256 private constant SELECTORS = 9;
+    uint256 private constant SELECTORS = 10;
     uint256 private constant U_MAX_BPS = 8000;
     uint256 private constant EXPIRY = 600;
     uint256 private constant IF_TARGET = 100 ether;
@@ -136,6 +136,7 @@ contract ProtocolInvariantTest is Test {
         selectors[6] = ProtocolHandler.movePaxg.selector;
         selectors[7] = ProtocolHandler.requestAdd.selector;
         selectors[8] = ProtocolHandler.settleAdd.selector;
+        selectors[9] = ProtocolHandler.dustTheOracle.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
     }
@@ -219,6 +220,13 @@ contract ProtocolInvariantTest is Test {
         handler.settleAdd(0);
         assertEq(handler.addRejections(), 1, "D43 rule 5 was never reached, so the ceiling proves nothing");
         assertEq(handler.wrongEndings(), NOTHING, "I17: an add ended somewhere else");
+
+        handler.dustTheOracle(1 ether);
+        assertGt(handler.oracleDustings(), NOTHING, "the oracle was never dusted, so this proves nothing");
+        handler.requestOpen(1, DRIVE_POST, 0);
+        handler.passTime(TARGET_DELAY);
+        handler.settleOpen(0);
+        assertEq(handler.settlements(), 2, "a settlement did not go through with stray ETH in the oracle");
 
         handler.movePrice(type(uint256).max);
 

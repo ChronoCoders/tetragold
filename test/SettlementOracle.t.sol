@@ -79,6 +79,31 @@ contract SettlementOracleTest is Test {
         assertEq(balanceBefore - address(this).balance, PYTH_FEE, "the caller was not refunded");
     }
 
+    /// @dev Section 7 rule 8, measured from msg.value: the caller gets back
+    ///      exactly what it sent less the Pyth fee, whatever this contract
+    ///      already held. ETH can be forced in with SELFDESTRUCT and there is
+    ///      no sweep, so a refund of the balance would hand the caller ETH it
+    ///      never sent and leave it unable to tell what the fee was.
+    function test_TheRefundIsWhatTheCallerSentLessTheFee() public {
+        uint256 stray = 1 ether;
+        vm.deal(address(oracle), stray);
+
+        ReportV8 memory report = _report();
+        bytes[] memory update = _pythUpdate(PYTH_PRICE, TARGET);
+        uint256 before = address(this).balance;
+
+        // The destination is the oracle under test, not an address a caller
+        // chose.
+        // forge-lint: disable-next-line(arbitrary-send-eth)
+        (uint256 price18,, uint256 pythPaid) =
+            oracle.settlePrice{value: PYTH_FEE + EXTRA}(TARGET, abi.encode(report), update);
+
+        assertEq(price18, PRICE_18);
+        assertEq(pythPaid, PYTH_FEE, "the oracle did not report the fee Pyth charged");
+        assertEq(before - address(this).balance, PYTH_FEE, "the caller was out of pocket by more than the fee");
+        assertEq(address(oracle).balance, stray, "the stray ETH moved");
+    }
+
     function test_RefusesWhenThePythFeeIsNotCovered() public {
         ReportV8 memory report = _report();
         bytes[] memory update = _pythUpdate(PYTH_PRICE, TARGET);
@@ -263,7 +288,7 @@ contract SettlementOracleTest is Test {
         // The destination is the contract under test, not an address a caller
         // chose, and paying it is how the fee split is exercised.
         // forge-lint: disable-next-line(arbitrary-send-eth)
-        (price18, deviationBps) = eight.settlePrice{value: PYTH_FEE + EXTRA}(TARGET, payload, update);
+        (price18, deviationBps,) = eight.settlePrice{value: PYTH_FEE + EXTRA}(TARGET, payload, update);
 
         assertEq(price18, PRICE_18, "an 8 decimal stream did not scale to 18");
         assertEq(deviationBps, NOTHING, "identical prices showed a deviation");
@@ -336,7 +361,7 @@ contract SettlementOracleTest is Test {
         // Same as above: the oracle under test is the destination, and the
         // extra wei is there so the refund path runs on every call.
         // forge-lint: disable-next-line(arbitrary-send-eth)
-        return oracle.settlePrice{value: PYTH_FEE + EXTRA}(target, abi.encode(report), update);
+        (price18, deviationBps,) = oracle.settlePrice{value: PYTH_FEE + EXTRA}(target, abi.encode(report), update);
     }
 
     /// @dev The oracle refunds what the Pyth fee did not use, so this contract

@@ -429,6 +429,21 @@ contract PositionManagerAddTest is Test {
         assertEq(uint256(_stateOf(id)), uint256(PositionManager.State.Expired));
     }
 
+    /// @dev The same stray ETH as on the open path: the add settles, the
+    ///      claim rises, and the ETH forced into the oracle stays there.
+    function test_StrayEthInTheOracleDoesNotDisturbAnAdd() public {
+        address oracle = address(manager.SETTLEMENT_ORACLE());
+        vm.deal(oracle, 1 ether);
+
+        (,, uint256 claimBefore,,,) = manager.positionAt(positionId);
+        _settleAdd(_requestAdd(trader, positionId, ADD), PRICE_18);
+
+        (,, uint256 claimAfter,,,) = manager.positionAt(positionId);
+        assertEq(claimAfter, claimBefore + (ADD * PRICE_18) / WAD, "the add did not settle");
+        assertEq(oracle.balance, 1 ether, "the stray ETH moved");
+        assertEq(address(manager).balance, manager.ethCredit(trader), "the manager held more than the credit");
+    }
+
     function test_GasForTheAddPath() public {
         vm.prank(trader);
         assertTrue(gold.approve(address(manager), SEED));

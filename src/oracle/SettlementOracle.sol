@@ -143,7 +143,7 @@ contract SettlementOracle is ReentrancyGuard {
         external
         payable
         nonReentrant
-        returns (uint256 price18, uint256 deviationBps)
+        returns (uint256 price18, uint256 deviationBps, uint256 pythPaid)
     {
         uint256 pythFee = PYTH.getUpdateFee(pythUpdate);
         if (msg.value < pythFee) {
@@ -190,9 +190,17 @@ contract SettlementOracle is ReentrancyGuard {
         // forge-lint: disable-next-line(reentrancy-events)
         emit PriceSettled(targetTime, price18, pythPrice18, deviationBps);
 
-        // Rule 8: this contract keeps nothing. Whatever is left after the Pyth
-        // fee goes back to the caller that put it up.
-        uint256 residual = address(this).balance;
+        // Rule 8: this contract keeps nothing of what the caller put up.
+        // Whatever is left of msg.value after the Pyth fee goes back to the
+        // caller, and the figure comes from msg.value rather than from this
+        // contract's balance. ETH can be forced in with SELFDESTRUCT, and a
+        // refund of the balance would then hand the caller more than it sent,
+        // which breaks any caller that measures the fee as the fall in its own
+        // balance. Stray ETH stays here, where there is no state for it to
+        // reach and no code path that reads the balance, and no sweep exists to
+        // move it out (D58).
+        pythPaid = pythFee;
+        uint256 residual = msg.value - pythFee;
         if (residual != 0) {
             // The recipient is the caller, not an address anyone chose, the
             // contract holds no state for a reentrant call to reach, and a raw

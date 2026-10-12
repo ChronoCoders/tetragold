@@ -67,6 +67,10 @@ contract ProtocolHandler is Test {
 
     /// @notice The add path, counted apart from the open path so a campaign
     ///         cannot look green on adds it never made (D43).
+    /// @notice Times ETH was forced into the oracle, so a campaign cannot
+    ///         look green on a path it never put a balance in front of.
+    uint256 public oracleDustings;
+
     uint256 public adds;
     uint256 public addSettlements;
     uint256 public addRejections;
@@ -338,6 +342,17 @@ contract ProtocolHandler is Test {
         }
 
         _dropAdd(at);
+        _check();
+    }
+
+    /// @dev ETH can be forced into the settlement oracle with SELFDESTRUCT,
+    ///      and the oracle has no sweep, so from here on every settlement in
+    ///      the sequence runs with a balance sitting in it. No settlement may
+    ///      notice: this campaign reverts on revert, so one that did would
+    ///      fail the run.
+    function dustTheOracle(uint256 seed) external {
+        vm.deal(address(MANAGER.SETTLEMENT_ORACLE()), bound(seed, 1, 1 ether));
+        oracleDustings += 1;
         _check();
     }
 

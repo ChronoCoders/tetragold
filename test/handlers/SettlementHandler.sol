@@ -50,6 +50,9 @@ contract SettlementHandler is Test {
     uint256 public successesWithPythBeforeTarget;
     uint256 public successesWithPythPastDelay;
     uint256 public successesOutsideBand;
+    /// @notice Settlements whose reported Pyth fee was not the fee Pyth
+    ///         charges, which is what a caller measures its own payment with.
+    uint256 public feeMisreports;
 
     constructor(SettlementOracle oracle, uint32 start, uint256 fee) {
         ORACLE = oracle;
@@ -117,8 +120,11 @@ contract SettlementHandler is Test {
         // the refund path run on every accepted call.
         // forge-lint: disable-next-line(arbitrary-send-eth)
         try ORACLE.settlePrice{value: FEE + FEE_HEADROOM}(target, abi.encode(report), update) returns (
-            uint256 price18, uint256 deviationBps
+            uint256 price18, uint256 deviationBps, uint256 pythPaid
         ) {
+            if (pythPaid != FEE) {
+                feeMisreports++;
+            }
             successes++;
             assertGt(price18, 0, "a settled price was not positive");
 
