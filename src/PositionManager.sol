@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
 
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+
 import {ClaimBook} from "./libraries/ClaimBook.sol";
 import {FeeIndex} from "./libraries/FeeIndex.sol";
 import {CounterpartyPool} from "./CounterpartyPool.sol";
@@ -44,12 +47,25 @@ import {TradingCalendar} from "./oracle/TradingCalendar.sol";
 contract PositionManager is IPositionBook {
     using ClaimBook for ClaimBook.Book;
     using FeeIndex for FeeIndex.Index;
+    using SafeERC20 for IERC20;
 
     /// @notice One unit of the 1e18 scale the fee curve is written in.
     uint256 private constant WAD = 1e18;
 
-    /// @notice Denominator the pool states its utilisation ceiling in.
+    /// @notice Denominator the pool states its utilisation ceiling in, and the
+    ///         fee shares of D20 as well.
     uint256 private constant BPS_DENOMINATOR = 10_000;
+
+    /// @notice The leverage tiers of D52. Every position takes one of them.
+    uint256 private constant LEVERAGE_LOW = 2;
+    uint256 private constant LEVERAGE_MID = 3;
+    uint256 private constant LEVERAGE_HIGH = 5;
+
+    /// @notice Delay from request to target time: one slot, the same rule the
+    ///         pool follows (section 7 rule 2).
+    uint256 private constant TARGET_DELAY = 12;
+
+    uint256 private constant ROUND_UP = 1;
 
     /// @notice Everything the deployment needs, in one argument so that
     ///         thirteen positional values cannot be transposed.
@@ -68,6 +84,17 @@ contract PositionManager is IPositionBook {
     /// @param feeFloorRate Yearly holding fee at no utilisation (D42).
     /// @param feeCapRate Yearly holding fee at the ceiling and above (D53).
     /// @param feeExponent n in the fee curve, one to four (D53).
+    /// @param positionFeeBps f, charged on size at open and again at close
+    ///        (D71 rule 1). Zero is a valid value.
+    /// @param treasuryShareBps Treasury's share of every collected fee (D20).
+    /// @param insuranceShareBps The insurance fund's share, routed to the pool
+    ///        once the fund is at its target (D20).
+    /// @param poolShareBps The pool's share. The three sum to one.
+    /// @param minNotionalUsd Smallest position notional at the settled price,
+    ///        so that liquidating any position pays the keeper (D57).
+    /// @param gasOpen Gas estimate an open settlement is charged against (D65).
+    /// @param gasOverhead Gas an estimate cannot see, added to what a settler
+    ///        is paid (D65).
     struct Config {
         address gold;
         address paxg;
@@ -84,6 +111,13 @@ contract PositionManager is IPositionBook {
         uint256 feeFloorRate;
         uint256 feeCapRate;
         uint256 feeExponent;
+        uint256 positionFeeBps;
+        uint256 treasuryShareBps;
+        uint256 insuranceShareBps;
+        uint256 poolShareBps;
+        uint256 minNotionalUsd;
+        uint256 gasOpen;
+        uint256 gasOverhead;
     }
 
     TGAUX public immutable GOLD;
@@ -113,21 +147,165 @@ contract PositionManager is IPositionBook {
     uint256 public immutable FEE_U_MAX;
     uint256 public immutable FEE_EXPONENT;
 
+    /// @notice f of D71: the fee a position pays on its size in ounces at open
+    ///         and again at an owner's close, in basis points (O5).
+    uint256 public immutable POSITION_FEE_BPS;
+
+    /// @notice How a collected fee is split (D20, O3). The three sum to one.
+    uint256 public immutable TREASURY_SHARE_BPS;
+    uint256 public immutable INSURANCE_SHARE_BPS;
+    uint256 public immutable POOL_SHARE_BPS;
+
+    /// @notice Smallest notional a position may open with, in USD scaled by
+    ///         1e18, so no position is too small to be worth liquidating
+    ///         (D57, O5).
+    uint256 public immutable MIN_NOTIONAL_USD;
+
+    /// @notice Gas an open settlement is estimated at, which fixes the smallest
+    ///         execution fee a request may carry (D65, O5).
+    uint256 public immutable GAS_OPEN;
+
+    /// @notice Gas a settlement spends that `gasleft()` cannot see from inside
+    ///         the call: the 21000 intrinsic cost, the calldata cost of the
+    ///         report and the update, and the work after the last reading, which
+    ///         is the settler's payment and the credit beside it. It is added to
+    ///         what a settler is paid, and it is immutable because a settler
+    ///         must be able to price a settlement before sending it (D65, O5).
+    uint256 public immutable GAS_OVERHEAD;
+
+    /// @notice How long a request stays settleable before it can expire, the
+    ///         same window the pool uses (section 7 rule 4, O5).
+    uint256 public immutable REQUEST_EXPIRY;
     /// @notice Whether the guardian has paused inflows (D58 rule 2).
     bool public inflowsPaused;
+
+    /// @notice TGAUX held for pending requests and nothing else, so this equals
+    ///         the manager's own TGAUX balance between operations (D66).
+    uint256 public escrowedOunces;
+
+    /// @notice ETH owed to a requester from an execution fee, waiting to be
+    ///         pulled. Never pushed, so an account that refuses ETH cannot stop
+    ///         a settlement (D70).
+    mapping(address account => uint256 wei_) public ethCredit;
+
+    /// @notice Identifier of the next request, so zero is never one.
+    uint256 public nextRequestId = 1;
+
+    /// @notice Identifier of the next position, so zero is never one.
+    uint256 public nextPositionId = 1;
+
+    mapping(uint256 requestId => Request request) private _requests;
+    mapping(uint256 positionId => Position position) private _positions;
 
     /// @dev Internal rather than private so a harness can plant a position set
     ///      and drive an advance while no open path exists yet. The paths that
     ///      will maintain both live in this contract.
+    /// @notice What a request asks for. Liquidation is not a request of this
+    ///         kind: it carries no execution fee and pays its keeper in TGAUX
+    ///         from the fund (D39, D65).
+    enum Kind {
+        Open,
+        Add,
+        Close
+    }
+
+    /// @notice Where a request is in its lifecycle. The three terminal states
+    ///         are the only ways out (I17, D70).
+    enum State {
+        None,
+        Pending,
+        Settled,
+        Rejected,
+        Expired
+    }
+
+    /// @notice One request. `escrowed` is the q of an open or an add and zero
+    ///         for a close; `positionId` is zero for an open.
+    struct Request {
+        address requester;
+        uint256 escrowed;
+        uint256 executionFee;
+        uint256 targetTime;
+        uint256 positionId;
+        uint256 leverage;
+        Kind kind;
+        State state;
+    }
+
+    /// @notice One open position, carrying exactly what the claim book was
+    ///         given, so a close can hand the same four values back (D60).
+    struct Position {
+        address owner;
+        uint256 size;
+        uint256 claim;
+        uint256 openPrice;
+        uint256 openIndex;
+        bool open;
+    }
+
     ClaimBook.Book internal _book;
     FeeIndex.Index internal _index;
 
+    /// @dev What Pyth took from the value a settler sent, carried from the
+    ///      oracle call to the settler's payment inside one transaction. It is
+    ///      storage rather than an argument because both ends sit in separate
+    ///      private functions, and it is cleared as it is read.
+    uint256 private _pythPaid;
+
     event InflowsPaused(address indexed guardian);
     event InflowsUnpaused(address indexed guardian);
+    event OpenRequested(
+        uint256 indexed id, address indexed requester, uint256 ounces, uint256 leverage, uint256 targetTime, uint256 fee
+    );
+    event OpenSettled(
+        uint256 indexed id,
+        uint256 indexed positionId,
+        address indexed owner,
+        uint256 size,
+        uint256 claim,
+        uint256 openPrice,
+        uint256 feeOunces
+    );
+    event RequestRejected(uint256 indexed id, address indexed requester, Reason reason, uint256 price18);
+    event RequestExpired(uint256 indexed id, address indexed requester, uint256 escrowed, uint256 fee);
+    event FeeRouted(uint256 toTreasury, uint256 toInsuranceFund, uint256 toPool);
+    event SettlerPaid(uint256 indexed id, address indexed settler, uint256 paid, uint256 credited);
+    event CreditWithdrawn(address indexed account, uint256 amount);
 
     error ZeroAddress();
     error NotGuardian(address caller);
     error PoolHasNoShares();
+    error FeeTooHigh(uint256 bps);
+    error SharesDoNotSumToOne(uint256 total);
+    error ZeroMinimumNotional();
+    error ZeroGasEstimate();
+    error ZeroAmount();
+    error BadLeverage(uint256 leverage);
+    error PaxgUnusable();
+    error InflowsArePaused();
+    error FeeBelowEstimate(uint256 sent, uint256 required);
+    error NoSuchRequest(uint256 id);
+    error WrongKind(uint256 id);
+    error TooEarly(uint256 targetTime);
+    error TooLate(uint256 expiresAt);
+    error NotExpiredYet(uint256 expiresAt);
+    error NotRequester(address caller, address requester);
+    error NothingReceived();
+    error NothingToWithdraw();
+    error TransferFailed(address to, uint256 amount);
+
+    /// @notice Why a request was rejected at its price (D70). Every one of
+    ///         these is a rule the price or the state settled, so waiting could
+    ///         not have helped.
+    enum Reason {
+        None,
+        InflowsPaused,
+        PaxgUnusable,
+        PoolHasNoShares,
+        BelowMinimumNotional,
+        EntryPriceOutOfRange,
+        ReserveCeiling
+    }
 
     constructor(Config memory config) {
         if (
@@ -156,6 +334,29 @@ contract PositionManager is IPositionBook {
         FEE_CAP_RATE = config.feeCapRate;
         FEE_U_MAX = (config.poolUMaxBps * WAD) / BPS_DENOMINATOR;
         FEE_EXPONENT = config.feeExponent;
+        if (config.positionFeeBps > BPS_DENOMINATOR) {
+            revert FeeTooHigh(config.positionFeeBps);
+        }
+        if (config.treasuryShareBps + config.insuranceShareBps + config.poolShareBps != BPS_DENOMINATOR) {
+            revert SharesDoNotSumToOne(config.treasuryShareBps + config.insuranceShareBps + config.poolShareBps);
+        }
+        // A zero minimum would let a position open too small to be worth
+        // liquidating, which is the whole of D57.
+        if (config.minNotionalUsd == 0) {
+            revert ZeroMinimumNotional();
+        }
+        if (config.gasOpen == 0 || config.gasOverhead == 0) {
+            revert ZeroGasEstimate();
+        }
+        POSITION_FEE_BPS = config.positionFeeBps;
+        TREASURY_SHARE_BPS = config.treasuryShareBps;
+        INSURANCE_SHARE_BPS = config.insuranceShareBps;
+        POOL_SHARE_BPS = config.poolShareBps;
+        MIN_NOTIONAL_USD = config.minNotionalUsd;
+        GAS_OPEN = config.gasOpen;
+        GAS_OVERHEAD = config.gasOverhead;
+        REQUEST_EXPIRY = config.requestExpiry;
+
         FeeIndex.validate(
             FeeIndex.Params({
                 floorRate: config.feeFloorRate,
@@ -172,6 +373,11 @@ contract PositionManager is IPositionBook {
         // forge-lint: disable-next-line(block-timestamp)
         _index.start(block.timestamp);
     }
+
+    /// @notice Receive the oracle's refund of whatever Pyth did not take. A
+    ///         settlement reads this contract's balance across that call, so
+    ///         the refund has to land here rather than revert.
+    receive() external payable {}
 
     /// @notice Pause the inflows the guardian may pause (D58 rule 2).
     /// @dev Nothing reads this yet. The paths it will stop are the position
@@ -194,14 +400,196 @@ contract PositionManager is IPositionBook {
         emit InflowsUnpaused(msg.sender);
     }
 
-    /// @inheritdoc IPositionBook
-    function depositClaimUsd(uint256 price18) external view returns (uint256) {
-        return _book.depositClaimUsd(price18, indexNow());
+    /// @notice Ask to open a position of `leverage` on `ounces` of TGAUX.
+    /// @dev The q is escrowed here until settlement and measured by balance
+    ///      difference, so a token that takes a fee on transfer cannot escrow
+    ///      more than arrived (D66). The execution fee rides along in ETH and
+    ///      must cover the estimate for this request type at the gas price of
+    ///      this transaction (D65); more is allowed and comes back.
+    ///
+    ///      `paxgUsable` is read here and on no outflow path. It is an external
+    ///      call into a contract that is upgradeable behind a timelock, so it
+    ///      could one day revert; on an inflow a revert is the safe answer, and
+    ///      on a close or a liquidation it would be the unsafe one (D50, I14).
+    /// @param ounces q, the TGAUX posted as collateral.
+    /// @param leverage k, one of the tiers of D52.
+    /// @return id Identifier of the request.
+    function requestOpen(uint256 ounces, uint256 leverage) external payable returns (uint256 id) {
+        if (inflowsPaused) {
+            revert InflowsArePaused();
+        }
+        if (ounces == 0) {
+            revert ZeroAmount();
+        }
+        if (leverage != LEVERAGE_LOW && leverage != LEVERAGE_MID && leverage != LEVERAGE_HIGH) {
+            revert BadLeverage(leverage);
+        }
+        if (!_paxgUsable()) {
+            revert PaxgUnusable();
+        }
+        _requireFee(GAS_OPEN);
+        LOCK.enter();
+
+        uint256 received = _takeEscrow(msg.sender, ounces);
+        id = _record(msg.sender, received, Kind.Open, 0, leverage);
+
+        // The event reports what arrived, which is only known after the
+        // transfer, and the section is held across both.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit OpenRequested(id, msg.sender, received, leverage, _requests[id].targetTime, msg.value);
+
+        LOCK.exit();
+    }
+
+    /// @notice Settle a pending open against the reports for its target time.
+    /// @dev Anyone may call this (D62): section 7 rule 2 leaves exactly one
+    ///      report for the target, so the settler chooses no price. It pays the
+    ///      settler what the settlement cost it and credits the rest back.
+    ///
+    ///      An oracle failure reverts and the request waits, which is the one
+    ///      thing that is not a rejection (section 7 rule 4). Every rule that
+    ///      the price or the state decides rejects instead, refunding the q in
+    ///      full (D70).
+    /// @param id Request to settle.
+    /// @param streamsPayload The signed Data Streams report for the target.
+    /// @param pythUpdate The Pyth update covering the target.
+    function settleOpen(uint256 id, bytes calldata streamsPayload, bytes[] calldata pythUpdate) external payable {
+        uint256 gasAtEntry = gasleft();
+        Request storage request = _pendingAt(id, Kind.Open);
+
+        _advance();
+        uint256 price18 = _settlePrice(request.targetTime, streamsPayload, pythUpdate);
+
+        LOCK.enter();
+        Reason reason = _openAt(id, request, price18);
+        if (reason != Reason.None) {
+            _reject(id, request, reason, price18);
+        }
+        LOCK.exit();
+
+        _payTheSettler(id, request, gasAtEntry);
+    }
+
+    /// @notice Refund a request no price ever qualified for (section 7 rule 4).
+    /// @dev The requester calls it, so a keeper cannot cancel a request that is
+    ///      still settleable, and the whole execution fee goes back (D65).
+    /// @param id Request to expire.
+    function expireRequest(uint256 id) external {
+        Request storage request = _requests[id];
+        if (request.state != State.Pending) {
+            revert NoSuchRequest(id);
+        }
+        if (msg.sender != request.requester) {
+            revert NotRequester(msg.sender, request.requester);
+        }
+        uint256 expiresAt = request.targetTime + REQUEST_EXPIRY;
+        // The deadline is slot time, which post merge Ethereum fixes
+        // (consensus-specs specs/bellatrix/beacon-chain.md:446 at 9a8fdd0).
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp < expiresAt) {
+            revert NotExpiredYet(expiresAt);
+        }
+
+        uint256 escrowed = request.escrowed;
+        uint256 fee = request.executionFee;
+        request.state = State.Expired;
+        if (escrowed != 0) {
+            escrowedOunces -= escrowed;
+        }
+        if (fee != 0) {
+            ethCredit[request.requester] += fee;
+        }
+        emit RequestExpired(id, request.requester, escrowed, fee);
+
+        if (escrowed != 0) {
+            IERC20(address(GOLD)).safeTransfer(request.requester, escrowed);
+        }
+    }
+
+    /// @notice Take ETH owed from an execution fee.
+    /// @dev Pull rather than push, so an account that cannot receive ETH is its
+    ///      own problem and never a settlement's (D70).
+    function withdrawCredit() external {
+        uint256 amount = ethCredit[msg.sender];
+        if (amount == 0) {
+            revert NothingToWithdraw();
+        }
+
+        ethCredit[msg.sender] = 0;
+        emit CreditWithdrawn(msg.sender, amount);
+
+        _sendEth(msg.sender, amount);
+    }
+
+    /// @notice Read a request, for a settler deciding whether to settle it and
+    ///         for the D55 dashboard.
+    function requestAt(uint256 id)
+        external
+        view
+        returns (
+            address requester,
+            uint256 escrowed,
+            uint256 executionFee,
+            uint256 targetTime,
+            uint256 positionId,
+            uint256 leverage,
+            Kind kind,
+            State state
+        )
+    {
+        Request storage request = _requests[id];
+        return (
+            request.requester,
+            request.escrowed,
+            request.executionFee,
+            request.targetTime,
+            request.positionId,
+            request.leverage,
+            request.kind,
+            request.state
+        );
+    }
+
+    /// @notice Read a position (D55).
+    function positionAt(uint256 positionId)
+        external
+        view
+        returns (address owner, uint256 size, uint256 claim, uint256 openPrice, uint256 openIndex, bool open)
+    {
+        Position storage position = _positions[positionId];
+        return (position.owner, position.size, position.claim, position.openPrice, position.openIndex, position.open);
     }
 
     /// @inheritdoc IPositionBook
+    /// @dev D71 rule 6: the deposit measure also subtracts f of notional,
+    ///      rounded up, because every open position will pay that much on an
+    ///      owner's close. The withdrawal measure does not, because a
+    ///      liquidated position pays no close fee (D29 on both sides).
+    function depositClaimUsd(uint256 price18) external view returns (uint256) {
+        uint256 claim = _book.depositClaimUsd(price18, indexNow());
+        uint256 closeFee = _closeFeeUsdUp(price18);
+        return claim > closeFee ? claim - closeFee : 0;
+    }
+
+    /// @inheritdoc IPositionBook
+    /// @dev No close fee is subtracted here, which is the other half of D71
+    ///      rule 6.
     function withdrawalClaimUsd(uint256 price18) external view returns (uint256) {
         return _book.withdrawalClaimUsd(price18, indexNow());
+    }
+
+    /// @notice The close fee every open position will owe at `price18`, rounded
+    ///         up, which is the term D71 rule 6 adds to the deposit measure.
+    function closeFeeUsd(uint256 price18) external view returns (uint256) {
+        return _closeFeeUsdUp(price18);
+    }
+
+    /// @notice The smallest execution fee a request of `gasEstimate` may carry
+    ///         at this transaction's gas price (D65).
+    function executionFeeFloor(uint256 gasEstimate) public view returns (uint256) {
+        // The gas price of the transaction asking is the only price there is to
+        // quote against, which is what GMX v2 does as well.
+        return gasEstimate * tx.gasprice;
     }
 
     /// @notice The fee index as of this block, without writing it.
@@ -255,9 +643,10 @@ contract PositionManager is IPositionBook {
     /// @notice Whether PAXG can be used at all (D50).
     /// @dev False when Paxos has frozen the vault that holds the PAXG behind
     ///      TGAUX, and false when PAXG is paused altogether. Inflows valued at
-    ///      the gold price stop in either case; outflows carry on in TGAUX.
+    ///      the gold price stop in either case; outflows carry on in TGAUX, and
+    ///      no outflow path reads this.
     function paxgUsable() external view returns (bool) {
-        return !PAXG.isFrozen(PAXG_HOLDER) && !PAXG.paused();
+        return _paxgUsable();
     }
 
     /// @dev Advance the index before any change to reserved ounces or pool
@@ -278,6 +667,294 @@ contract PositionManager is IPositionBook {
         if (POOL.shareSupply() == 0) {
             revert PoolHasNoShares();
         }
+    }
+
+    /// @dev Pull the request's TGAUX in and count it, measuring what arrived
+    ///      rather than what was asked for (D66).
+    function _takeEscrow(address from, uint256 ounces) private returns (uint256 received) {
+        uint256 before = GOLD.balanceOf(address(this));
+        // The `from` is the caller of this contract, which is the only account
+        // whose escrow this can ever take.
+        // forge-lint: disable-next-line(arbitrary-send-erc20)
+        IERC20(address(GOLD)).safeTransferFrom(from, address(this), ounces);
+        received = GOLD.balanceOf(address(this)) - before;
+        if (received == 0) {
+            revert NothingReceived();
+        }
+        escrowedOunces += received;
+    }
+
+    /// @dev Record a pending request at one slot from now, the same target rule
+    ///      the pool follows (section 7 rule 2).
+    function _record(address requester, uint256 escrowed, Kind kind, uint256 positionId, uint256 leverage)
+        private
+        returns (uint256 id)
+    {
+        id = nextRequestId;
+        nextRequestId = id + 1;
+        // The target is one slot out, in slot time as above.
+        // forge-lint: disable-next-line(block-timestamp)
+        _requests[id] = Request({
+            requester: requester,
+            escrowed: escrowed,
+            executionFee: msg.value,
+            targetTime: block.timestamp + TARGET_DELAY,
+            positionId: positionId,
+            leverage: leverage,
+            kind: kind,
+            state: State.Pending
+        });
+    }
+
+    /// @dev A request that is pending, of the kind expected, past its target
+    ///      and inside its settlement window. The window closes where expiry
+    ///      opens, so the two meet at one instant and it belongs to expiry
+    ///      (section 7 rule 4, r6.7).
+    function _pendingAt(uint256 id, Kind kind) private view returns (Request storage request) {
+        request = _requests[id];
+        if (request.state != State.Pending) {
+            revert NoSuchRequest(id);
+        }
+        if (request.kind != kind) {
+            revert WrongKind(id);
+        }
+        // Both bounds are slot time, as above.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp < request.targetTime) {
+            revert TooEarly(request.targetTime);
+        }
+        uint256 expiresAt = request.targetTime + REQUEST_EXPIRY;
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp >= expiresAt) {
+            revert TooLate(expiresAt);
+        }
+    }
+
+    /// @dev The execution fee must cover this request type's estimate at this
+    ///      transaction's gas price (D65).
+    function _requireFee(uint256 gasEstimate) private view {
+        uint256 required = executionFeeFloor(gasEstimate);
+        if (msg.value < required) {
+            revert FeeBelowEstimate(msg.value, required);
+        }
+    }
+
+    /// @dev The price for a target, and the Pyth fee the settlement paid out of
+    ///      what the settler sent. The oracle keeps nothing and returns the
+    ///      remainder here, so the difference in this contract's balance across
+    ///      the call is exactly what Pyth took (section 7 rule 8).
+    function _settlePrice(uint256 targetTime, bytes calldata streamsPayload, bytes[] calldata pythUpdate)
+        private
+        returns (uint256 price18)
+    {
+        uint256 ethBefore = address(this).balance;
+        // The oracle is the address this contract was deployed against, and the
+        // value is what the settler sent for the Pyth fee.
+        // forge-lint: disable-next-line(reentrancy-eth)
+        // The deviation the oracle also returns belongs to the circuit breaker
+        // of section 7 rule 6, which is not written yet. The narrowing cast is
+        // the oracle's own interface: a target is a block timestamp plus twelve
+        // seconds, and 64 bits hold timestamps far beyond any chain this could
+        // run on, so it cannot truncate.
+        // forge-lint: disable-next-line(unused-return,unsafe-typecast)
+        (price18,) = SETTLEMENT_ORACLE.settlePrice{value: msg.value}(uint64(targetTime), streamsPayload, pythUpdate);
+        _pythPaid = ethBefore - address(this).balance;
+    }
+
+    /// @dev Apply the open rules at `price18`. A reason other than `None` means
+    ///      the request is rejected and nothing here has changed state.
+    function _openAt(uint256 id, Request storage request, uint256 price18) private returns (Reason) {
+        if (inflowsPaused) {
+            return Reason.InflowsPaused;
+        }
+        if (!_paxgUsable()) {
+            return Reason.PaxgUnusable;
+        }
+        if (POOL.shareSupply() == 0) {
+            return Reason.PoolHasNoShares;
+        }
+        if (price18 >= ClaimBook.RANGE_TOP) {
+            return Reason.EntryPriceOutOfRange;
+        }
+
+        uint256 escrowed = request.escrowed;
+        uint256 size = escrowed * request.leverage;
+        if (_usd(size, price18) < MIN_NOTIONAL_USD) {
+            return Reason.BelowMinimumNotional;
+        }
+        if (POOL.reservableOunces() < size) {
+            return Reason.ReserveCeiling;
+        }
+
+        // D71 rule 2: the open fee comes out of the posted q, so the claim is
+        // what is left times the settled price. The fee rounds up, against the
+        // position (D29).
+        uint256 feeOunces = _feeOunces(size);
+        uint256 joined = escrowed - feeOunces;
+        uint256 claim = _usd(joined, price18);
+
+        request.state = State.Settled;
+        escrowedOunces -= escrowed;
+
+        uint256 positionId = nextPositionId;
+        nextPositionId = positionId + 1;
+        _positions[positionId] = Position({
+            owner: request.requester, size: size, claim: claim, openPrice: price18, openIndex: _index.value, open: true
+        });
+        _book.add(size, claim, price18, _index.value);
+
+        // Every figure this reports is settled above, and the shared section is
+        // held across the three calls below, so nothing can reach this contract
+        // between them to reorder the log.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit OpenSettled(id, positionId, request.requester, size, claim, price18, feeOunces);
+
+        IERC20(address(GOLD)).safeTransfer(address(POOL), joined);
+        // The escrow and the position are written above, before any of these
+        // calls, and the section is held across all of them. The credit's
+        // return value is the pool's own figure, which I1 checks on its side.
+        // forge-lint: disable-next-line(reentrancy-no-eth,unused-return)
+        POOL.syncCredit();
+        // forge-lint: disable-next-line(reentrancy-no-eth)
+        POOL.reserve(size);
+        _routeFee(feeOunces);
+
+        return Reason.None;
+    }
+
+    /// @dev End a request as rejected and give the escrow back in full (D70).
+    function _reject(uint256 id, Request storage request, Reason reason, uint256 price18) private {
+        uint256 escrowed = request.escrowed;
+        address requester = request.requester;
+
+        request.state = State.Rejected;
+        if (escrowed != 0) {
+            escrowedOunces -= escrowed;
+        }
+        // The state and the escrow are written above and the section is held,
+        // so the refund below cannot come back in and repeat this.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit RequestRejected(id, requester, reason, price18);
+
+        if (escrowed != 0) {
+            IERC20(address(GOLD)).safeTransfer(requester, escrowed);
+        }
+    }
+
+    /// @dev Split a collected fee between the treasury, the fund and the pool
+    ///      (D20). The fund's share goes to the pool once the fund is at its
+    ///      target, and the pool's own share and any remainder go together, so
+    ///      one credit covers both.
+    function _routeFee(uint256 feeOunces) private {
+        if (feeOunces == 0) {
+            // Reached from a settlement that has already moved gold, which is
+            // the external call the rule sees; nothing is left to reorder.
+            // forge-lint: disable-next-line(reentrancy-events)
+            emit FeeRouted(0, 0, 0);
+            return;
+        }
+
+        uint256 toTreasury = (feeOunces * TREASURY_SHARE_BPS) / BPS_DENOMINATOR;
+        uint256 toFund = (feeOunces * INSURANCE_SHARE_BPS) / BPS_DENOMINATOR;
+        if (INSURANCE_FUND.atTarget()) {
+            toFund = 0;
+        }
+        // The remainder of both divisions goes to the pool, which is where an
+        // unrouted wei belongs: it is already in the pool's hands.
+        uint256 toPool = feeOunces - toTreasury - toFund;
+
+        // The split is decided above and the section is held across the three
+        // transfers below, as in the settlement that calls this.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit FeeRouted(toTreasury, toFund, toPool);
+
+        if (toTreasury != 0) {
+            IERC20(address(GOLD)).safeTransfer(TREASURY, toTreasury);
+        }
+        if (toFund != 0) {
+            IERC20(address(GOLD)).safeTransfer(address(INSURANCE_FUND), toFund);
+            // The escrow this gold came from was released before the transfer,
+            // and the credit's return value is the fund's own figure, which its
+            // I1 checks on its side.
+            // forge-lint: disable-next-line(reentrancy-no-eth,unused-return)
+            INSURANCE_FUND.syncCredit();
+        }
+        if (toPool != 0) {
+            IERC20(address(GOLD)).safeTransfer(address(POOL), toPool);
+            // forge-lint: disable-next-line(reentrancy-no-eth,unused-return)
+            POOL.syncCredit();
+        }
+    }
+
+    /// @dev Pay the settler what the settlement cost it, capped at the fee the
+    ///      requester deposited, and credit the rest back (D65). The settler is
+    ///      `msg.sender` and chose to be here, so this one is pushed; the
+    ///      requester's share is pulled.
+    ///
+    ///      Two sums go to the settler, and they come from different places.
+    ///      The reimbursement is gas used times the gas price plus what Pyth
+    ///      took, capped at the fee the requester deposited. The surplus is
+    ///      whatever of the settler's own value Pyth did not take, which was
+    ///      never the requester's to keep. Adding them leaves this contract
+    ///      holding nothing for the request: in comes the deposited fee plus
+    ///      the settler's value, out goes the Pyth fee, the reimbursement, the
+    ///      surplus and the credit, and the two sides are equal.
+    function _payTheSettler(uint256 id, Request storage request, uint256 gasAtEntry) private {
+        uint256 fee = request.executionFee;
+        uint256 pythPaid = _pythPaid;
+        uint256 used = gasAtEntry - gasleft() + GAS_OVERHEAD;
+        // Same gas price the floor was quoted at.
+        uint256 owed = used * tx.gasprice + pythPaid;
+        uint256 paid = owed > fee ? fee : owed;
+        uint256 credited = fee - paid;
+        uint256 surplus = msg.value - pythPaid;
+
+        _pythPaid = 0;
+        if (credited != 0) {
+            ethCredit[request.requester] += credited;
+        }
+        // The credit is written above and the payment below is the last thing
+        // this transaction does.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit SettlerPaid(id, msg.sender, paid, credited);
+
+        uint256 toSettler = paid + surplus;
+        if (toSettler != 0) {
+            _sendEth(msg.sender, toSettler);
+        }
+    }
+
+    function _sendEth(address to, uint256 amount) private {
+        // The recipient is either the caller or an account pulling its own
+        // credit, never an address this contract chose, and a raw call is the
+        // only way to pay an account that may be a contract.
+        // forge-lint: disable-next-line(arbitrary-send-eth,low-level-calls)
+        (bool sent,) = to.call{value: amount}("");
+        if (!sent) {
+            revert TransferFailed(to, amount);
+        }
+    }
+
+    /// @dev f of a size in ounces, rounded up against the position (D29, D71).
+    function _feeOunces(uint256 size) private view returns (uint256) {
+        return (size * POSITION_FEE_BPS + BPS_DENOMINATOR - ROUND_UP) / BPS_DENOMINATOR;
+    }
+
+    /// @dev The close fee every open position will owe at a price, rounded up
+    ///      (D71 rule 6).
+    function _closeFeeUsdUp(uint256 price18) private view returns (uint256) {
+        uint256 notional = POOL.reserved() * price18;
+        return (notional * POSITION_FEE_BPS + BPS_DENOMINATOR * WAD - ROUND_UP) / (BPS_DENOMINATOR * WAD);
+    }
+
+    /// @dev Ounces at a price, in USD, rounded down.
+    function _usd(uint256 ounces, uint256 price18) private pure returns (uint256) {
+        return (ounces * price18) / WAD;
+    }
+
+    /// @dev Whether PAXG can be used at all (D50), read on inflow paths only.
+    function _paxgUsable() private view returns (bool) {
+        return !PAXG.isFrozen(PAXG_HOLDER) && !PAXG.paused();
     }
 
     /// @dev The fee curve, rebuilt from the immutables that hold it.

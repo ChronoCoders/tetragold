@@ -35,6 +35,14 @@ contract PositionManagerTest is Test {
     uint256 private constant FEE_FLOOR = 0.0894e18;
     uint256 private constant FEE_CAP = 0.3e18;
     uint256 private constant FEE_EXPONENT = 2;
+    /// @dev Test figures, not proposals: every one of these is open under O5.
+    uint256 private constant POSITION_FEE_BPS = 10;
+    uint256 private constant TREASURY_SHARE_BPS = 4000;
+    uint256 private constant INSURANCE_SHARE_BPS = 3000;
+    uint256 private constant POOL_SHARE_BPS = 3000;
+    uint256 private constant MIN_NOTIONAL_USD = 100e18;
+    uint256 private constant GAS_OPEN = 400_000;
+    uint256 private constant GAS_OVERHEAD = 80_000;
     /// @dev One past the largest exponent the curve accepts.
     uint256 private constant BAD_EXPONENT = 5;
     uint256 private constant YEAR = 365 * 86_400;
@@ -281,7 +289,14 @@ contract PositionManagerTest is Test {
             insuranceTarget: IF_TARGET,
             feeFloorRate: FEE_FLOOR,
             feeCapRate: FEE_CAP,
-            feeExponent: FEE_EXPONENT
+            feeExponent: FEE_EXPONENT,
+            positionFeeBps: POSITION_FEE_BPS,
+            treasuryShareBps: TREASURY_SHARE_BPS,
+            insuranceShareBps: INSURANCE_SHARE_BPS,
+            poolShareBps: POOL_SHARE_BPS,
+            minNotionalUsd: MIN_NOTIONAL_USD,
+            gasOpen: GAS_OPEN,
+            gasOverhead: GAS_OVERHEAD
         });
     }
 }

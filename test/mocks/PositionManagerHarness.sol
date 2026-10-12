@@ -3,6 +3,7 @@ pragma solidity 0.8.30;
 
 import {ClaimBook} from "../../src/libraries/ClaimBook.sol";
 import {PositionManager} from "../../src/PositionManager.sol";
+import {ReentrancyLock} from "../../src/ReentrancyLock.sol";
 
 /// @notice Reaches the manager's internal paths while no public path leads to
 ///         them yet.
@@ -29,5 +30,40 @@ contract PositionManagerHarness is PositionManager {
 
     function dropPosition(uint256 size, uint256 claim, uint256 openPrice, uint256 openIndex) external {
         _book.remove(size, claim, openPrice, openIndex);
+    }
+
+    /// @notice Make an LP deposit request on the pool, the way the manager's
+    ///         own LP request path will (D69).
+    /// @dev The pool takes requests from this contract alone, and the LP facing
+    ///      half of that lives in a later unit. Until it exists these two are
+    ///      how a test gives the pool ounces and shares, which the empty pool
+    ///      rule of D48 requires before any position can open. They are two
+    ///      calls rather than one because the pool's target time has to pass
+    ///      between them and only the test can move the clock.
+    function seedRequest(address lp, uint256 ounces) external returns (uint256 id) {
+        ReentrancyLock lock = LOCK;
+
+        lock.enter();
+        id = POOL.requestDeposit(lp, ounces);
+        lock.exit();
+    }
+
+    /// @notice Credit gold that arrived at the insurance fund, which the fee
+    ///         routing does for itself and a test needs to do to fill the fund
+    ///         past its target.
+    function pokeSyncFund() external returns (uint256 credited) {
+        ReentrancyLock lock = LOCK;
+
+        lock.enter();
+        credited = INSURANCE_FUND.syncCredit();
+        lock.exit();
+    }
+
+    function seedSettle(uint256 id, uint256 price18) external returns (uint256 shares) {
+        ReentrancyLock lock = LOCK;
+
+        lock.enter();
+        (shares,) = POOL.settleDeposit(id, price18);
+        lock.exit();
     }
 }
