@@ -18,6 +18,31 @@ cleanup_gate() {
 }
 trap cleanup_gate EXIT INT TERM
 
+stage_lib_at() {
+    local sha="$1" wt="$2" meta path mode type obj moddir
+    while IFS=$'\t' read -r meta path; do
+        [ -n "$path" ] || continue
+        set -- $meta
+        mode="$1"; type="$2"; obj="$3"
+        [ "$type" = "commit" ] || continue
+        moddir="$root/.git/modules/$path"
+        if [ ! -d "$moddir" ]; then
+            refuse "gate setup failed: no local module store for $path at $sha"
+            return 1
+        fi
+        if ! git --git-dir="$moddir" cat-file -e "$obj^{commit}" 2>/dev/null; then
+            refuse "gate setup failed: $path commit $obj for $sha is not local; fetch and retry"
+            return 1
+        fi
+        mkdir -p "$wt/$path"
+        if ! git --git-dir="$moddir" archive "$obj" | tar -x -C "$wt/$path"; then
+            refuse "gate setup failed: could not stage $path at $sha"
+            return 1
+        fi
+    done < <(git ls-tree "$sha" lib/ 2>/dev/null)
+    return 0
+}
+
 gate_at() {
     local sha="$1" out g
     GATE_PARENT=$(mktemp -d 2>/dev/null) || { refuse "gate setup failed: no temp dir for $sha"; return 1; }
@@ -27,8 +52,7 @@ gate_at() {
         cleanup_gate
         return 1
     fi
-    if ! cp -a "$root"/lib/. "$GATE_WT"/lib/ 2>/dev/null; then
-        refuse "gate setup failed: could not stage lib at $sha"
+    if ! stage_lib_at "$sha" "$GATE_WT"; then
         cleanup_gate
         return 1
     fi
