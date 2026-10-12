@@ -92,7 +92,10 @@ contract PositionManager is IPositionBook {
     /// @param poolShareBps The pool's share. The three sum to one.
     /// @param minNotionalUsd Smallest position notional at the settled price,
     ///        so that liquidating any position pays the keeper (D57).
+    /// @param maintenanceMarginBps The margin a position must keep to stay out
+    ///        of liquidation, in basis points (D11, D52, O5).
     /// @param gasOpen Gas estimate an open settlement is charged against (D65).
+    /// @param gasAdd Gas estimate an add settlement is charged against (D65).
     /// @param gasOverhead Gas an estimate cannot see, added to what a settler
     ///        is paid (D65).
     struct Config {
@@ -116,7 +119,9 @@ contract PositionManager is IPositionBook {
         uint256 insuranceShareBps;
         uint256 poolShareBps;
         uint256 minNotionalUsd;
+        uint256 maintenanceMarginBps;
         uint256 gasOpen;
+        uint256 gasAdd;
         uint256 gasOverhead;
     }
 
@@ -161,9 +166,16 @@ contract PositionManager is IPositionBook {
     ///         (D57, O5).
     uint256 public immutable MIN_NOTIONAL_USD;
 
+    /// @notice The margin a position keeps to stay out of liquidation, in
+    ///         basis points of its notional (D11, D52, O5).
+    uint256 public immutable MAINTENANCE_MARGIN_BPS;
+
     /// @notice Gas an open settlement is estimated at, which fixes the smallest
     ///         execution fee a request may carry (D65, O5).
     uint256 public immutable GAS_OPEN;
+
+    /// @notice The same for an add settlement (D65, O5).
+    uint256 public immutable GAS_ADD;
 
     /// @notice Gas a settlement spends that `gasleft()` cannot see from inside
     ///         the call: the 21000 intrinsic cost, the calldata cost of the
@@ -195,7 +207,7 @@ contract PositionManager is IPositionBook {
     uint256 public nextPositionId = 1;
 
     mapping(uint256 requestId => Request request) private _requests;
-    mapping(uint256 positionId => Position position) private _positions;
+    mapping(uint256 positionId => Position position) internal _positions;
 
     /// @dev Internal rather than private so a harness can plant a position set
     ///      and drive an advance while no open path exists yet. The paths that
@@ -253,6 +265,8 @@ contract PositionManager is IPositionBook {
         uint256 openPrice;
         uint256 openIndex;
         bool open;
+        bool exitPending;
+        bool flagged;
     }
 
     ClaimBook.Book internal _book;
@@ -279,6 +293,10 @@ contract PositionManager is IPositionBook {
         uint256 openPrice,
         uint256 feeOunces
     );
+    event AddRequested(
+        uint256 indexed id, uint256 indexed positionId, address indexed owner, uint256 ounces, uint256 targetTime
+    );
+    event AddSettled(uint256 indexed id, uint256 indexed positionId, uint256 ounces, uint256 claim, uint256 price18);
     event RequestRejected(uint256 indexed id, address indexed requester, Reason reason, uint256 price18);
     event RequestExpired(uint256 indexed id, address indexed requester, uint256 escrowed, uint256 fee);
     event FeeRouted(uint256 toTreasury, uint256 toInsuranceFund, uint256 toPool);
@@ -307,6 +325,10 @@ contract PositionManager is IPositionBook {
     error NothingToWithdraw();
     error TransferFailed(address to, uint256 amount);
     error UnexpectedEth(address from);
+    error MarginOutOfRange(uint256 bps);
+    error NoSuchPosition(uint256 positionId);
+    error NotPositionOwner(address caller, address owner);
+    error ExitPending(uint256 positionId);
 
     /// @notice Why a request was rejected at its price (D70). Every one of
     ///         these is a rule the price or the state settled, so waiting could
@@ -318,7 +340,10 @@ contract PositionManager is IPositionBook {
         PoolHasNoShares,
         BelowMinimumNotional,
         EntryPriceOutOfRange,
-        ReserveCeiling
+        ReserveCeiling,
+        PositionClosed,
+        Liquidatable,
+        ClaimWouldPassNotional
     }
 
     constructor(Config memory config) {
@@ -363,15 +388,23 @@ contract PositionManager is IPositionBook {
         if (config.minNotionalUsd == 0) {
             revert ZeroMinimumNotional();
         }
-        if (config.gasOpen == 0 || config.gasOverhead == 0) {
+        if (config.gasOpen == 0 || config.gasAdd == 0 || config.gasOverhead == 0) {
             revert ZeroGasEstimate();
+        }
+        // A zero margin would mean a position is never liquidatable and a
+        // margin of the whole notional would mean it always is, so neither end
+        // is a curve (D11).
+        if (config.maintenanceMarginBps == 0 || config.maintenanceMarginBps >= BPS_DENOMINATOR) {
+            revert MarginOutOfRange(config.maintenanceMarginBps);
         }
         POSITION_FEE_BPS = config.positionFeeBps;
         TREASURY_SHARE_BPS = config.treasuryShareBps;
         INSURANCE_SHARE_BPS = config.insuranceShareBps;
         POOL_SHARE_BPS = config.poolShareBps;
         MIN_NOTIONAL_USD = config.minNotionalUsd;
+        MAINTENANCE_MARGIN_BPS = config.maintenanceMarginBps;
         GAS_OPEN = config.gasOpen;
+        GAS_ADD = config.gasAdd;
         GAS_OVERHEAD = config.gasOverhead;
         REQUEST_EXPIRY = config.requestExpiry;
 
@@ -463,6 +496,80 @@ contract PositionManager is IPositionBook {
         // transfer, and the section is held across both.
         // forge-lint: disable-next-line(reentrancy-events)
         emit OpenRequested(id, msg.sender, received, leverage, _requests[id].targetTime, msg.value);
+
+        LOCK.exit();
+    }
+
+    /// @notice Ask to add `ounces` of collateral to a position (D43).
+    /// @dev The owner alone may ask, because an add changes that position's
+    ///      claim and nobody else's. It is an inflow, so the brake and PAXG
+    ///      are read here as they are on an open, and the escrow is measured
+    ///      by balance difference (D58, D50, D66).
+    ///
+    ///      D43 rule 3: no add may be opened while an exit is pending for the
+    ///      position, so a holder cannot race a close with a rescue.
+    ///      `_requireNoExitPending` is that check; the close path sets the
+    ///      flag it reads and the liquidation unit will set its own beside it.
+    /// @param positionId The position to add to.
+    /// @param ounces q, the TGAUX added.
+    /// @return id Identifier of the request.
+    function requestAddCollateral(uint256 positionId, uint256 ounces) external payable returns (uint256 id) {
+        Position storage position = _positions[positionId];
+        if (!position.open) {
+            revert NoSuchPosition(positionId);
+        }
+        if (msg.sender != position.owner) {
+            revert NotPositionOwner(msg.sender, position.owner);
+        }
+        if (inflowsPaused) {
+            revert InflowsArePaused();
+        }
+        if (ounces == 0) {
+            revert ZeroAmount();
+        }
+        if (!_paxgUsable()) {
+            revert PaxgUnusable();
+        }
+        _requireNoExitPending(positionId);
+        _requireFee(GAS_ADD);
+        LOCK.enter();
+
+        uint256 received = _takeEscrow(msg.sender, ounces);
+        id = _record(msg.sender, received, Kind.Add, positionId, 0);
+
+        // The event reports what arrived, which is only known after the
+        // transfer, and the guarded section covers both.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit AddRequested(id, positionId, msg.sender, received, _requests[id].targetTime);
+
+        LOCK.exit();
+    }
+
+    /// @notice Settle a pending add against the reports for its target time.
+    /// @dev Anyone may call this, as on an open (D62). A rule that the price
+    ///      or the state decides rejects and refunds the q in full (D70); an
+    ///      oracle failure reverts and the request waits.
+    /// @param id Request to settle.
+    /// @param streamsPayload The signed Data Streams report for the target.
+    /// @param pythUpdate The Pyth update covering the target.
+    function settleAddCollateral(uint256 id, bytes calldata streamsPayload, bytes[] calldata pythUpdate)
+        external
+        payable
+    {
+        uint256 gasAtEntry = gasleft();
+        Request storage request = _pendingAt(id, Kind.Add);
+
+        LOCK.enter();
+
+        _advance();
+        uint256 price18 = _settlePrice(request.targetTime, streamsPayload, pythUpdate);
+
+        Reason reason = _addAt(id, request, price18);
+        if (reason != Reason.None) {
+            _reject(id, request, reason, price18);
+        }
+
+        _payTheSettler(id, request, gasAtEntry);
 
         LOCK.exit();
     }
@@ -610,6 +717,18 @@ contract PositionManager is IPositionBook {
     {
         Position storage position = _positions[positionId];
         return (position.owner, position.size, position.claim, position.openPrice, position.openIndex, position.open);
+    }
+
+    /// @notice Whether an exit is pending for a position, and whether the D22
+    ///         fallback has flagged it (D43 rule 3, D43 rule 4).
+    function positionFlags(uint256 positionId) external view returns (bool exitPending, bool flagged) {
+        Position storage position = _positions[positionId];
+        return (position.exitPending, position.flagged);
+    }
+
+    /// @notice Whether a position would be liquidatable at `price18` (D11).
+    function liquidatableAt(uint256 positionId, uint256 price18) external view returns (bool) {
+        return _isLiquidatable(_positions[positionId], price18);
     }
 
     /// @inheritdoc IPositionBook
@@ -883,7 +1002,14 @@ contract PositionManager is IPositionBook {
         uint256 positionId = nextPositionId;
         nextPositionId = positionId + 1;
         _positions[positionId] = Position({
-            owner: owner, size: open.size, claim: open.claim, openPrice: price18, openIndex: index, open: true
+            owner: owner,
+            size: open.size,
+            claim: open.claim,
+            openPrice: price18,
+            openIndex: index,
+            open: true,
+            exitPending: false,
+            flagged: false
         });
         _book.add(open.size, open.claim, price18, index);
 
@@ -902,6 +1028,110 @@ contract PositionManager is IPositionBook {
         POOL.syncCredit();
         // forge-lint: disable-next-line(reentrancy-no-eth)
         POOL.reserve(open.size);
+    }
+
+    /// @dev Apply the add rules at `price18`. A reason other than `None` means
+    ///      the request is rejected and nothing here has changed state.
+    function _addAt(uint256 id, Request storage request, uint256 price18) private returns (Reason) {
+        // I28 as r6.17 revises it: an add is an inflow, so a pending one is
+        // rejected while the brake is on, not held until it lifts.
+        if (inflowsPaused) {
+            return Reason.InflowsPaused;
+        }
+        if (!_paxgUsable()) {
+            return Reason.PaxgUnusable;
+        }
+
+        uint256 positionId = request.positionId;
+        Position storage position = _positions[positionId];
+        if (!position.open) {
+            return Reason.PositionClosed;
+        }
+        // D43 rule 2: a holder watching the oracle must not rescue a position
+        // that is already past its liquidation level at the settled price.
+        if (_isLiquidatable(position, price18)) {
+            return Reason.Liquidatable;
+        }
+
+        uint256 added = _usd(request.escrowed, price18);
+        // D43 rule 5: the payout bound of D46 needs C <= s * P_open, and the
+        // claim book holds the same floored notional, so the two agree.
+        if (position.claim + added > _usd(position.size, position.openPrice)) {
+            return Reason.ClaimWouldPassNotional;
+        }
+
+        _commitAdd(id, request, position, positionId, added, price18);
+
+        return Reason.None;
+    }
+
+    /// @dev Move the gold into the pool, raise the claim and tell the book.
+    function _commitAdd(
+        uint256 id,
+        Request storage request,
+        Position storage position,
+        uint256 positionId,
+        uint256 added,
+        uint256 price18
+    ) private {
+        uint256 escrowed = request.escrowed;
+
+        request.state = State.Settled;
+        escrowedOunces -= escrowed;
+        position.claim += added;
+        // D43 rule 4: an add that settles proves the position healthy at a
+        // settled price, so it clears the D22 fallback flag. Nothing raises
+        // that flag before the liquidation unit, so for now this only ever
+        // clears one that is already down.
+        position.flagged = false;
+        _book.addCollateral(position.openPrice, added);
+
+        // Every figure is settled above and the guarded section covers the
+        // calls below.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit AddSettled(id, positionId, escrowed, position.claim, price18);
+
+        IERC20(address(GOLD)).safeTransfer(address(POOL), escrowed);
+        // The escrow and the claim are written above, before the transfer, and
+        // the guarded section covers both calls. The credit's return value is
+        // the pool's own figure, which I1 checks on its side.
+        // forge-lint: disable-next-line(reentrancy-no-eth,unused-return)
+        POOL.syncCredit();
+    }
+
+    /// @dev Whether a position is past its liquidation level at `price18`
+    ///      (D11, 5.4 rule 1): equity under the maintenance margin of the
+    ///      notional. Equity is the claim plus the notional now, less the
+    ///      notional at open and the holding fee owed, so the comparison is
+    ///      written as held against owed to keep every term unsigned.
+    function _isLiquidatable(Position storage position, uint256 price18) private view returns (bool) {
+        uint256 size = position.size;
+        uint256 feeOunces = (size * (indexNow() - position.openIndex) + WAD - ROUND_UP) / WAD;
+        uint256 notional = _usd(size, price18);
+        uint256 threshold = (notional * MAINTENANCE_MARGIN_BPS + BPS_DENOMINATOR - ROUND_UP) / BPS_DENOMINATOR;
+
+        // The comparison is strict, as 5.4 rule 1 states it: equity exactly
+        // at the threshold is not liquidatable. Every term leans the way D29
+        // asks, the notional owed and the fee up and the notional held down,
+        // so a rounding error can only ever call a position liquidatable and
+        // never miss one.
+        uint256 owed = _usdUp(size, position.openPrice) + _usdUp(feeOunces, price18) + threshold;
+        uint256 held = position.claim + notional;
+
+        return held < owed;
+    }
+
+    /// @dev D43 rule 3: an add cannot be opened while an exit is pending for
+    ///      the position.
+    function _requireNoExitPending(uint256 positionId) private view {
+        if (_positions[positionId].exitPending) {
+            revert ExitPending(positionId);
+        }
+    }
+
+    /// @dev Ounces at a price, in USD, rounded up.
+    function _usdUp(uint256 ounces, uint256 price18) private pure returns (uint256) {
+        return (ounces * price18 + WAD - ROUND_UP) / WAD;
     }
 
     /// @dev End a request as rejected and give the escrow back in full (D70).

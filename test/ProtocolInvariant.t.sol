@@ -31,7 +31,7 @@ import {PositionManagerHarness} from "./mocks/PositionManagerHarness.sol";
 /// forge-config: default.invariant.fail-on-revert = true
 contract ProtocolInvariantTest is Test {
     uint256 private constant NOTHING = 0;
-    uint256 private constant SELECTORS = 7;
+    uint256 private constant SELECTORS = 9;
     uint256 private constant U_MAX_BPS = 8000;
     uint256 private constant EXPIRY = 600;
     uint256 private constant IF_TARGET = 100 ether;
@@ -43,7 +43,9 @@ contract ProtocolInvariantTest is Test {
     uint256 private constant INSURANCE_SHARE_BPS = 3000;
     uint256 private constant POOL_SHARE_BPS = 3000;
     uint256 private constant MIN_NOTIONAL_USD = 1000e18;
+    uint256 private constant MAINTENANCE_MARGIN_BPS = 600;
     uint256 private constant GAS_OPEN = 400_000;
+    uint256 private constant GAS_ADD = 300_000;
     uint256 private constant GAS_OVERHEAD = 80_000;
     uint256 private constant GAS_PRICE = 2 gwei;
     uint256 private constant PYTH_FEE = 1000 wei;
@@ -57,6 +59,7 @@ contract ProtocolInvariantTest is Test {
     bytes32 private constant PYTH_ID = bytes32(uint256(0x765d2ba9));
     uint256 private constant DRIVE_DEPOSIT = 40 ether;
     uint256 private constant DRIVE_POST = 5 ether;
+    uint256 private constant DRIVE_ADD = 1 ether;
     /// @dev One slot, which a request's target sits at (section 7 rule 2).
     uint256 private constant TARGET_DELAY = 12;
 
@@ -113,7 +116,9 @@ contract ProtocolInvariantTest is Test {
                 insuranceShareBps: INSURANCE_SHARE_BPS,
                 poolShareBps: POOL_SHARE_BPS,
                 minNotionalUsd: MIN_NOTIONAL_USD,
+                maintenanceMarginBps: MAINTENANCE_MARGIN_BPS,
                 gasOpen: GAS_OPEN,
+                gasAdd: GAS_ADD,
                 gasOverhead: GAS_OVERHEAD
             })
         );
@@ -129,6 +134,8 @@ contract ProtocolInvariantTest is Test {
         selectors[4] = ProtocolHandler.passTime.selector;
         selectors[5] = ProtocolHandler.movePrice.selector;
         selectors[6] = ProtocolHandler.movePaxg.selector;
+        selectors[7] = ProtocolHandler.requestAdd.selector;
+        selectors[8] = ProtocolHandler.settleAdd.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
     }
@@ -200,6 +207,18 @@ contract ProtocolInvariantTest is Test {
         handler.passTime(EXPIRY * 2);
         handler.expireOpen(0);
         assertEq(handler.expiries(), 1, "the request did not expire");
+
+        handler.requestAdd(0, DRIVE_ADD);
+        assertEq(handler.adds(), 1, "no add was requested");
+        handler.passTime(TARGET_DELAY);
+        handler.settleAdd(0);
+        assertEq(handler.addSettlements(), 1, "the add did not settle");
+
+        handler.requestAdd(0, type(uint256).max);
+        handler.passTime(TARGET_DELAY);
+        handler.settleAdd(0);
+        assertEq(handler.addRejections(), 1, "D43 rule 5 was never reached, so the ceiling proves nothing");
+        assertEq(handler.wrongEndings(), NOTHING, "I17: an add ended somewhere else");
 
         handler.movePrice(type(uint256).max);
 

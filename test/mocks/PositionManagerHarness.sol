@@ -59,6 +59,21 @@ contract PositionManagerHarness is PositionManager {
         lock.exit();
     }
 
+    /// @notice Set the two position flags that the close and the liquidation
+    ///         paths will set, so the rules reading them can be tested before
+    ///         those paths exist (D43 rule 3, D43 rule 4).
+    function pokeFlags(uint256 positionId, bool exitPending, bool flagged) external {
+        Position storage position = _positions[positionId];
+        position.exitPending = exitPending;
+        position.flagged = flagged;
+    }
+
+    /// @notice Take a position off the books the way a close will, so a
+    ///         settlement against a position that is gone can be tested.
+    function pokeClose(uint256 positionId) external {
+        _positions[positionId].open = false;
+    }
+
     function seedSettle(uint256 id, uint256 price18) external returns (uint256 shares) {
         ReentrancyLock lock = LOCK;
 

@@ -54,6 +54,7 @@ contract ProtocolHandler is Test {
 
     address[ACTORS] private _actors;
     uint256[] private _pending;
+    uint256[] private _pendingAdds;
     uint256[] private _open;
 
     uint256 public price = 4000e18;
@@ -63,6 +64,12 @@ contract ProtocolHandler is Test {
     uint256 public settlements;
     uint256 public rejections;
     uint256 public expiries;
+
+    /// @notice The add path, counted apart from the open path so a campaign
+    ///         cannot look green on adds it never made (D43).
+    uint256 public adds;
+    uint256 public addSettlements;
+    uint256 public addRejections;
 
     /// @notice Open requests refused while PAXG was unusable, which D50 and
     ///         I26 require, and the ones that went through anyway.
@@ -118,6 +125,10 @@ contract ProtocolHandler is Test {
 
     function pendingCount() external view returns (uint256) {
         return _pending.length;
+    }
+
+    function pendingAddCount() external view returns (uint256) {
+        return _pendingAdds.length;
     }
 
     function passTime(uint256 seconds_) external {
@@ -249,6 +260,87 @@ contract ProtocolHandler is Test {
         _check();
     }
 
+    /// @dev D43: the owner of an open position adds collateral to it. The
+    ///      amount is bounded wide enough that some adds pass the notional
+    ///      ceiling of D43 rule 5 and are rejected, which is the half of the
+    ///      path a tight bound would hide.
+    function requestAdd(uint256 positionSeed, uint256 amountSeed) external {
+        uint256 count = _open.length;
+        if (count == 0) {
+            return;
+        }
+        uint256 positionId = _open[positionSeed % count];
+        // forge-lint: disable-next-line(unused-return)
+        (address owner,,,,, bool open) = MANAGER.positionAt(positionId);
+        if (!open) {
+            return;
+        }
+
+        uint256 amount = bound(amountSeed, MIN_POST, MAX_POST);
+        _fund(owner, amount);
+
+        uint256 fee = MANAGER.GAS_ADD() * GAS_PRICE;
+        vm.deal(owner, owner.balance + fee);
+
+        vm.prank(owner);
+        assertTrue(GOLD.approve(address(MANAGER), amount));
+
+        bool usable = MANAGER.paxgUsable();
+
+        vm.prank(owner);
+        // forge-lint: disable-next-line(reentrancy-no-eth)
+        try MANAGER.requestAddCollateral{value: fee}(positionId, amount) returns (uint256 id) {
+            if (!usable) {
+                inflowsAllowedWhileUnusable += 1;
+            }
+            _pendingAdds.push(id);
+            adds += 1;
+        } catch {
+            if (usable) {
+                assertTrue(false, "an add request was refused while PAXG was usable");
+            }
+            inflowRefusals += 1;
+        }
+
+        _check();
+    }
+
+    function settleAdd(uint256 idSeed) external {
+        uint256 count = _pendingAdds.length;
+        if (count == 0) {
+            return;
+        }
+        uint256 at = idSeed % count;
+        uint256 id = _pendingAdds[at];
+
+        // forge-lint: disable-next-line(unused-return)
+        (,,, uint256 targetTime,,,, PositionManager.State before) = MANAGER.requestAt(id);
+        if (before != PositionManager.State.Pending) {
+            _dropAdd(at);
+            return;
+        }
+        if (vm.getBlockTimestamp() < targetTime || vm.getBlockTimestamp() >= targetTime + MANAGER.REQUEST_EXPIRY()) {
+            return;
+        }
+
+        vm.deal(address(this), address(this).balance + PYTH_FEE);
+        // forge-lint: disable-next-line(reentrancy-no-eth)
+        MANAGER.settleAddCollateral{value: PYTH_FEE}(id, abi.encode(_report(targetTime)), _pythUpdate(targetTime));
+
+        // forge-lint: disable-next-line(unused-return)
+        (,,,,,,, PositionManager.State after_) = MANAGER.requestAt(id);
+        if (after_ == PositionManager.State.Settled) {
+            addSettlements += 1;
+        } else if (after_ == PositionManager.State.Rejected) {
+            addRejections += 1;
+        } else {
+            wrongEndings += 1;
+        }
+
+        _dropAdd(at);
+        _check();
+    }
+
     /// @dev D50: PAXG can stop being usable at any time, and only inflows may
     ///      notice. Nothing here asserts the brake, which is the manager's own
     ///      test.
@@ -323,6 +415,14 @@ contract ProtocolHandler is Test {
                 emaPrice: IPyth.Price({price: pythPrice, conf: 0, expo: PYTH_EXPO, publishTime: uint64(target)})
             })
         );
+    }
+
+    function _dropAdd(uint256 at) private {
+        uint256 last = _pendingAdds.length - 1;
+        if (at != last) {
+            _pendingAdds[at] = _pendingAdds[last];
+        }
+        _pendingAdds.pop();
     }
 
     function _drop(uint256 at) private {

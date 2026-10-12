@@ -41,7 +41,9 @@ contract PositionManagerTest is Test {
     uint256 private constant INSURANCE_SHARE_BPS = 3000;
     uint256 private constant POOL_SHARE_BPS = 3000;
     uint256 private constant MIN_NOTIONAL_USD = 100e18;
+    uint256 private constant MAINTENANCE_MARGIN_BPS = 600;
     uint256 private constant GAS_OPEN = 400_000;
+    uint256 private constant GAS_ADD = 300_000;
     uint256 private constant GAS_OVERHEAD = 80_000;
     /// @dev One past the largest exponent the curve accepts.
     uint256 private constant BAD_EXPONENT = 5;
@@ -119,6 +121,8 @@ contract PositionManagerTest is Test {
         assertEq(manager.FEE_CAP_RATE(), FEE_CAP);
         assertEq(manager.FEE_EXPONENT(), FEE_EXPONENT);
         assertEq(manager.FEE_U_MAX(), (U_MAX_BPS * WAD) / BPS, "the fee ceiling is not the pool's own");
+        assertEq(manager.MAINTENANCE_MARGIN_BPS(), MAINTENANCE_MARGIN_BPS);
+        assertEq(manager.GAS_ADD(), GAS_ADD);
     }
 
     /// @dev The index measures from deployment, not from the epoch, which is
@@ -232,7 +236,7 @@ contract PositionManagerTest is Test {
         manager.pokeRequireSharesExist();
     }
 
-    function test_ConstructorRejectsAZeroAddressAndABadCurve() public {
+    function test_ConstructorRejectsABadAddressCurveOrBound() public {
         PositionManager.Config memory config = _config();
         config.gold = address(0);
         vm.expectRevert(PositionManager.ZeroAddress.selector);
@@ -261,6 +265,23 @@ contract PositionManagerTest is Test {
         config = _config();
         config.feeExponent = BAD_EXPONENT;
         vm.expectRevert(abi.encodeWithSelector(FeeIndex.ExponentOutOfRange.selector, BAD_EXPONENT));
+        new PositionManagerHarness(config);
+
+        // Neither end of the margin is a curve: at zero nothing is ever
+        // liquidatable and at the whole notional everything is (D11).
+        config = _config();
+        config.maintenanceMarginBps = NOTHING;
+        vm.expectRevert(abi.encodeWithSelector(PositionManager.MarginOutOfRange.selector, NOTHING));
+        new PositionManagerHarness(config);
+
+        config = _config();
+        config.maintenanceMarginBps = BPS;
+        vm.expectRevert(abi.encodeWithSelector(PositionManager.MarginOutOfRange.selector, BPS));
+        new PositionManagerHarness(config);
+
+        config = _config();
+        config.gasAdd = NOTHING;
+        vm.expectRevert(PositionManager.ZeroGasEstimate.selector);
         new PositionManagerHarness(config);
     }
 
@@ -295,7 +316,9 @@ contract PositionManagerTest is Test {
             insuranceShareBps: INSURANCE_SHARE_BPS,
             poolShareBps: POOL_SHARE_BPS,
             minNotionalUsd: MIN_NOTIONAL_USD,
+            maintenanceMarginBps: MAINTENANCE_MARGIN_BPS,
             gasOpen: GAS_OPEN,
+            gasAdd: GAS_ADD,
             gasOverhead: GAS_OVERHEAD
         });
     }
