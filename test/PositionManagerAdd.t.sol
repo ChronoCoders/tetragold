@@ -441,10 +441,9 @@ contract PositionManagerAddTest is Test {
         // costs at least two wei less than the fee at the ceiling.
         assertGt(feeUsdUp, feeUsdDown + 1, "the two roundings are too close to read a direction from");
 
-        uint256 positionId =
-            manager.pokePosition(trader, edge.size, edge.claimAtThreshold - 1, PRICE_18, edge.openIndex);
+        uint256 edgeId = manager.pokePosition(trader, edge.size, edge.claimAtThreshold - 1, PRICE_18, edge.openIndex);
 
-        assertTrue(manager.liquidatableAt(positionId, PRICE_18), "the holding fee was not charged at the ceiling");
+        assertTrue(manager.liquidatableAt(edgeId, PRICE_18), "the holding fee was not charged at the ceiling");
     }
 
     /// @dev Section 7 rule 4: an add that nobody settles inside its window
