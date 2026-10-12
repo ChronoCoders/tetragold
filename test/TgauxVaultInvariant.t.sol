@@ -60,7 +60,7 @@ contract TgauxVaultInvariantTest is Test {
         usdc = new MockERC20("USD Coin", "USDC", STABLE_DECIMALS);
         usdt = new MockERC20("Tether USD", "USDT", STABLE_DECIMALS);
         ReentrancyLock sentinelLock = new ReentrancyLock();
-        pool = new CounterpartyPool(address(token), address(sentinelLock), makeAddr("guardian"), U_MAX_BPS, EXPIRY);
+        pool = new CounterpartyPool(address(token), address(sentinelLock), U_MAX_BPS, EXPIRY);
         insuranceFund = new InsuranceFund(address(token), makeAddr("treasury"), address(sentinelLock), 1 ether);
 
         usdc.mint(address(pool), SENTINEL_STABLE);

@@ -36,11 +36,13 @@ pragma solidity 0.8.30;
  *
  *      A holiday closes the whole Eastern day. That is wider than the venue's
  *      own schedule around a holiday, and wider in the safe direction: a
- *      closed calendar refuses to settle a price.
+ *      closed calendar refuses the D22 push fallback a price. It cannot refuse
+ *      a settlement, which reads no calendar at all (D61).
  *
- *      Nothing here reads `block.timestamp`. The caller passes the instant it
- *      cares about, which is the target time of a request, so the answer is a
- *      pure function of its argument and the holiday list.
+ *      The reading side takes the instant it is asked about, which is the
+ *      target time of a request, so `isOpen` and `isHoliday` are pure
+ *      functions of their argument and the holiday list. The scheduling side
+ *      is the only part that reads the clock, for the delay of D68.
  */
 contract TradingCalendar {
     uint256 private constant SECONDS_PER_DAY = 86_400;

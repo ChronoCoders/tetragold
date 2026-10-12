@@ -165,7 +165,7 @@ contract PositionManager is IPositionBook {
             })
         );
 
-        POOL = new CounterpartyPool(config.gold, config.lock, config.guardian, config.poolUMaxBps, config.requestExpiry);
+        POOL = new CounterpartyPool(config.gold, config.lock, config.poolUMaxBps, config.requestExpiry);
         INSURANCE_FUND = new InsuranceFund(config.gold, config.treasury, config.lock, config.insuranceTarget);
 
         // The index measures from here, not from the epoch.

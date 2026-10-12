@@ -81,7 +81,7 @@ contract PositionManagerTest is Test {
         fund = manager.INSURANCE_FUND();
     }
 
-    function test_DeploymentWiresThePoolAndTheFundToTheManager() public view {
+    function test_DeploymentWiresThePoolAndTheFundToTheManager() public {
         assertEq(address(pool.POSITION_MANAGER()), address(manager), "the pool does not point at the manager");
         assertEq(fund.POSITION_MANAGER(), address(manager), "the fund does not point at the manager");
 
@@ -94,7 +94,11 @@ contract PositionManagerTest is Test {
         assertEq(pool.U_MAX_BPS(), U_MAX_BPS);
         assertEq(pool.REQUEST_EXPIRY(), EXPIRY);
         assertEq(fund.TARGET(), IF_TARGET);
-        assertEq(pool.GUARDIAN(), guardian);
+        // D69: the pool holds no guardian of its own. The brake is the
+        // manager's, and the manager is the only way in.
+        // forge-lint: disable-next-line(low-level-calls)
+        (bool ok,) = address(pool).call(abi.encodeWithSignature("GUARDIAN()"));
+        assertFalse(ok, "the pool still names a guardian");
     }
 
     function test_DeploymentStoresEveryParameter() public view {

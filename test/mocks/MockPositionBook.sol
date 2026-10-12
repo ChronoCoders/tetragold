@@ -20,8 +20,36 @@ contract MockPositionBook is IPositionBook {
     uint256 private _depositClaimUsd;
     uint256 private _withdrawalClaimUsd;
 
-    constructor(address gold, address lock, address guardian, uint256 uMaxBps, uint256 requestExpiry) {
-        POOL = new CounterpartyPool(gold, lock, guardian, uMaxBps, requestExpiry);
+    constructor(address gold, address lock, uint256 uMaxBps, uint256 requestExpiry) {
+        POOL = new CounterpartyPool(gold, lock, uMaxBps, requestExpiry);
+    }
+
+    /// @notice The front door of D69: every request arrives through here and
+    ///         carries the LP it is made for.
+    function requestDeposit(address lp, uint256 depositOunces) external returns (uint256 id) {
+        POOL.LOCK().enter();
+        id = POOL.requestDeposit(lp, depositOunces);
+        POOL.LOCK().exit();
+    }
+
+    function requestWithdrawal(address lp, uint256 shares) external returns (uint256 id) {
+        POOL.LOCK().enter();
+        id = POOL.requestWithdrawal(lp, shares);
+        POOL.LOCK().exit();
+    }
+
+    function expire(uint256 id, address caller) external {
+        POOL.LOCK().enter();
+        POOL.expire(id, caller);
+        POOL.LOCK().exit();
+    }
+
+    function requestDepositOutsideTheSection(address lp, uint256 depositOunces) external returns (uint256 id) {
+        id = POOL.requestDeposit(lp, depositOunces);
+    }
+
+    function expireOutsideTheSection(uint256 id, address caller) external {
+        POOL.expire(id, caller);
     }
 
     function setClaims(uint256 depositClaim, uint256 withdrawalClaim) external {

@@ -21,8 +21,9 @@ import {MockPositionBook} from "../mocks/MockPositionBook.sol";
 ///      the smaller of the two (D48). `moveClaims` keeps both, so a failure of
 ///      I6 or I15b is the pool's and not the stand in's.
 ///
-///      Every guarded call goes through `MockPositionBook`, which is both the
-///      pool's deployer and the position book. Foundry runs with call isolation
+///      Every call goes through `MockPositionBook`, which is the pool's
+///      deployer, its position book and, from D69, the front door every request
+///      arrives by. Foundry runs with call isolation
 ///      on, so taking the shared lock here and calling the pool on the next
 ///      line would find the lock free.
 contract PoolHandler is Test {
@@ -43,7 +44,6 @@ contract PoolHandler is Test {
     TGAUX public immutable GOLD;
     LPToken public immutable SHARES;
     MockERC20 public immutable PAXG;
-    address public immutable GUARDIAN;
 
     address[ACTORS] private _lps;
     uint256[] private _pending;
@@ -67,8 +67,6 @@ contract PoolHandler is Test {
     uint256 public opens;
     uint256 public closes;
     uint256 public coverageRefusals;
-    uint256 public brakeRefusals;
-    uint256 public brakeSwitches;
     uint256 public reserveRefusals;
     uint256 public lateSettlementRefusals;
 
@@ -77,21 +75,22 @@ contract PoolHandler is Test {
     uint256 public mispricedDeposits;
     uint256 public mispricedWithdrawals;
     uint256 public doubleFinals;
-    uint256 public brakeBlockedAnOutflow;
-    uint256 public guardianMovedABalance;
     uint256 public reserveOvershootsAllowed;
+
+    /// @notice Requests tried from outside the manager and refused, which is
+    ///         what D69 requires, and the ones let through, which is the
+    ///         defect. The first is counted so the second cannot be green for
+    ///         want of an attempt.
+    uint256 public outsideCallsRefused;
+    uint256 public outsideCallsAllowed;
     uint256 public lateSettlementsAllowed;
 
-    // A zero guardian would make the brake unreachable, which the pool's own
-    // constructor test covers; this handler is not a deployment script.
-    // forge-lint: disable-next-line(missing-zero-check)
-    constructor(ReentrancyLock lock, address guardian, uint256 uMaxBps, uint256 requestExpiry) {
+    constructor(ReentrancyLock lock, uint256 uMaxBps, uint256 requestExpiry) {
         LOCK = lock;
-        GUARDIAN = guardian;
         PAXG = new MockERC20("Paxos Gold", "PAXG", 18);
         VAULT = new TgauxVault(address(PAXG), makeAddr("vault treasury"), 0, 0);
         GOLD = VAULT.TOKEN();
-        BOOK = new MockPositionBook(address(GOLD), address(lock), guardian, uMaxBps, requestExpiry);
+        BOOK = new MockPositionBook(address(GOLD), address(lock), uMaxBps, requestExpiry);
         POOL = BOOK.POOL();
         SHARES = POOL.SHARES();
 
@@ -129,33 +128,35 @@ contract PoolHandler is Test {
         _setClaims(depositSeed, extraSeed);
     }
 
+    /// @dev D69: the LP approves the pool and the manager makes the call, so
+    ///      the gold moves from the LP into the escrow and the request names
+    ///      the LP rather than the caller.
     function requestDeposit(uint256 lpSeed, uint256 amount) external {
         address lp = _lpAt(lpSeed);
         amount = bound(amount, MIN_MOVE, MAX_MOVE);
         _fund(lp, amount);
 
-        vm.startPrank(lp);
+        vm.prank(lp);
         assertTrue(GOLD.approve(address(POOL), amount));
-        if (POOL.inflowsPaused()) {
-            try POOL.requestDeposit(amount) {
-                assertTrue(false, "I28: a deposit request went through while the brake was on");
-            } catch {
-                brakeRefusals += 1;
-            }
-            vm.stopPrank();
-            return;
+
+        // D69: the same call from the LP itself must be refused, which is the
+        // half of I28 the pool can still state for itself.
+        vm.prank(lp);
+        // forge-lint: disable-next-line(unused-return)
+        try POOL.requestDeposit(lp, amount) returns (uint256) {
+            outsideCallsAllowed += 1;
+        } catch {
+            outsideCallsRefused += 1;
         }
-        uint256 id = POOL.requestDeposit(amount);
-        vm.stopPrank();
+
+        // forge-lint: disable-next-line(reentrancy-no-eth)
+        uint256 id = BOOK.requestDeposit(lp, amount);
 
         _pending.push(id);
         escrowedIn += amount;
         depositRequests += 1;
     }
 
-    /// @dev I28: a withdrawal request is an outflow and the brake must not
-    ///      reach it, so a refusal is recorded rather than letting the revert
-    ///      end the sequence with no attribution.
     function requestWithdrawal(uint256 lpSeed, uint256 shareSeed) external {
         address lp = _lpAt(lpSeed);
         uint256 held = SHARES.balanceOf(lp);
@@ -166,14 +167,12 @@ contract PoolHandler is Test {
 
         vm.prank(lp);
         assertTrue(SHARES.approve(address(POOL), amount));
-        vm.prank(lp);
+
         // forge-lint: disable-next-line(reentrancy-no-eth)
-        try POOL.requestWithdrawal(amount) returns (uint256 id) {
-            _pending.push(id);
-            withdrawalRequests += 1;
-        } catch (bytes memory reason) {
-            _countBrakeOrFail(reason, "a withdrawal request reverted");
-        }
+        uint256 id = BOOK.requestWithdrawal(lp, amount);
+
+        _pending.push(id);
+        withdrawalRequests += 1;
     }
 
     /// @dev One settle path for both kinds, so the fuzzer cannot settle only
@@ -231,16 +230,13 @@ contract PoolHandler is Test {
         // record, and the shared lock the pool takes stops a reentry. Both
         // lines are external calls, so both carry the allow.
         // forge-lint: disable-next-line(reentrancy-no-eth)
-        vm.prank(lp);
         // forge-lint: disable-next-line(reentrancy-no-eth)
-        try POOL.expire(id) {
-            _drop(index);
-            expiries += 1;
-            if (kind == CounterpartyPool.Kind.Deposit) {
-                refundedOut += amount;
-            }
-        } catch (bytes memory reason) {
-            _countBrakeOrFail(reason, "an expiry reverted");
+        BOOK.expire(id, lp);
+
+        _drop(index);
+        expiries += 1;
+        if (kind == CounterpartyPool.Kind.Deposit) {
+            refundedOut += amount;
         }
     }
 
@@ -295,34 +291,8 @@ contract PoolHandler is Test {
             }
             paidOutTotal += paid;
             closes += 1;
-        } catch (bytes memory reason) {
-            if (_isBrake(reason)) {
-                brakeBlockedAnOutflow += 1;
-            } else {
-                payOutFailures += 1;
-            }
-        }
-    }
-
-    /// @dev I28: the guardian may switch the brake and nothing else. Every
-    ///      figure the pool tracks is read on both sides of the call, as one
-    ///      hash so that the comparison is a single exact check.
-    function switchBrake(bool on) external {
-        bytes32 before = _fingerprint();
-
-        vm.prank(GUARDIAN);
-        if (on) {
-            POOL.pauseInflows();
-        } else {
-            POOL.unpauseInflows();
-        }
-        brakeSwitches += 1;
-
-        // Strict equality is the claim: I28 says a guardian call changes no
-        // balance at all, so any difference, however small, is the defect.
-        // forge-lint: disable-next-line(incorrect-strict-equality)
-        if (_fingerprint() != before) {
-            guardianMovedABalance += 1;
+        } catch {
+            payOutFailures += 1;
         }
     }
 
@@ -348,10 +318,8 @@ contract PoolHandler is Test {
             depositsSettled += amount;
             settledDeposits += 1;
             _settledOnce(id);
-        } catch (bytes memory reason) {
-            // Settling ounces already escrowed is not an inflow the brake may
-            // stop (D58), so a refusal here is the defect I28 names.
-            _countBrakeOrFail(reason, "a deposit settlement reverted");
+        } catch {
+            assertTrue(false, "a deposit settlement reverted");
         }
     }
 
@@ -374,11 +342,7 @@ contract PoolHandler is Test {
             settledWithdrawals += 1;
             _drop(index);
             _settledOnce(id);
-        } catch (bytes memory reason) {
-            if (_isBrake(reason)) {
-                brakeBlockedAnOutflow += 1;
-                return;
-            }
+        } catch {
             // D13: a withdrawal that would leave R above u_max of what is left
             // waits. The request stays pending, which the state read asserts.
             // forge-lint: disable-next-line(unused-return)
@@ -429,21 +393,6 @@ contract PoolHandler is Test {
         assertTrue(false, "a settlement past the expiry failed for another reason");
     }
 
-    /// @dev The brake refusing an outflow is an I28 defect with a name, so it
-    ///      is counted; anything else reverting is a defect with none, and the
-    ///      assertion ends the sequence where it happened.
-    function _countBrakeOrFail(bytes memory reason, string memory what) private {
-        if (_isBrake(reason)) {
-            brakeBlockedAnOutflow += 1;
-            return;
-        }
-        assertTrue(false, what);
-    }
-
-    function _isBrake(bytes memory reason) private pure returns (bool) {
-        return reason.length == SELECTOR_BYTES && _selectorOf(reason) == CounterpartyPool.InflowsArePaused.selector;
-    }
-
     /// @dev The first four bytes of revert data, which name the error. A shorter
     ///      payload carries no selector and matches nothing.
     function _selectorOf(bytes memory reason) private pure returns (bytes4) {
@@ -454,22 +403,6 @@ contract PoolHandler is Test {
         // selector; the arguments after it are not part of the comparison.
         // forge-lint: disable-next-line(unsafe-typecast)
         return bytes4(reason);
-    }
-
-    /// @dev Every figure the pool tracks, in one value. A guardian call must
-    ///      leave all of them alone (I28).
-    function _fingerprint() private view returns (bytes32) {
-        return keccak256(
-            abi.encode(
-                GOLD.balanceOf(address(POOL)),
-                SHARES.balanceOf(address(POOL)),
-                POOL.ounces(),
-                POOL.reserved(),
-                POOL.escrowedOunces(),
-                POOL.escrowedShares(),
-                SHARES.totalSupply()
-            )
-        );
     }
 
     function _pickPending(uint256 seed) private view returns (uint256 id, uint256 index) {

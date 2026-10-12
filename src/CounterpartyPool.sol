@@ -21,6 +21,14 @@ import {TGAUX} from "./TGAUX.sol";
  *      ounces are tracked apart from pool ounces, because both sit in the same
  *      token balance: I1 for the pool is `balanceOf == ounces + escrowedOunces`.
  *
+ *      The position manager is the only entry point (D69). Every request,
+ *      LP deposits and withdrawals included, arrives through it, so each
+ *      request function takes the LP's address as a parameter rather than
+ *      trusting its caller. That address cannot be spoofed: only the manager
+ *      can call, and the manager passes its own `msg.sender`. The gold and the
+ *      shares still move from that LP straight into this contract's escrow, so
+ *      the LP approves the pool and nothing sits in the manager.
+ *
  *      Deposits and withdrawals are requests settled at a later price (D13,
  *      section 7 rule 1). A request records its target time and nothing else
  *      about the price, so the keeper that settles it has no choice of price.
@@ -31,9 +39,9 @@ import {TGAUX} from "./TGAUX.sol";
  *      Settlement and expiry meet at one instant, the expiry itself, which
  *      belongs to expiry alone. Only expiry cancels a request (I17).
  *
- *      The guardian brake stops the one inflow this contract has, a deposit
- *      request. It cannot stop a withdrawal request, either settlement, or an
- *      expiry, and it moves no balance (D58, I28).
+ *      There is no guardian brake here. It moved to the manager with the front
+ *      door (D58, D69): a deposit request is the one inflow this contract ever
+ *      had, and the manager now owns the call that makes it.
  *
  *      Reserved ounces R live here, so the coverage check of I15a and the
  *      withdrawal check of D13 are both local reads.
@@ -95,10 +103,6 @@ contract CounterpartyPool {
     ///         manager (D31).
     ReentrancyLock public immutable LOCK;
 
-    /// @notice Guardian multisig, which may pause deposit requests and nothing
-    ///         else (D58). It has no power over any balance or parameter.
-    address public immutable GUARDIAN;
-
     /// @notice Upper bound on utilisation u = R / pool ounces, in basis points,
     ///         at most one (D46, O5).
     uint256 public immutable U_MAX_BPS;
@@ -121,9 +125,6 @@ contract CounterpartyPool {
     ///         burnt on settlement and returned on expiry.
     uint256 public escrowedShares;
 
-    /// @notice Whether the guardian brake is on (D58).
-    bool public inflowsPaused;
-
     /// @notice Identifier of the next request, so zero is never a request.
     uint256 public nextRequestId = 1;
 
@@ -142,8 +143,6 @@ contract CounterpartyPool {
     event PaidOut(address indexed to, uint256 requested, uint256 paid, uint256 total);
     event Reserved(uint256 added, uint256 total);
     event Released(uint256 removed, uint256 total);
-    event InflowsPaused(address indexed guardian);
-    event InflowsUnpaused(address indexed guardian);
 
     error ZeroAddress();
     error ZeroAmount();
@@ -151,10 +150,8 @@ contract CounterpartyPool {
     error UMaxTooHigh(uint256 bps);
     error ZeroExpiry();
     error NotPositionManager(address caller);
-    error NotGuardian(address caller);
     error NotRequestOwner(address caller, address lp);
     error LockNotHeld(address caller, address holder);
-    error InflowsArePaused();
     error NoSuchRequest(uint256 id);
     error WrongKind(uint256 id);
     error TooEarly(uint256 targetTime);
@@ -169,11 +166,10 @@ contract CounterpartyPool {
 
     /// @param gold The TGAUX token.
     /// @param lock The shared reentrancy guard.
-    /// @param guardian The guardian multisig of D58.
     /// @param uMaxBps Upper bound on u in basis points, at most 10000 (D46).
     /// @param requestExpiry Seconds after the target time a request may expire.
-    constructor(address gold, address lock, address guardian, uint256 uMaxBps, uint256 requestExpiry) {
-        if (gold == address(0) || lock == address(0) || guardian == address(0)) {
+    constructor(address gold, address lock, uint256 uMaxBps, uint256 requestExpiry) {
+        if (gold == address(0) || lock == address(0)) {
             revert ZeroAddress();
         }
         if (uMaxBps == 0 || uMaxBps > BPS_DENOMINATOR) {
@@ -186,83 +182,84 @@ contract CounterpartyPool {
         GOLD = TGAUX(gold);
         POSITION_MANAGER = IPositionBook(msg.sender);
         LOCK = ReentrancyLock(lock);
-        GUARDIAN = guardian;
         U_MAX_BPS = uMaxBps;
         REQUEST_EXPIRY = requestExpiry;
         SHARES = new LPToken("Tetra Gold LP", "TGLP");
     }
 
-    /// @notice Pause deposit requests (D58). Nothing else is affected.
-    function pauseInflows() external {
-        if (msg.sender != GUARDIAN) {
-            revert NotGuardian(msg.sender);
-        }
-        inflowsPaused = true;
-        emit InflowsPaused(msg.sender);
-    }
-
-    /// @notice Let deposit requests through again (D58).
-    function unpauseInflows() external {
-        if (msg.sender != GUARDIAN) {
-            revert NotGuardian(msg.sender);
-        }
-        inflowsPaused = false;
-        emit InflowsUnpaused(msg.sender);
-    }
-
-    /// @notice Escrow `depositOunces` and ask to be priced at the next slot.
-    /// @dev The only inflow here, so the only call the brake stops (I28). The
-    ///      escrow is measured as a balance difference, so a token that takes a
-    ///      fee on transfer cannot credit more than arrived.
-    /// @param depositOunces TGAUX to pull from the caller.
+    /// @notice Escrow `depositOunces` of `lp`'s gold and ask to be priced at
+    ///         the next slot.
+    /// @dev Position manager only, inside the shared section, because the
+    ///      manager is the front door for every request and holds the lock when
+    ///      it calls in (D69, D31). The escrow is measured as a balance
+    ///      difference, so a token that takes a fee on transfer cannot credit
+    ///      more than arrived.
+    /// @param lp The LP the request is made for, whose gold moves and who alone
+    ///        can expire it. The manager passes its own caller, and nothing
+    ///        else can reach this function, so the address cannot be spoofed.
+    /// @param depositOunces TGAUX to pull from `lp`.
     /// @return id Identifier of the request.
-    function requestDeposit(uint256 depositOunces) external returns (uint256 id) {
-        if (inflowsPaused) {
-            revert InflowsArePaused();
+    function requestDeposit(address lp, uint256 depositOunces) external returns (uint256 id) {
+        _onlyPositionManagerInsideTheSection();
+        if (lp == address(0)) {
+            revert ZeroAddress();
         }
         if (depositOunces == 0) {
             revert ZeroAmount();
         }
-        LOCK.enter();
 
         uint256 before = GOLD.balanceOf(address(this));
-        IERC20(address(GOLD)).safeTransferFrom(msg.sender, address(this), depositOunces);
+        // The `from` is deliberately not `msg.sender`: D69 makes the manager
+        // the only caller and has it pass its own caller as `lp`, so the gold
+        // moves from the LP and never through the manager. Two things bound it:
+        // nothing but the manager can reach this function, and the LP's own
+        // allowance to this pool is still required, so no amount moves that the
+        // LP did not approve. What this does trust is the manager naming the
+        // right LP, which is the trust D69 places in it.
+        // forge-lint: disable-next-line(arbitrary-send-erc20)
+        IERC20(address(GOLD)).safeTransferFrom(lp, address(this), depositOunces);
         uint256 received = GOLD.balanceOf(address(this)) - before;
         if (received == 0) {
             revert NothingReceived();
         }
 
-        id = _record(msg.sender, received, Kind.Deposit);
+        id = _record(lp, received, Kind.Deposit);
         escrowedOunces += received;
         // The event reports what arrived, which is only known after the
-        // transfer, and the shared section is held across both, so no call can
-        // reach this contract between them and reorder the log.
+        // transfer, and the section the manager holds covers both, so no call
+        // can reach this contract between them and reorder the log.
         // forge-lint: disable-next-line(reentrancy-events)
-        emit DepositRequested(id, msg.sender, received, _requests[id].targetTime);
-
-        LOCK.exit();
+        emit DepositRequested(id, lp, received, _requests[id].targetTime);
     }
 
-    /// @notice Escrow `shares` and ask to be priced at the next slot.
-    /// @dev Never stopped by the brake, because it leads to an outflow (D58).
+    /// @notice Escrow `shares` of `lp`'s shares and ask to be priced at the
+    ///         next slot.
+    /// @dev Position manager only, inside the section, as the deposit request
+    ///      above (D69). An LP's shares move from the LP, not from the manager.
+    /// @param lp The LP the request is made for, as above.
     /// @param shares Shares to escrow.
     /// @return id Identifier of the request.
-    function requestWithdrawal(uint256 shares) external returns (uint256 id) {
+    function requestWithdrawal(address lp, uint256 shares) external returns (uint256 id) {
+        _onlyPositionManagerInsideTheSection();
+        if (lp == address(0)) {
+            revert ZeroAddress();
+        }
         if (shares == 0) {
             revert ZeroAmount();
         }
-        LOCK.enter();
 
-        IERC20(address(SHARES)).safeTransferFrom(msg.sender, address(this), shares);
+        // Same as the deposit request above: the manager names the LP, the
+        // LP's allowance to this pool still gates the amount, and the shares
+        // never pass through the manager.
+        // forge-lint: disable-next-line(arbitrary-send-erc20)
+        IERC20(address(SHARES)).safeTransferFrom(lp, address(this), shares);
 
-        id = _record(msg.sender, shares, Kind.Withdrawal);
+        id = _record(lp, shares, Kind.Withdrawal);
         escrowedShares += shares;
         // The identifier in the event is assigned after the escrow arrives, and
-        // the section is held across both, as above.
+        // the section covers both, as above.
         // forge-lint: disable-next-line(reentrancy-events)
-        emit WithdrawalRequested(id, msg.sender, shares, _requests[id].targetTime);
-
-        LOCK.exit();
+        emit WithdrawalRequested(id, lp, shares, _requests[id].targetTime);
     }
 
     /// @notice Price a pending deposit at `price18` and mint its shares.
@@ -342,16 +339,25 @@ contract CounterpartyPool {
 
     /// @notice Cancel a request that outlived its expiry and return its escrow.
     /// @dev Only expiry cancels, and a request settles or expires exactly once
-    ///      (I17, section 7 rule 4). The owner of the request calls it, so a
-    ///      keeper cannot expire a request the LP still wants settled.
+    ///      (I17, section 7 rule 4). Position manager only, inside the section,
+    ///      so that the manager can refund the execution fee it holds for the
+    ///      request in the same call (D65, D69).
+    ///
+    ///      The rule itself is unchanged: only the LP the request was made for
+    ///      can expire it, so a keeper cannot cancel a request the LP still
+    ///      wants settled. The manager vouches for that address by passing its
+    ///      own caller, and nothing else can reach this function.
     /// @param id Request to expire.
-    function expire(uint256 id) external {
+    /// @param caller The account the manager was called by.
+    function expire(uint256 id, address caller) external {
+        _onlyPositionManagerInsideTheSection();
+
         Request storage request = _requests[id];
         if (request.state != State.Pending) {
             revert NoSuchRequest(id);
         }
-        if (msg.sender != request.lp) {
-            revert NotRequestOwner(msg.sender, request.lp);
+        if (caller != request.lp) {
+            revert NotRequestOwner(caller, request.lp);
         }
         uint256 expiresAt = request.targetTime + REQUEST_EXPIRY;
         // Expiry is a deadline in slot time, which post merge Ethereum fixes
@@ -360,15 +366,10 @@ contract CounterpartyPool {
         if (block.timestamp < expiresAt) {
             revert NotExpiredYet(expiresAt);
         }
-        LOCK.enter();
 
         uint256 amount = request.amount;
         Kind kind = request.kind;
         request.state = State.Expired;
-        // The only external call before this is taking the shared section,
-        // which holds no state a caller can turn against this log, and the
-        // refund below runs after it.
-        // forge-lint: disable-next-line(reentrancy-events)
         emit RequestExpired(id, request.lp, amount);
 
         if (kind == Kind.Deposit) {
@@ -378,8 +379,6 @@ contract CounterpartyPool {
             escrowedShares -= amount;
             IERC20(address(SHARES)).safeTransfer(request.lp, amount);
         }
-
-        LOCK.exit();
     }
 
     /// @notice Take into pool ounces whatever TGAUX arrived since the last

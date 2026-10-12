@@ -12,9 +12,9 @@ import {PoolHandler} from "./handlers/PoolHandler.sol";
 
 /// @notice The pool's side of I1, I2, I6, I7, I14, I15a, I15b, I16, I17, I20,
 ///         I27 and I28 (section 8).
-/// @dev The handler catches only the two calls that are allowed to fail, a
-///      withdrawal that would break coverage and a deposit request under the
-///      brake, so any other revert in a sequence is a defect.
+/// @dev The handler catches only the one call that is allowed to fail, a
+///      withdrawal that would break coverage, so any other revert in a
+///      sequence is a defect.
 /// forge-config: default.invariant.fail-on-revert = true
 contract CounterpartyPoolInvariantTest is Test {
     uint256 private constant U_MAX_BPS = 8000;
@@ -27,7 +27,7 @@ contract CounterpartyPoolInvariantTest is Test {
     uint256 private constant DRIVE_SIZE = 10 ether;
     uint256 private constant LOW_PRICE = 500e18;
     uint256 private constant HIGH_PRICE = 8000e18;
-    uint256 private constant SELECTORS = 9;
+    uint256 private constant SELECTORS = 8;
     /// @dev Past the target slot and past the expiry that follows it.
     uint256 private constant PAST_EXPIRY = 1200;
 
@@ -40,7 +40,7 @@ contract CounterpartyPoolInvariantTest is Test {
 
     function setUp() public {
         lock = new ReentrancyLock();
-        handler = new PoolHandler(lock, makeAddr("guardian"), U_MAX_BPS, EXPIRY);
+        handler = new PoolHandler(lock, U_MAX_BPS, EXPIRY);
         pool = handler.POOL();
         vault = handler.VAULT();
         gold = handler.GOLD();
@@ -55,7 +55,6 @@ contract CounterpartyPoolInvariantTest is Test {
         selectors[5] = PoolHandler.close.selector;
         selectors[6] = PoolHandler.passTime.selector;
         selectors[7] = PoolHandler.movePrice.selector;
-        selectors[8] = PoolHandler.switchBrake.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
     }
@@ -158,11 +157,18 @@ contract CounterpartyPoolInvariantTest is Test {
         );
     }
 
-    /// @notice I28: the brake never blocked an outflow and no guardian call
-    ///         moved a balance.
-    function invariant_I28_TheBrakeOnlyStopsInflows() public view {
-        assertEq(handler.brakeBlockedAnOutflow(), NOTHING, "I28: the brake stopped an outflow");
-        assertEq(handler.guardianMovedABalance(), NOTHING, "I28: a guardian call moved a balance");
+    /// @notice I28, the half of it this contract can still state: the pool has
+    ///         no brake of its own to apply to anything.
+    /// @dev The brake moved to the position manager with the front door of D69,
+    ///      so the rest of I28, that it stops a deposit request and nothing
+    ///      else, belongs to the manager's request paths and is tested in the
+    ///      unit that writes them. What is left here is that the pool carries
+    ///      no guardian and no pause at all, which
+    ///      `test_ThePoolCarriesNoBrakeAtAll` asserts against the deployed
+    ///      bytecode, and that nothing reaches the pool except through the
+    ///      manager, which every call the campaign makes exercises.
+    function invariant_I28_ThePoolHasNoBrakeOfItsOwn() public view {
+        assertEq(handler.outsideCallsAllowed(), NOTHING, "I28: a request reached the pool from outside the manager");
     }
 
     /// @dev Every assertion above holds on a campaign that did nothing, so this
@@ -204,17 +210,9 @@ contract CounterpartyPoolInvariantTest is Test {
         handler.expireOne(0);
         assertGt(handler.expiries(), NOTHING, "no request expired");
 
-        handler.switchBrake(true);
         handler.requestDeposit(2, DRIVE_DEPOSIT);
-        assertGt(handler.brakeRefusals(), NOTHING, "the brake never refused a deposit request");
-
-        handler.requestWithdrawal(0, type(uint256).max);
-        handler.passTime(EXPIRY);
-        handler.settle(0);
-        handler.close(type(uint256).max, type(uint256).max);
-        assertEq(handler.brakeBlockedAnOutflow(), NOTHING, "I28: the brake stopped an outflow");
-
-        handler.switchBrake(false);
-        assertEq(handler.guardianMovedABalance(), NOTHING, "a guardian call moved a balance");
+        assertGt(handler.depositRequests(), 1, "the second deposit request never ran");
+        assertGt(handler.outsideCallsRefused(), NOTHING, "the manager only guard was never tested");
+        assertEq(handler.outsideCallsAllowed(), NOTHING, "a request reached the pool from outside the manager");
     }
 }

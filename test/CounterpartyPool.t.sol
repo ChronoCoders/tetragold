@@ -47,7 +47,7 @@ contract CounterpartyPoolTest is Test {
         vault = new VaultStub();
         gold = vault.TOKEN();
         lock = new ReentrancyLock();
-        book = new MockPositionBook(address(gold), address(lock), guardian, U_MAX_BPS, EXPIRY);
+        book = new MockPositionBook(address(gold), address(lock), U_MAX_BPS, EXPIRY);
         pool = book.POOL();
         shares = pool.SHARES();
 
@@ -60,33 +60,28 @@ contract CounterpartyPoolTest is Test {
         assertEq(address(pool.POSITION_MANAGER()), address(book));
         assertEq(address(pool.GOLD()), address(gold));
         assertEq(address(pool.LOCK()), address(lock));
-        assertEq(pool.GUARDIAN(), guardian);
         assertEq(pool.U_MAX_BPS(), U_MAX_BPS);
         assertEq(pool.REQUEST_EXPIRY(), EXPIRY);
         assertEq(shares.LIQUIDITY_POOL(), address(pool), "the pool is not its share token's only minter");
         assertEq(pool.ounces(), NOTHING);
         assertEq(pool.nextRequestId(), FIRST_ID);
-        assertFalse(pool.inflowsPaused());
     }
 
     function test_ConstructorRejectsBadArguments() public {
         vm.expectRevert(CounterpartyPool.ZeroAddress.selector);
-        new CounterpartyPool(address(0), address(lock), guardian, U_MAX_BPS, EXPIRY);
+        new CounterpartyPool(address(0), address(lock), U_MAX_BPS, EXPIRY);
 
         vm.expectRevert(CounterpartyPool.ZeroAddress.selector);
-        new CounterpartyPool(address(gold), address(0), guardian, U_MAX_BPS, EXPIRY);
-
-        vm.expectRevert(CounterpartyPool.ZeroAddress.selector);
-        new CounterpartyPool(address(gold), address(lock), address(0), U_MAX_BPS, EXPIRY);
+        new CounterpartyPool(address(gold), address(0), U_MAX_BPS, EXPIRY);
 
         vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.UMaxTooHigh.selector, NOTHING));
-        new CounterpartyPool(address(gold), address(lock), guardian, NOTHING, EXPIRY);
+        new CounterpartyPool(address(gold), address(lock), NOTHING, EXPIRY);
 
         vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.UMaxTooHigh.selector, BPS + 1));
-        new CounterpartyPool(address(gold), address(lock), guardian, BPS + 1, EXPIRY);
+        new CounterpartyPool(address(gold), address(lock), BPS + 1, EXPIRY);
 
         vm.expectRevert(CounterpartyPool.ZeroExpiry.selector);
-        new CounterpartyPool(address(gold), address(lock), guardian, U_MAX_BPS, NOTHING);
+        new CounterpartyPool(address(gold), address(lock), U_MAX_BPS, NOTHING);
     }
 
     /// @dev D48: the first deposit is one share per ounce, which the virtual
@@ -308,61 +303,66 @@ contract CounterpartyPoolTest is Test {
         book.reserveOutsideTheSection(ONE);
     }
 
-    /// @dev I28 and D58: the brake stops the one inflow and nothing else.
-    function test_BrakeStopsOnlyTheDepositRequest() public {
+    /// @dev D69: the manager is the only entry point. Every one of the three
+    ///      request facing calls refuses a caller that is not it, and refuses
+    ///      the manager itself without the shared section.
+    function test_EveryEntryPointIsManagerOnlyAndNeedsTheSection() public {
         uint256 id = _requestDeposit(alice, TEN);
-        uint256 minted = book.settleDeposit(id, PRICE);
-        uint256 escrowed = _requestDeposit(bob, TEN);
-
-        vm.prank(guardian);
-        pool.pauseInflows();
-        assertTrue(pool.inflowsPaused());
 
         vm.startPrank(alice);
         assertTrue(gold.approve(address(pool), TEN));
-        vm.expectRevert(CounterpartyPool.InflowsArePaused.selector);
+        vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.NotPositionManager.selector, alice));
+        // This call reverts by design, so no identifier comes back.
         // forge-lint: disable-next-line(unused-return)
-        pool.requestDeposit(TEN);
+        pool.requestDeposit(alice, TEN);
+
+        vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.NotPositionManager.selector, alice));
+        // forge-lint: disable-next-line(unused-return)
+        pool.requestWithdrawal(alice, TEN);
+
+        vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.NotPositionManager.selector, alice));
+        pool.expire(id, alice);
         vm.stopPrank();
 
-        assertEq(book.settleDeposit(escrowed, PRICE), TEN, "the brake blocked a deposit already escrowed");
+        vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.LockNotHeld.selector, address(book), address(0)));
+        // forge-lint: disable-next-line(unused-return)
+        book.requestDepositOutsideTheSection(alice, TEN);
 
-        uint256 out = _requestWithdrawal(alice, minted);
-        assertGt(book.settleWithdrawal(out, PRICE), NOTHING, "the brake blocked a withdrawal");
-        assertEq(book.payOut(trader, ONE_WEI), ONE_WEI, "the brake blocked a payout");
-
-        uint256 toExpire = _requestWithdrawal(bob, ONE_WEI);
-        vm.warp(block.timestamp + DELAY + EXPIRY);
-        vm.prank(bob);
-        pool.expire(toExpire);
-
-        vm.prank(guardian);
-        pool.unpauseInflows();
-        assertFalse(pool.inflowsPaused());
-        assertGt(_requestDeposit(alice, TEN), NOTHING, "the deposit request did not come back");
+        vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.LockNotHeld.selector, address(book), address(0)));
+        book.expireOutsideTheSection(id, alice);
     }
 
-    function test_BrakeIsGuardianOnlyAndMovesNoBalance() public {
+    /// @dev D69: the request carries the LP it was made for, not the caller.
+    ///      The manager is the caller, so a request that read `msg.sender`
+    ///      would name the manager and let it expire the LP's request.
+    function test_ARequestNamesTheLpItWasMadeFor() public {
         uint256 id = _requestDeposit(alice, TEN);
-        assertEq(book.settleDeposit(id, PRICE), TEN, "the deposit minted something other than its ounces");
-        uint256 held = gold.balanceOf(address(pool));
 
-        vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.NotGuardian.selector, stranger));
-        vm.prank(stranger);
-        pool.pauseInflows();
+        // forge-lint: disable-next-line(unused-return)
+        (address lp,,,,) = pool.requestAt(id);
+        assertEq(lp, alice, "the request named someone other than the LP");
+        assertEq(gold.balanceOf(alice), HUNDRED - TEN, "the gold did not come from the LP");
 
-        vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.NotGuardian.selector, address(book)));
-        vm.prank(address(book));
-        pool.unpauseInflows();
+        uint256 minted = book.settleDeposit(id, PRICE);
+        assertEq(shares.balanceOf(alice), minted, "the shares went to someone other than the LP");
+        assertEq(shares.balanceOf(address(book)), NOTHING, "the manager held shares");
+        assertEq(gold.balanceOf(address(book)), NOTHING, "the manager held gold");
+    }
 
-        vm.startPrank(guardian);
-        pool.pauseInflows();
-        pool.unpauseInflows();
-        vm.stopPrank();
+    /// @dev D58 and D69: the brake moved to the manager with the front door, so
+    ///      this contract carries no guardian and no pause at all. Absence is
+    ///      asserted against the deployed bytecode: the pool has no fallback,
+    ///      so a call to a selector it does not carry has to fail.
+    function test_ThePoolCarriesNoBrakeAtAll() public {
+        string[4] memory gone = ["pauseInflows()", "unpauseInflows()", "inflowsPaused()", "GUARDIAN()"];
 
-        assertEq(gold.balanceOf(address(pool)), held, "I28: a guardian call changed a balance");
-        assertEq(pool.ounces(), held, "I28: a guardian call changed the books");
-        assertEq(shares.totalSupply(), held, "I28: a guardian call changed the share supply");
+        for (uint256 i = 0; i < gone.length; i++) {
+            // One call per removed selector is the test, and a raw call is the
+            // only way to reach a function the type does not have.
+            // forge-lint: disable-next-line(calls-loop,low-level-calls)
+            (bool ok,) = address(pool).call(abi.encodeWithSignature(gone[i]));
+            assertFalse(ok, gone[i]);
+        }
     }
 
     /// @dev I17: a request settles at most once or expires at most once.
@@ -376,8 +376,7 @@ contract CounterpartyPoolTest is Test {
 
         vm.warp(block.timestamp + DELAY + EXPIRY);
         vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.NoSuchRequest.selector, id));
-        vm.prank(alice);
-        pool.expire(id);
+        book.expire(id, alice);
     }
 
     function test_ExpiryRefundsTheEscrowAndOnlyAfterTheDeadline() public {
@@ -388,12 +387,10 @@ contract CounterpartyPoolTest is Test {
         // forge-lint: disable-next-line(unused-return)
         (,, uint256 targetTime,,) = pool.requestAt(id);
         vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.NotExpiredYet.selector, targetTime + EXPIRY));
-        vm.prank(alice);
-        pool.expire(id);
+        book.expire(id, alice);
 
         vm.warp(targetTime + EXPIRY);
-        vm.prank(alice);
-        pool.expire(id);
+        book.expire(id, alice);
 
         assertEq(gold.balanceOf(alice), HUNDRED, "the escrow was not refunded");
         assertEq(pool.escrowedOunces(), NOTHING);
@@ -407,11 +404,9 @@ contract CounterpartyPoolTest is Test {
 
         vm.warp(block.timestamp + DELAY + EXPIRY);
         vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.NotRequestOwner.selector, bob, alice));
-        vm.prank(bob);
-        pool.expire(out);
+        book.expire(out, bob);
 
-        vm.prank(alice);
-        pool.expire(out);
+        book.expire(out, alice);
 
         assertEq(shares.balanceOf(alice), minted, "the shares were not returned");
         assertEq(pool.escrowedShares(), NOTHING);
@@ -486,12 +481,10 @@ contract CounterpartyPoolTest is Test {
 
         vm.warp(deadline - 1);
         vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.NotExpiredYet.selector, deadline));
-        vm.prank(alice);
-        pool.expire(id);
+        book.expire(id, alice);
 
         vm.warp(deadline);
-        vm.prank(alice);
-        pool.expire(id);
+        book.expire(id, alice);
 
         assertEq(gold.balanceOf(alice), HUNDRED, "the escrow was not refunded at the deadline");
         assertEq(pool.escrowedOunces(), NOTHING);
@@ -510,30 +503,32 @@ contract CounterpartyPoolTest is Test {
     }
 
     function test_RequestsRefuseZeroAmounts() public {
-        vm.startPrank(alice);
         vm.expectRevert(CounterpartyPool.ZeroAmount.selector);
         // forge-lint: disable-next-line(unused-return)
-        pool.requestDeposit(NOTHING);
+        book.requestDeposit(alice, NOTHING);
 
         vm.expectRevert(CounterpartyPool.ZeroAmount.selector);
         // forge-lint: disable-next-line(unused-return)
-        pool.requestWithdrawal(NOTHING);
-        vm.stopPrank();
+        book.requestWithdrawal(alice, NOTHING);
+
+        vm.expectRevert(CounterpartyPool.ZeroAddress.selector);
+        // forge-lint: disable-next-line(unused-return)
+        book.requestDeposit(address(0), TEN);
     }
 
+    /// @dev The LP approves the pool and the manager makes the call (D69), so
+    ///      the gold still moves from the LP straight into the escrow.
     function _requestDeposit(address lp, uint256 amount) private returns (uint256 id) {
-        vm.startPrank(lp);
+        vm.prank(lp);
         assertTrue(gold.approve(address(pool), amount));
-        id = pool.requestDeposit(amount);
-        vm.stopPrank();
+        id = book.requestDeposit(lp, amount);
         vm.warp(block.timestamp + DELAY);
     }
 
     function _requestWithdrawal(address lp, uint256 amount) private returns (uint256 id) {
-        vm.startPrank(lp);
+        vm.prank(lp);
         assertTrue(shares.approve(address(pool), amount));
-        id = pool.requestWithdrawal(amount);
-        vm.stopPrank();
+        id = book.requestWithdrawal(lp, amount);
         vm.warp(block.timestamp + DELAY);
     }
 }
