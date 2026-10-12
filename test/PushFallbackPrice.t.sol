@@ -22,11 +22,11 @@ contract PushFallbackPriceTest is Test {
     TradingCalendar public calendar;
     MockChainlinkOracle public feed;
 
-    address public timelock;
+    address public proposer;
 
     function setUp() public {
-        timelock = makeAddr("timelock");
-        calendar = new TradingCalendar(timelock);
+        proposer = makeAddr("proposer");
+        calendar = new TradingCalendar(proposer);
         feed = new MockChainlinkOracle(FEED_DECIMALS);
         fallbackPrice = new PushFallbackPrice(address(feed), address(calendar), MAX_AGE);
 
@@ -88,13 +88,25 @@ contract PushFallbackPriceTest is Test {
     }
 
     function test_HolidayIsRefusedEvenWithAFreshRound() public {
-        vm.prank(timelock);
-        calendar.addHoliday(OPEN_INSTANT);
+        _listHoliday(OPEN_INSTANT);
 
         vm.expectRevert(abi.encodeWithSelector(PushFallbackPrice.MarketClosed.selector, uint256(OPEN_INSTANT)));
         // This call reverts by design, so no value comes back.
         // forge-lint: disable-next-line(unused-return)
         fallbackPrice.price();
+    }
+
+    /// @dev A holiday edit waits 48 hours now (D68), so the test schedules it,
+    ///      waits and executes it, then puts the clock back where it was: the
+    ///      fallback reads the round's own age and the test is about that age,
+    ///      not about the wait.
+    function _listHoliday(uint256 timestamp) private {
+        uint256 at = block.timestamp;
+        vm.prank(proposer);
+        uint256 editId = calendar.scheduleHoliday(timestamp, true);
+        vm.warp(at + calendar.DELAY());
+        calendar.executeHoliday(editId);
+        vm.warp(at);
     }
 
     function test_IncompleteRoundIsRefused() public {

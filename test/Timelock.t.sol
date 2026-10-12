@@ -8,105 +8,97 @@ import {TradingCalendar} from "../src/oracle/TradingCalendar.sol";
 
 /**
  * @title TimelockTest
- * @notice Verifies that the one slow governance parameter left sits behind a
- *         48 hour TimelockController: the trading calendar's holiday list (D22).
- * @dev The calendar needs no role handover. Its timelock is immutable and set
- *      at construction, so there is no window in which an admin holds the
- *      power and has to give it up, and nothing to renounce.
+ * @notice Why the protocol has no general timelock, shown against the one it
+ *         would otherwise have used (D68).
+ * @dev This file used to drive the holiday list through an OpenZeppelin
+ *      `TimelockController`. D68 replaced that with a delay built into the
+ *      calendar, and the reason is testable: a TimelockController administers
+ *      itself, so a proposer can schedule a call that grants roles, retargets
+ *      anything or lowers the delay to zero. The checks below are that the
+ *      calendar is not reachable that way at all, and that its own delay has
+ *      no setter to reach.
  *
- *      The insurance fund used to be the other half of this test, through
- *      PARAM_ROLE and its target percentage. The revision 6 fund has no role
- *      and no parameter to change, so there is nothing left of it to timelock.
+ *      The insurance fund used to be the other half of this file. The revision
+ *      6 fund has no role and no parameter to change, so there is nothing left
+ *      of it to delay.
  */
 contract TimelockTest is Test {
     uint256 internal constant DELAY = 48 hours;
     /// @dev 2026-12-25 17:00 UTC, inside the Eastern day of a full closure.
     uint64 internal constant CHRISTMAS = 1_798_650_000;
-    /// @dev TimelockController reads a zero predecessor as "no predecessor".
     bytes32 internal constant NO_PREDECESSOR = hex"0000000000000000000000000000000000000000000000000000000000000000";
-    bytes32 internal constant SALT_ADD = keccak256("add");
-    bytes32 internal constant SALT_REMOVE = keccak256("remove");
-    bytes32 internal constant SALT_TARGET = keccak256("target");
-    bytes32 internal constant SALT_STRANGER = keccak256("stranger");
+    bytes32 internal constant SALT = keccak256("add");
+    /// @dev The edit the call would make, named so the literal is not mistaken
+    ///      for a condition.
+    bool internal constant CLOSE_THE_DAY = true;
 
     TimelockController internal timelock;
     TradingCalendar internal calendar;
 
     address internal admin;
-    address internal proposer;
+    address internal proposerRole;
     address internal executor;
-    address internal stranger;
+    address internal multisig;
 
     function setUp() public {
         admin = makeAddr("admin");
-        proposer = makeAddr("proposer");
+        proposerRole = makeAddr("proposer role");
         executor = makeAddr("executor");
-        stranger = makeAddr("stranger");
+        multisig = makeAddr("multisig");
 
         address[] memory proposers = new address[](1);
-        proposers[0] = proposer;
+        proposers[0] = proposerRole;
         address[] memory executors = new address[](1);
         executors[0] = executor;
         timelock = new TimelockController(DELAY, proposers, executors, address(0));
 
-        calendar = new TradingCalendar(address(timelock));
+        calendar = new TradingCalendar(multisig);
     }
 
-    function test_AdminCannotEditTheHolidayListDirectly() public {
-        vm.prank(admin);
-        vm.expectRevert(abi.encodeWithSelector(TradingCalendar.NotTimelock.selector, admin));
-        calendar.addHoliday(CHRISTMAS);
+    /// @dev The calendar's proposer is the multisig, fixed at construction, so
+    ///      a TimelockController holds no power over the list even with its own
+    ///      delay served.
+    function test_ATimelockControllerCannotEditTheList() public {
+        bytes memory data = abi.encodeCall(TradingCalendar.scheduleHoliday, (CHRISTMAS, CLOSE_THE_DAY));
 
-        vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(TradingCalendar.NotTimelock.selector, stranger));
-        calendar.addHoliday(CHRISTMAS);
-    }
+        vm.prank(proposerRole);
+        timelock.schedule(address(calendar), 0, data, NO_PREDECESSOR, SALT, DELAY);
+        vm.warp(block.timestamp + DELAY);
 
-    function test_TimelockAddsAHolidayAfterDelay() public {
-        bytes memory data = abi.encodeCall(TradingCalendar.addHoliday, (CHRISTMAS));
-
-        vm.prank(proposer);
-        timelock.schedule(address(calendar), 0, data, NO_PREDECESSOR, SALT_ADD, DELAY);
-
-        // Cannot execute before the delay elapses.
         vm.prank(executor);
         vm.expectRevert();
-        timelock.execute(address(calendar), 0, data, NO_PREDECESSOR, SALT_ADD);
+        timelock.execute(address(calendar), 0, data, NO_PREDECESSOR, SALT);
 
-        vm.warp(block.timestamp + DELAY);
-
-        vm.prank(executor);
-        timelock.execute(address(calendar), 0, data, NO_PREDECESSOR, SALT_ADD);
-
-        assertTrue(calendar.isHoliday(CHRISTMAS), "the holiday did not land");
-        assertFalse(calendar.isOpen(CHRISTMAS), "the market stayed open on the holiday");
-        assertEq(calendar.holidayCount(), 1);
-    }
-
-    function test_TimelockRemovesAHolidayAfterDelay() public {
-        bytes memory add = abi.encodeCall(TradingCalendar.addHoliday, (CHRISTMAS));
-        bytes memory remove = abi.encodeCall(TradingCalendar.removeHoliday, (CHRISTMAS));
-
-        vm.prank(proposer);
-        timelock.schedule(address(calendar), 0, add, NO_PREDECESSOR, SALT_ADD, DELAY);
-        vm.warp(block.timestamp + DELAY);
-        vm.prank(executor);
-        timelock.execute(address(calendar), 0, add, NO_PREDECESSOR, SALT_ADD);
-
-        vm.prank(proposer);
-        timelock.schedule(address(calendar), 0, remove, NO_PREDECESSOR, SALT_REMOVE, DELAY);
-        vm.warp(block.timestamp + DELAY);
-        vm.prank(executor);
-        timelock.execute(address(calendar), 0, remove, NO_PREDECESSOR, SALT_REMOVE);
-
-        assertFalse(calendar.isHoliday(CHRISTMAS), "the holiday did not come off the list");
+        assertFalse(calendar.isHoliday(CHRISTMAS), "a timelock reached the holiday list");
         assertEq(calendar.holidayCount(), 0);
     }
 
-    function test_NonProposerCannotSchedule() public {
-        bytes memory data = abi.encodeCall(TradingCalendar.addHoliday, (CHRISTMAS));
-        vm.prank(stranger);
-        vm.expectRevert();
-        timelock.schedule(address(calendar), 0, data, NO_PREDECESSOR, SALT_STRANGER, DELAY);
+    /// @dev The delay is a constant with no setter, which is the half of D68's
+    ///      reason that a self administering timelock fails: there is no call
+    ///      that lowers it, from any account.
+    function test_TheCalendarDelayCannotBeChanged() public {
+        assertEq(calendar.DELAY(), DELAY, "the calendar does not carry the 48 hour delay");
+
+        string[2] memory gone = ["setDelay(uint256)", "updateDelay(uint256)"];
+        for (uint256 i = 0; i < gone.length; i++) {
+            // One call per absent selector is the test, and a raw call is the
+            // only way to reach a function the type does not have.
+            // forge-lint: disable-next-line(calls-loop,low-level-calls)
+            (bool ok,) = address(calendar).call(abi.encodeWithSignature(gone[i], uint256(0)));
+            assertFalse(ok, gone[i]);
+        }
+    }
+
+    /// @dev And the proposer is immutable, so the multisig cannot hand the
+    ///      power to a timelock later either.
+    function test_TheProposerCannotBeHandedOver() public {
+        assertEq(calendar.PROPOSER(), multisig, "the proposer is not the multisig");
+
+        string[2] memory gone = ["setProposer(address)", "transferOwnership(address)"];
+        for (uint256 i = 0; i < gone.length; i++) {
+            // forge-lint: disable-next-line(calls-loop,low-level-calls)
+            (bool ok,) = address(calendar).call(abi.encodeWithSignature(gone[i], address(timelock)));
+            assertFalse(ok, gone[i]);
+        }
     }
 }

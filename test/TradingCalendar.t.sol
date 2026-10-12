@@ -12,6 +12,9 @@ import {TradingCalendar} from "../src/oracle/TradingCalendar.sol";
 ///      stands for in the comment beside it.
 contract TradingCalendarTest is Test {
     uint256 private constant VECTORS = 20;
+    uint256 private constant DELAY = 48 hours;
+    uint256 private constant FIRST_EDIT = 1;
+    uint256 private constant UNKNOWN_EDIT = 999;
     uint64 private constant WEDNESDAY_MIDDAY = 1_784_116_800;
     uint64 private constant NEXT_DAY = WEDNESDAY_MIDDAY + 1 days;
     uint64 private constant LATE_SAME_EASTERN_DAY = WEDNESDAY_MIDDAY + 10 hours;
@@ -19,18 +22,24 @@ contract TradingCalendarTest is Test {
     uint64 private constant EASTERN_MIDNIGHT = 1_784_088_000;
 
     TradingCalendar public calendar;
-    address public timelock;
+    address public proposer;
     address public stranger;
 
     function setUp() public {
-        timelock = makeAddr("timelock");
+        proposer = makeAddr("proposer");
         stranger = makeAddr("stranger");
-        calendar = new TradingCalendar(timelock);
+        calendar = new TradingCalendar(proposer);
     }
 
-    function test_ConstructorRejectsZeroTimelock() public {
+    function test_ConstructorRejectsZeroProposer() public {
         vm.expectRevert(TradingCalendar.ZeroAddress.selector);
         new TradingCalendar(address(0));
+    }
+
+    function test_TheDelayIsFixedAtFortyEightHours() public view {
+        assertEq(calendar.DELAY(), DELAY, "the delay is not 48 hours");
+        assertEq(calendar.PROPOSER(), proposer);
+        assertEq(calendar.nextEditId(), FIRST_EDIT);
     }
 
     function test_OpenAndClosedVectors() public view {
@@ -96,8 +105,7 @@ contract TradingCalendarTest is Test {
         assertTrue(calendar.isOpen(WEDNESDAY_MIDDAY));
         assertTrue(calendar.isOpen(LATE_SAME_EASTERN_DAY));
 
-        vm.prank(timelock);
-        calendar.addHoliday(WEDNESDAY_MIDDAY);
+        _listHoliday(WEDNESDAY_MIDDAY);
 
         assertFalse(calendar.isOpen(WEDNESDAY_MIDDAY), "the holiday did not close the day");
         assertFalse(calendar.isOpen(LATE_SAME_EASTERN_DAY), "the holiday closed only part of the day");
@@ -105,32 +113,126 @@ contract TradingCalendarTest is Test {
         assertTrue(calendar.isOpen(NEXT_DAY), "the holiday leaked into the next day");
     }
 
-    function test_HolidayListIsTimelockOnly() public {
+    /// @dev D68: only the proposer schedules, and the list rules still apply
+    ///      at execution, which is where they are now checked.
+    function test_OnlyTheProposerSchedulesAndTheListRulesStillApply() public {
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(TradingCalendar.NotTimelock.selector, stranger));
-        calendar.addHoliday(WEDNESDAY_MIDDAY);
+        vm.expectRevert(abi.encodeWithSelector(TradingCalendar.NotProposer.selector, stranger));
+        // This call reverts by design, so no identifier comes back.
+        // forge-lint: disable-next-line(unused-return)
+        calendar.scheduleHoliday(WEDNESDAY_MIDDAY, true);
 
-        vm.prank(timelock);
-        calendar.addHoliday(WEDNESDAY_MIDDAY);
+        _listHoliday(WEDNESDAY_MIDDAY);
         assertEq(calendar.holidayCount(), 1);
 
         uint256 day = calendar.etDayOf(WEDNESDAY_MIDDAY);
-        vm.prank(timelock);
+        uint256 again = _schedule(LATE_SAME_EASTERN_DAY, true);
+        vm.warp(block.timestamp + DELAY);
         vm.expectRevert(abi.encodeWithSelector(TradingCalendar.AlreadyListed.selector, day));
-        calendar.addHoliday(LATE_SAME_EASTERN_DAY);
+        calendar.executeHoliday(again);
 
-        vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(TradingCalendar.NotTimelock.selector, stranger));
-        calendar.removeHoliday(WEDNESDAY_MIDDAY);
-
-        vm.prank(timelock);
-        calendar.removeHoliday(WEDNESDAY_MIDDAY);
+        _unlistHoliday(WEDNESDAY_MIDDAY);
         assertEq(calendar.holidayCount(), 0);
         assertTrue(calendar.isOpen(WEDNESDAY_MIDDAY), "the day did not reopen");
 
-        vm.prank(timelock);
+        uint256 third = _schedule(WEDNESDAY_MIDDAY, false);
+        vm.warp(block.timestamp + DELAY);
         vm.expectRevert(abi.encodeWithSelector(TradingCalendar.NotListed.selector, day));
-        calendar.removeHoliday(WEDNESDAY_MIDDAY);
+        calendar.executeHoliday(third);
+    }
+
+    /// @dev D68: the wait is 48 hours to the second. One second early is early.
+    function test_AnEditWaitsTheWholeDelay() public {
+        uint256 editId = _schedule(WEDNESDAY_MIDDAY, true);
+        // forge-lint: disable-next-line(unused-return)
+        (,, uint256 executableAt,) = _edit(editId);
+
+        vm.warp(executableAt - 1);
+        vm.expectRevert(abi.encodeWithSelector(TradingCalendar.TooEarly.selector, executableAt));
+        calendar.executeHoliday(editId);
+
+        vm.warp(executableAt);
+        calendar.executeHoliday(editId);
+
+        assertTrue(calendar.isHoliday(WEDNESDAY_MIDDAY), "the edit did not land at the delay");
+    }
+
+    /// @dev D62 and D68: the edit was fixed when it was scheduled, so the
+    ///      caller of the execution chooses nothing and anyone may be it.
+    function test_AnyoneExecutesAScheduledEdit() public {
+        uint256 editId = _schedule(WEDNESDAY_MIDDAY, true);
+        vm.warp(block.timestamp + DELAY);
+
+        vm.prank(stranger);
+        calendar.executeHoliday(editId);
+
+        assertTrue(calendar.isHoliday(WEDNESDAY_MIDDAY), "a stranger could not execute a due edit");
+    }
+
+    /// @dev An edit leaves the pending state exactly once, whichever way it
+    ///      leaves, so neither a cancelled nor an executed edit can be applied.
+    function test_AnEditLeavesPendingExactlyOnce() public {
+        uint256 executed = _schedule(WEDNESDAY_MIDDAY, true);
+        vm.warp(block.timestamp + DELAY);
+        calendar.executeHoliday(executed);
+
+        vm.expectRevert(abi.encodeWithSelector(TradingCalendar.NoSuchEdit.selector, executed));
+        calendar.executeHoliday(executed);
+
+        uint256 cancelled = _schedule(NEXT_DAY, true);
+        vm.prank(proposer);
+        calendar.cancelHoliday(cancelled);
+        vm.warp(block.timestamp + DELAY);
+
+        vm.expectRevert(abi.encodeWithSelector(TradingCalendar.NoSuchEdit.selector, cancelled));
+        calendar.executeHoliday(cancelled);
+        assertFalse(calendar.isHoliday(NEXT_DAY), "a cancelled edit still landed");
+
+        vm.prank(proposer);
+        vm.expectRevert(abi.encodeWithSelector(TradingCalendar.NoSuchEdit.selector, cancelled));
+        calendar.cancelHoliday(cancelled);
+
+        vm.expectRevert(abi.encodeWithSelector(TradingCalendar.NoSuchEdit.selector, UNKNOWN_EDIT));
+        calendar.executeHoliday(UNKNOWN_EDIT);
+    }
+
+    function test_OnlyTheProposerCancels() public {
+        uint256 editId = _schedule(WEDNESDAY_MIDDAY, true);
+
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(TradingCalendar.NotProposer.selector, stranger));
+        calendar.cancelHoliday(editId);
+
+        vm.prank(proposer);
+        calendar.cancelHoliday(editId);
+        // forge-lint: disable-next-line(unused-return)
+        (,,, TradingCalendar.State state) = _edit(editId);
+        assertEq(uint256(state), uint256(TradingCalendar.State.Cancelled), "the edit was not cancelled");
+    }
+
+    function _schedule(uint256 timestamp, bool add) private returns (uint256 editId) {
+        vm.prank(proposer);
+        editId = calendar.scheduleHoliday(timestamp, add);
+    }
+
+    function _listHoliday(uint256 timestamp) private {
+        uint256 editId = _schedule(timestamp, true);
+        vm.warp(block.timestamp + DELAY);
+        calendar.executeHoliday(editId);
+    }
+
+    function _unlistHoliday(uint256 timestamp) private {
+        uint256 editId = _schedule(timestamp, false);
+        vm.warp(block.timestamp + DELAY);
+        calendar.executeHoliday(editId);
+    }
+
+    function _edit(uint256 editId)
+        private
+        view
+        returns (uint256 etDay, TradingCalendar.Action action, uint256 executableAt, TradingCalendar.State state)
+    {
+        (etDay, executableAt, action, state) = calendar.editAt(editId);
     }
 
     /// @dev The holiday key is an Eastern day, so it turns over at Eastern

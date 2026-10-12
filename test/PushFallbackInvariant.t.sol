@@ -31,7 +31,7 @@ contract PushFallbackInvariantTest is Test {
     PushFallbackHandler public handler;
 
     function setUp() public {
-        calendar = new TradingCalendar(makeAddr("timelock"));
+        calendar = new TradingCalendar(makeAddr("proposer"));
         feed = new MockChainlinkOracle(FEED_DECIMALS);
         fallbackPrice = new PushFallbackPrice(address(feed), address(calendar), MAX_AGE);
 

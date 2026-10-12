@@ -9,7 +9,25 @@ pragma solidity 0.8.30;
  *      hours and the three full closures, January 1, Good Friday and
  *      December 25 (11.4). The weekly shape and the United States daylight
  *      saving rule are in code because they never change; the holidays move
- *      and are a list, which only the timelock may edit.
+ *      and are a list.
+ *
+ *      Editing that list waits 48 hours (D68). The proposer multisig schedules
+ *      an edit, anyone may execute it once the delay has passed, and the
+ *      proposer may cancel it before then. Both the proposer and the delay are
+ *      fixed at construction, the delay as a constant, so neither can be
+ *      changed and no account can shorten the wait.
+ *
+ *      There is no general timelock, and that is the point of building the
+ *      delay in here. OpenZeppelin's TimelockController administers itself, so
+ *      a proposer can, with the delay, grant new roles, call any target and
+ *      lower the delay to zero (`TimelockController.sol:115-137`, `:449-456`,
+ *      OpenZeppelin 5.0.0 in lib). That is a general key, which D58 rules out.
+ *      A delay built into one contract can do only its one job.
+ *
+ *      What the list can reach is narrow as well: settlement does not read this
+ *      calendar at all, so a holiday edit touches only the D22 push fallback
+ *      (D61). A bad edit can at most disable the fallback; it cannot stop a
+ *      close or a liquidation.
  *
  *      Daylight saving: Eastern time is UTC minus 5 hours, and UTC minus 4
  *      from 02:00 local on the second Sunday in March until 02:00 local on the
@@ -60,8 +78,13 @@ contract TradingCalendar {
     uint256 private constant MONTH_BIAS = 2;
     uint256 private constant MONTHS_BEFORE_JANUARY = 10;
 
-    /// @notice The only account that may edit the holiday list (D22).
-    address public immutable TIMELOCK;
+    /// @notice How long a scheduled edit waits before anyone may execute it
+    ///         (D68). A constant rather than a parameter, so no deployment can
+    ///         choose a shorter wait.
+    uint256 public constant DELAY = 48 hours;
+
+    /// @notice The multisig that may schedule and cancel an edit (D68).
+    address public immutable PROPOSER;
 
     /// @notice Eastern days the market is closed for, keyed by `etDayOf`.
     mapping(uint256 etDay => bool closed) public closedDays;
@@ -69,19 +92,52 @@ contract TradingCalendar {
     /// @notice How many Eastern days the list holds.
     uint256 public holidayCount;
 
-    event HolidayAdded(uint256 indexed etDay, uint256 timestamp);
-    event HolidayRemoved(uint256 indexed etDay, uint256 timestamp);
+    /// @notice Identifier of the next scheduled edit, so zero is never one.
+    uint256 public nextEditId = 1;
 
-    error NotTimelock(address caller);
+    mapping(uint256 editId => Edit edit) private _edits;
+
+    /// @notice What a scheduled edit does to the list.
+    enum Action {
+        Add,
+        Remove
+    }
+
+    /// @notice Where a scheduled edit is in its lifecycle. An edit leaves
+    ///         `Pending` exactly once, which is what stops a second execution.
+    enum State {
+        None,
+        Pending,
+        Executed,
+        Cancelled
+    }
+
+    /// @notice One scheduled edit.
+    struct Edit {
+        uint256 etDay;
+        uint256 executableAt;
+        Action action;
+        State state;
+    }
+
+    event HolidayEditScheduled(
+        uint256 indexed editId, uint256 indexed etDay, Action action, uint256 executableAt, uint256 timestamp
+    );
+    event HolidayEditCancelled(uint256 indexed editId, uint256 indexed etDay, Action action);
+    event HolidayEditExecuted(uint256 indexed editId, uint256 indexed etDay, Action action, uint256 holidayCount);
+
+    error NotProposer(address caller);
     error AlreadyListed(uint256 etDay);
     error NotListed(uint256 etDay);
     error ZeroAddress();
+    error NoSuchEdit(uint256 editId);
+    error TooEarly(uint256 executableAt);
 
-    constructor(address timelock) {
-        if (timelock == address(0)) {
+    constructor(address proposer) {
+        if (proposer == address(0)) {
             revert ZeroAddress();
         }
-        TIMELOCK = timelock;
+        PROPOSER = proposer;
     }
 
     /// @notice Whether the market is open at `timestamp`.
@@ -116,32 +172,92 @@ contract TradingCalendar {
         return _easternSeconds(timestamp) / SECONDS_PER_DAY;
     }
 
-    /// @notice Close the Eastern day that `timestamp` falls in.
-    function addHoliday(uint256 timestamp) external {
-        if (msg.sender != TIMELOCK) {
-            revert NotTimelock(msg.sender);
-        }
-        uint256 day = etDayOf(timestamp);
-        if (closedDays[day]) {
-            revert AlreadyListed(day);
-        }
-        closedDays[day] = true;
-        holidayCount += 1;
-        emit HolidayAdded(day, timestamp);
+    /// @notice Read a scheduled edit, for anyone deciding whether to execute
+    ///         it and for the D55 dashboard.
+    function editAt(uint256 editId)
+        external
+        view
+        returns (uint256 etDay, uint256 executableAt, Action action, State state)
+    {
+        Edit storage edit = _edits[editId];
+        return (edit.etDay, edit.executableAt, edit.action, edit.state);
     }
 
-    /// @notice Reopen the Eastern day that `timestamp` falls in.
-    function removeHoliday(uint256 timestamp) external {
-        if (msg.sender != TIMELOCK) {
-            revert NotTimelock(msg.sender);
+    /// @notice Schedule closing or reopening the Eastern day that `timestamp`
+    ///         falls in. Executable by anyone once `DELAY` has passed.
+    /// @param timestamp Any instant inside the Eastern day to edit.
+    /// @param add True to close the day, false to reopen it.
+    /// @return editId Identifier of the scheduled edit.
+    function scheduleHoliday(uint256 timestamp, bool add) external returns (uint256 editId) {
+        if (msg.sender != PROPOSER) {
+            revert NotProposer(msg.sender);
         }
+
         uint256 day = etDayOf(timestamp);
-        if (!closedDays[day]) {
-            revert NotListed(day);
+        Action action = add ? Action.Add : Action.Remove;
+        // The delay runs from now in slot time, which post merge Ethereum
+        // fixes (consensus-specs specs/bellatrix/beacon-chain.md:446 at
+        // 9a8fdd0).
+        // forge-lint: disable-next-line(block-timestamp)
+        uint256 executableAt = block.timestamp + DELAY;
+
+        editId = nextEditId;
+        nextEditId = editId + 1;
+        _edits[editId] = Edit({etDay: day, executableAt: executableAt, action: action, state: State.Pending});
+
+        emit HolidayEditScheduled(editId, day, action, executableAt, timestamp);
+    }
+
+    /// @notice Drop a scheduled edit before it is executed.
+    /// @dev Only the proposer cancels. Cancelling moves the edit out of
+    ///      `Pending`, so it can never be executed afterwards.
+    function cancelHoliday(uint256 editId) external {
+        if (msg.sender != PROPOSER) {
+            revert NotProposer(msg.sender);
         }
-        closedDays[day] = false;
-        holidayCount -= 1;
-        emit HolidayRemoved(day, timestamp);
+        Edit storage edit = _edits[editId];
+        if (edit.state != State.Pending) {
+            revert NoSuchEdit(editId);
+        }
+
+        edit.state = State.Cancelled;
+        emit HolidayEditCancelled(editId, edit.etDay, edit.action);
+    }
+
+    /// @notice Apply a scheduled edit once its delay has passed.
+    /// @dev Anyone may call this: the edit was fixed when it was scheduled, so
+    ///      the caller chooses nothing, and leaving execution to one account
+    ///      would be a key that could sit on a scheduled edit (D62, D68). The
+    ///      list rules are unchanged, so an add of a listed day and a removal
+    ///      of an unlisted one both still revert.
+    function executeHoliday(uint256 editId) external {
+        Edit storage edit = _edits[editId];
+        if (edit.state != State.Pending) {
+            revert NoSuchEdit(editId);
+        }
+        // The deadline is slot time as above.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp < edit.executableAt) {
+            revert TooEarly(edit.executableAt);
+        }
+
+        uint256 day = edit.etDay;
+        if (edit.action == Action.Add) {
+            if (closedDays[day]) {
+                revert AlreadyListed(day);
+            }
+            closedDays[day] = true;
+            holidayCount += 1;
+        } else {
+            if (!closedDays[day]) {
+                revert NotListed(day);
+            }
+            closedDays[day] = false;
+            holidayCount -= 1;
+        }
+
+        edit.state = State.Executed;
+        emit HolidayEditExecuted(editId, day, edit.action, holidayCount);
     }
 
     /// @dev Seconds since the epoch shifted into Eastern time.
