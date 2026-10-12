@@ -31,7 +31,7 @@ contract ProtocolHandler is Test {
     uint256 private constant MAX_POST = 50 ether;
     uint256 private constant MIN_PRICE = 3000e18;
     uint256 private constant MAX_PRICE = 5000e18;
-    uint256 private constant MAX_STEP = 7 days;
+    uint256 private immutable MAX_STEP;
     uint256 private constant TIERS = 3;
     uint32 private constant WINDOW = 12;
     uint32 private constant EXPIRY_AHEAD = 86_400;
@@ -96,9 +96,11 @@ contract ProtocolHandler is Test {
         MockPaxg paxgReading,
         bytes32 feedId,
         bytes32 pythId,
-        uint256 pythFee
+        uint256 pythFee,
+        uint256 maxStep
     ) {
         MANAGER = manager;
+        MAX_STEP = maxStep;
         POOL = manager.POOL();
         FUND = manager.INSURANCE_FUND();
         VAULT = TgauxVault(manager.PAXG_HOLDER());
@@ -390,7 +392,7 @@ contract ProtocolHandler is Test {
         _check();
     }
 
-    function _check() private {
+    function _check() internal {
         if (GOLD.balanceOf(address(MANAGER)) != MANAGER.escrowedOunces()) {
             escrowMismatches += 1;
         }

@@ -69,7 +69,7 @@ contract ProtocolInvariantTest is Test {
     ProtocolHandler public handler;
     TGAUX public gold;
 
-    function setUp() public {
+    function setUp() public virtual {
         vm.warp(START);
         vm.txGasPrice(GAS_PRICE);
 
@@ -124,7 +124,7 @@ contract ProtocolInvariantTest is Test {
         );
         pool = manager.POOL();
         fund = manager.INSURANCE_FUND();
-        handler = new ProtocolHandler(manager, paxg, paxgReading, FEED_ID, PYTH_ID, PYTH_FEE);
+        handler = new ProtocolHandler(manager, paxg, paxgReading, FEED_ID, PYTH_ID, PYTH_FEE, 7 days);
 
         bytes4[] memory selectors = new bytes4[](SELECTORS);
         selectors[0] = ProtocolHandler.lpDeposit.selector;
@@ -199,7 +199,7 @@ contract ProtocolInvariantTest is Test {
 
     /// @dev Every assertion above holds on a campaign that did nothing, so this
     ///      drives each step by hand first.
-    function test_HandlerReachesEveryStep() public {
+    function test_HandlerReachesEveryStep() public virtual {
         handler.lpDeposit(0, DRIVE_DEPOSIT);
         assertGt(pool.ounces(), NOTHING, "the pool took no deposit");
         assertGt(pool.shareSupply(), NOTHING, "the pool minted no shares");
