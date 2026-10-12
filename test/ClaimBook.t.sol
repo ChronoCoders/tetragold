@@ -67,6 +67,18 @@ contract ClaimBookTest is Test {
     uint256 private constant INDEX_AT_OPEN = 0.01e18;
     uint256 private constant INDEX_NOW = 0.03e18;
     uint256 private constant HALF = 2;
+    /// @dev One wei above one unit of scale, so that multiplying two of them
+    ///      and dividing by the scale leaves a remainder.
+    uint256 private constant ROUND_WIDE = 1e18 + 1;
+    /// @dev Half of the floored notional of a position of that size at that
+    ///      price, which is 1e18 + 2.
+    uint256 private constant ROUND_CLAIM = 5e17 + 1;
+    /// @dev The three figures those roundings produce: two wei of USD from the
+    ///      partial bucket, two wei of ounces of fee at an index of one wei,
+    ///      and the three wei of USD that fee is worth.
+    uint256 private constant ROUND_PARTIAL = 2;
+    uint256 private constant ROUND_FEE_OUNCES = 2;
+    uint256 private constant ROUND_FEE_USD = 3;
     uint256 private constant TIERS = 3;
 
     uint256 private constant MIN_SIZE = 0.001 ether;
@@ -298,6 +310,47 @@ contract ClaimBookTest is Test {
         assertEq(book.withdrawalClaimUsd(MIN_PRICE, NOTHING), CLAIM_SUM, "a price under every entry showed a gain");
     }
 
+    /// @dev D29 and D60 rule 4: the direction of every rounding, pinned
+    ///      exactly rather than inside a slack, because a slack cannot tell one
+    ///      direction from the other. Every figure below is worked out by hand
+    ///      from one position whose arithmetic has a remainder at each step:
+    ///
+    ///        s = C_WIDE, P_open = P_WIDE, both one wei above one unit
+    ///        s * P_open = 1e36 + 2e18 + 1, so the notional floors to 1e18 + 2
+    ///        and the wei of remainder stays with the pool
+    ///        C is half of that notional, 5e17 + 1, so D is 5e17 + 1
+    ///
+    ///      At the entry price with no fee the deposit measure is therefore
+    ///      exactly C, and the withdrawal measure is C plus the two wei its
+    ///      partial bucket rounds up to. With the index one wei above zero the
+    ///      fee rounds up to two wei of ounces for the deposit measure, worth
+    ///      three wei of USD, and down to one and one for the withdrawal
+    ///      measure. Turning any of those four roundings around changes one of
+    ///      these four numbers.
+    function test_RoundingGoesAgainstTheUserOnBothMeasures() public {
+        uint256 size = ROUND_WIDE;
+        uint256 claim = ROUND_CLAIM;
+        _add(Position({size: size, claim: claim, openPrice: ROUND_WIDE, openIndex: NOTHING}));
+
+        assertEq(book.notionalDebt(), claim, "the notional did not floor to twice the claim");
+        assertEq(book.depositClaimUsd(ROUND_WIDE, NOTHING), claim, "the deposit measure did not round down");
+        assertEq(
+            book.withdrawalClaimUsd(ROUND_WIDE, NOTHING),
+            claim + ROUND_PARTIAL,
+            "the withdrawal measure did not round up"
+        );
+
+        assertEq(book.accruedFeeOunces(ONE_WEI), ROUND_FEE_OUNCES, "the fee in ounces did not round up");
+        assertEq(
+            book.depositClaimUsd(ROUND_WIDE, ONE_WEI), claim - ROUND_FEE_USD, "the deposit measure took the smaller fee"
+        );
+        assertEq(
+            book.withdrawalClaimUsd(ROUND_WIDE, ONE_WEI),
+            claim + ROUND_PARTIAL - ONE_WEI,
+            "the withdrawal measure took the larger fee"
+        );
+    }
+
     function testFuzz_BothMeasuresMatchTheBruteForceSum(uint256 seed, uint8 count, uint256 priceSeed, uint256 indexSeed)
         public
     {
@@ -328,7 +381,7 @@ contract ClaimBookTest is Test {
     }
 
     function _randomPosition(uint256 seed, uint256 index) private pure returns (Position memory p) {
-        uint256[TIERS] memory tiers = [uint256(2), 3, 5];
+        uint256[TIERS] memory tiers = [HALF, uint256(3), uint256(5)];
         p.size = _bounded(seed, MIN_SIZE, MAX_SIZE);
         p.openPrice = _bounded(uint256(keccak256(abi.encode(seed, "price"))), MIN_PRICE, MAX_PRICE);
         uint256 leverage = tiers[seed % TIERS];
