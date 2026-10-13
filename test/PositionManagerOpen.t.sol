@@ -47,6 +47,7 @@ contract PositionManagerOpenTest is Test {
     uint256 private constant MAINTENANCE_MARGIN_BPS = 600;
     uint256 private constant GAS_OPEN = 400_000;
     uint256 private constant GAS_ADD = 300_000;
+    uint256 private constant GAS_CLOSE = 500_000;
     uint256 private constant GAS_OVERHEAD = 80_000;
     uint256 private constant GAS_PRICE = 2 gwei;
     uint256 private constant PYTH_FEE = 1000 wei;
@@ -748,6 +749,7 @@ contract PositionManagerOpenTest is Test {
             maintenanceMarginBps: MAINTENANCE_MARGIN_BPS,
             gasOpen: GAS_OPEN,
             gasAdd: GAS_ADD,
+            gasClose: GAS_CLOSE,
             gasOverhead: GAS_OVERHEAD
         });
     }

@@ -122,6 +122,7 @@ contract PositionManager is IPositionBook {
         uint256 maintenanceMarginBps;
         uint256 gasOpen;
         uint256 gasAdd;
+        uint256 gasClose;
         uint256 gasOverhead;
     }
 
@@ -177,6 +178,9 @@ contract PositionManager is IPositionBook {
     /// @notice The same for an add settlement (D65, O5).
     uint256 public immutable GAS_ADD;
 
+    /// @notice The same for a close settlement (D65, O5).
+    uint256 public immutable GAS_CLOSE;
+
     /// @notice Gas a settlement spends that `gasleft()` cannot see from inside
     ///         the call: the 21000 intrinsic cost, the calldata cost of the
     ///         report and the update, and the work after the last reading, which
@@ -208,6 +212,11 @@ contract PositionManager is IPositionBook {
 
     mapping(uint256 requestId => Request request) private _requests;
     mapping(uint256 positionId => Position position) internal _positions;
+
+    /// @notice How many add requests are pending for a position. A close is
+    ///         refused while any is (D43 rule 3, r6.19), so a holder cannot race
+    ///         a close against a rescue that is still waiting for its price.
+    mapping(uint256 positionId => uint256 count) public pendingAddsFor;
 
     /// @dev Internal rather than private so a harness can plant a position set
     ///      and drive an advance while no open path exists yet. The paths that
@@ -256,6 +265,17 @@ contract PositionManager is IPositionBook {
         uint256 toPool;
     }
 
+    /// @notice What the settled price decides about a close: the signed equity
+    ///         in ounces and how it divides into a payout, the fees collected
+    ///         and bad debt (D71 rules 3 to 5, D49).
+    struct Close {
+        uint256 holdingFee;
+        uint256 closeFee;
+        uint256 collected;
+        uint256 payout;
+        uint256 badDebt;
+    }
+
     /// @notice One open position, carrying exactly what the claim book was
     ///         given, so a close can hand the same four values back (D60).
     struct Position {
@@ -297,6 +317,18 @@ contract PositionManager is IPositionBook {
         uint256 indexed id, uint256 indexed positionId, address indexed owner, uint256 ounces, uint256 targetTime
     );
     event AddSettled(uint256 indexed id, uint256 indexed positionId, uint256 ounces, uint256 claim, uint256 price18);
+    event CloseRequested(
+        uint256 indexed id, uint256 indexed positionId, address indexed owner, uint256 targetTime, uint256 fee
+    );
+    event CloseSettled(
+        uint256 indexed id,
+        uint256 indexed positionId,
+        address indexed owner,
+        uint256 price18,
+        uint256 payout,
+        uint256 collected,
+        uint256 badDebt
+    );
     event RequestRejected(uint256 indexed id, address indexed requester, Reason reason, uint256 price18);
     event RequestExpired(uint256 indexed id, address indexed requester, uint256 escrowed, uint256 fee);
     event FeeRouted(uint256 toTreasury, uint256 toInsuranceFund, uint256 toPool);
@@ -329,6 +361,7 @@ contract PositionManager is IPositionBook {
     error NoSuchPosition(uint256 positionId);
     error NotPositionOwner(address caller, address owner);
     error ExitPending(uint256 positionId);
+    error AddPending(uint256 positionId);
 
     /// @notice Why a request was rejected at its price (D70). Every one of
     ///         these is a rule the price or the state settled, so waiting could
@@ -388,7 +421,7 @@ contract PositionManager is IPositionBook {
         if (config.minNotionalUsd == 0) {
             revert ZeroMinimumNotional();
         }
-        if (config.gasOpen == 0 || config.gasAdd == 0 || config.gasOverhead == 0) {
+        if (config.gasOpen == 0 || config.gasAdd == 0 || config.gasClose == 0 || config.gasOverhead == 0) {
             revert ZeroGasEstimate();
         }
         // A zero margin would mean a position is never liquidatable and a
@@ -405,6 +438,7 @@ contract PositionManager is IPositionBook {
         MAINTENANCE_MARGIN_BPS = config.maintenanceMarginBps;
         GAS_OPEN = config.gasOpen;
         GAS_ADD = config.gasAdd;
+        GAS_CLOSE = config.gasClose;
         GAS_OVERHEAD = config.gasOverhead;
         REQUEST_EXPIRY = config.requestExpiry;
 
@@ -536,6 +570,7 @@ contract PositionManager is IPositionBook {
 
         uint256 received = _takeEscrow(msg.sender, ounces);
         id = _record(msg.sender, received, Kind.Add, positionId, 0);
+        pendingAddsFor[positionId] += 1;
 
         // The event reports what arrived, which is only known after the
         // transfer, and the guarded section covers both.
@@ -543,6 +578,40 @@ contract PositionManager is IPositionBook {
         emit AddRequested(id, positionId, msg.sender, received, _requests[id].targetTime);
 
         LOCK.exit();
+    }
+
+    /// @notice Ask to close a position (D69). The owner alone may ask, the
+    ///         position must be open, no exit may already be pending, and no add
+    ///         may still be waiting for its price (D43 rule 3, r6.19), so a
+    ///         holder cannot race a close against a rescue.
+    /// @dev An exit, not an inflow: neither the brake nor PAXG being unusable
+    ///      refuses it, because stopping a close would trap a holder (I14, I26,
+    ///      I28, D58). Only the execution fee of D65 gates it. The target is one
+    ///      slot out, T = block.timestamp + 12, set by `_record`.
+    /// @param positionId The position to close.
+    /// @return id Identifier of the request.
+    function requestClose(uint256 positionId) external payable returns (uint256 id) {
+        Position storage position = _positions[positionId];
+        if (!position.open) {
+            revert NoSuchPosition(positionId);
+        }
+        if (msg.sender != position.owner) {
+            revert NotPositionOwner(msg.sender, position.owner);
+        }
+        _requireNoExitPending(positionId);
+        if (pendingAddsFor[positionId] != 0) {
+            revert AddPending(positionId);
+        }
+        _requireFee(GAS_CLOSE);
+
+        // No shared section here: a close request escrows nothing and makes no
+        // external call (D66), so there is nothing a reentrant call could reach,
+        // and the event cannot be reordered. The open and add request paths hold
+        // the section only because they pull escrow in across it.
+        position.exitPending = true;
+        id = _record(msg.sender, 0, Kind.Close, positionId, 0);
+
+        emit CloseRequested(id, positionId, msg.sender, _requests[id].targetTime, msg.value);
     }
 
     /// @notice Settle a pending add against the reports for its target time.
@@ -568,6 +637,9 @@ contract PositionManager is IPositionBook {
         if (reason != Reason.None) {
             _reject(id, request, reason, price18);
         }
+        // The add has left Pending either way, so the position's pending count
+        // falls by one (D43 rule 3): the close path reads this count.
+        pendingAddsFor[request.positionId] -= 1;
 
         _payTheSettler(id, request, gasAtEntry);
 
@@ -612,6 +684,31 @@ contract PositionManager is IPositionBook {
         LOCK.exit();
     }
 
+    /// @notice Settle a pending close against the reports for its target time.
+    /// @dev Anyone may call this (D62). A close is never rejected: no rule the
+    ///      price or the state decides applies to an exit (D70, r6.19). With no
+    ///      qualifying report for the target, or one whose market flag is
+    ///      closed, the oracle reverts and the request waits; only expiry ends
+    ///      it (section 7 rule 4). The index advances before any change (D53).
+    /// @param id Request to settle.
+    /// @param streamsPayload The signed Data Streams report for the target.
+    /// @param pythUpdate The Pyth update covering the target.
+    function settleClose(uint256 id, bytes calldata streamsPayload, bytes[] calldata pythUpdate) external payable {
+        uint256 gasAtEntry = gasleft();
+        Request storage request = _pendingAt(id, Kind.Close);
+
+        LOCK.enter();
+
+        _advance();
+        uint256 price18 = _settlePrice(request.targetTime, streamsPayload, pythUpdate);
+
+        _commitClose(id, request, price18);
+
+        _payTheSettler(id, request, gasAtEntry);
+
+        LOCK.exit();
+    }
+
     /// @notice Refund a request no price ever qualified for (section 7 rule 4).
     /// @dev The requester calls it, so a keeper cannot cancel a request that is
     ///      still settleable, and the whole execution fee goes back (D65).
@@ -636,6 +733,11 @@ contract PositionManager is IPositionBook {
         uint256 escrowed = request.escrowed;
         uint256 fee = request.executionFee;
         request.state = State.Expired;
+        // An expiring add leaves Pending, so the position's pending count falls
+        // by one, the same as a settled add (D43 rule 3).
+        if (request.kind == Kind.Add) {
+            pendingAddsFor[request.positionId] -= 1;
+        }
         if (escrowed != 0) {
             escrowedOunces -= escrowed;
         }
@@ -1101,6 +1203,104 @@ contract PositionManager is IPositionBook {
         POOL.syncCredit();
     }
 
+    /// @dev Everything the settled price decides about a close, in one value so
+    ///      the writes after it and the event beside them read the same figures.
+    ///      The terms round as _isLiquidatable's do, holds down and owes up
+    ///      (D29), and the shared `_holdingFeeOunces` keeps the holding fee the
+    ///      same on both paths (D71 rule 4). The signed gross is floored toward
+    ///      the protocol: truncated toward zero, so a positive equity rounds the
+    ///      payout down and a negative one rounds the bad debt down, each in the
+    ///      pool's favour.
+    function _closeMath(Position storage position, uint256 price18) private view returns (Close memory close) {
+        uint256 size = position.size;
+        close.holdingFee = _holdingFeeOunces(size, position.openIndex);
+        close.closeFee = _feeOunces(size);
+
+        // C + floor(s * P) is what the position holds, ceil(s * P_open) what it
+        // owes, both USD. The equity is their signed difference turned back into
+        // 1e18 ounces by the WAD factor, as _usd does the other way. The signed
+        // gross is kept in two unsigned halves so no int cast can truncate: a
+        // positive one in `grossPos`, a negative one in `badDebt`. Each division
+        // floors, which with the sign is a truncation toward zero, so the payout
+        // rounds down and the bad debt rounds down, each in the pool's favour.
+        uint256 held = position.claim + _usd(size, price18);
+        uint256 owed = _usdUp(size, position.openPrice);
+        uint256 grossPos = 0;
+        if (held >= owed) {
+            grossPos = ((held - owed) * WAD) / price18;
+        } else {
+            close.badDebt = ((owed - held) * WAD) / price18;
+        }
+
+        uint256 fees = close.holdingFee + close.closeFee;
+        close.collected = grossPos < fees ? grossPos : fees;
+        close.payout = grossPos > fees ? grossPos - fees : 0;
+    }
+
+    /// @dev Close the position in one call (D71 rule 5): drop it from the book
+    ///      with the four values it was added with, release its reserve, pay the
+    ///      owner (D47), route the collected fee out of the pool (D20), cover any
+    ///      bad debt from the fund then the pool (D49), and mark it closed. The
+    ///      reserve is released before the payout so pool ounces never dip under
+    ///      R between the two (I15a). A close is never rejected (D70, r6.19).
+    function _commitClose(uint256 id, Request storage request, uint256 price18) private {
+        uint256 positionId = request.positionId;
+        Position storage position = _positions[positionId];
+        address owner = position.owner;
+        uint256 size = position.size;
+
+        Close memory close = _closeMath(position, price18);
+
+        request.state = State.Settled;
+        position.open = false;
+        position.exitPending = false;
+        _book.remove(size, position.claim, position.openPrice, position.openIndex);
+
+        // The dashboard figures of D56. The shared section is held across the
+        // whole settlement, so a log cannot be reordered; this is the same
+        // false positive the open and add settle emits carry. The fee shares
+        // are not here: the split below reads the fund, and the shares ride
+        // their own event where they leave the pool.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit CloseSettled(id, positionId, owner, price18, close.payout, close.collected, close.badDebt);
+
+        // forge-lint: disable-next-line(reentrancy-no-eth)
+        POOL.release(size);
+        if (close.payout != 0) {
+            // forge-lint: disable-next-line(reentrancy-no-eth,unused-return)
+            POOL.payOut(owner, close.payout);
+        }
+
+        (uint256 toTreasury, uint256 toFund, uint256 toPool) = _split(close.collected);
+        if (toTreasury != 0) {
+            // forge-lint: disable-next-line(reentrancy-no-eth,unused-return)
+            POOL.payOut(TREASURY, toTreasury);
+        }
+        if (toFund != 0) {
+            // forge-lint: disable-next-line(reentrancy-no-eth,unused-return)
+            POOL.payOut(address(INSURANCE_FUND), toFund);
+            // forge-lint: disable-next-line(reentrancy-no-eth,unused-return)
+            INSURANCE_FUND.syncCredit();
+        }
+        // D20 and D56: the three shares go on chain here, where the gold leaves
+        // the pool, the same event the open path routes its fee through. The
+        // section is held across the whole settlement, so a log cannot be
+        // reordered; this matches the open and add fee emits (reentrancy-events).
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit FeeRouted(toTreasury, toFund, toPool);
+
+        if (close.badDebt != 0) {
+            // The fund pays what it has into the pool and the pool absorbs the
+            // rest, which is the whole of D49's loss order. The fund's Paid log
+            // carries what it covered, so the absorbed part is the bad debt in
+            // CloseSettled less that paid amount.
+            // forge-lint: disable-next-line(reentrancy-no-eth,unused-return)
+            INSURANCE_FUND.payTo(address(POOL), close.badDebt);
+            // forge-lint: disable-next-line(reentrancy-no-eth,unused-return)
+            POOL.syncCredit();
+        }
+    }
+
     /// @dev Whether a position is past its liquidation level at `price18`
     ///      (D11, 5.4 rule 1): equity under the maintenance margin of the
     ///      notional. Equity is the claim plus the notional now, less the
@@ -1108,7 +1308,7 @@ contract PositionManager is IPositionBook {
     ///      written as held against owed to keep every term unsigned.
     function _isLiquidatable(Position storage position, uint256 price18) private view returns (bool) {
         uint256 size = position.size;
-        uint256 feeOunces = (size * (indexNow() - position.openIndex) + WAD - ROUND_UP) / WAD;
+        uint256 feeOunces = _holdingFeeOunces(size, position.openIndex);
         uint256 notional = _usd(size, price18);
         uint256 threshold = (notional * MAINTENANCE_MARGIN_BPS + BPS_DENOMINATOR - ROUND_UP) / BPS_DENOMINATOR;
 
@@ -1247,6 +1447,13 @@ contract PositionManager is IPositionBook {
     /// @dev f of a size in ounces, rounded up against the position (D29, D71).
     function _feeOunces(uint256 size) private view returns (uint256) {
         return (size * POSITION_FEE_BPS + BPS_DENOMINATOR - ROUND_UP) / BPS_DENOMINATOR;
+    }
+
+    /// @dev The holding fee a position owes in ounces, ceil(s * (I_now - I_open))
+    ///      (D53, D29). Shared by _isLiquidatable and the close so the fee term
+    ///      cannot drift between the two (D71 rule 4).
+    function _holdingFeeOunces(uint256 size, uint256 openIndex) private view returns (uint256) {
+        return (size * (indexNow() - openIndex) + WAD - ROUND_UP) / WAD;
     }
 
     /// @dev The close fee every open position will owe at a price, rounded up

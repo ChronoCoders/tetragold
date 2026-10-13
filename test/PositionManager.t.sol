@@ -44,6 +44,7 @@ contract PositionManagerTest is Test {
     uint256 private constant MAINTENANCE_MARGIN_BPS = 600;
     uint256 private constant GAS_OPEN = 400_000;
     uint256 private constant GAS_ADD = 300_000;
+    uint256 private constant GAS_CLOSE = 500_000;
     uint256 private constant GAS_OVERHEAD = 80_000;
     /// @dev One past the largest exponent the curve accepts.
     uint256 private constant BAD_EXPONENT = 5;
@@ -319,6 +320,7 @@ contract PositionManagerTest is Test {
             maintenanceMarginBps: MAINTENANCE_MARGIN_BPS,
             gasOpen: GAS_OPEN,
             gasAdd: GAS_ADD,
+            gasClose: GAS_CLOSE,
             gasOverhead: GAS_OVERHEAD
         });
     }

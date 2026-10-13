@@ -55,6 +55,7 @@ contract ProtocolHandler is Test {
     address[ACTORS] private _actors;
     uint256[] private _pending;
     uint256[] private _pendingAdds;
+    uint256[] private _pendingCloses;
     uint256[] private _open;
 
     uint256 public price = 4000e18;
@@ -74,6 +75,20 @@ contract ProtocolHandler is Test {
     uint256 public adds;
     uint256 public addSettlements;
     uint256 public addRejections;
+
+    /// @notice The close path, counted apart so a campaign cannot look green on
+    ///         closes it never made (D71).
+    uint256 public closeRequests;
+    uint256 public closeSettlements;
+
+    /// @notice I2: a close paid an owner more than the position's size in
+    ///         ounces, which D46 forbids.
+    uint256 public payoutAboveSize;
+
+    /// @notice I27: on a close, TGAUX left the set of the pool, the owner, the
+    ///         treasury and the fund, so it went somewhere D71 rule 5 does not
+    ///         send it.
+    uint256 public closeLeaks;
 
     /// @notice Open requests refused while PAXG was unusable, which D50 and
     ///         I26 require, and the ones that went through anyway.
@@ -306,6 +321,12 @@ contract ProtocolHandler is Test {
         if (!open) {
             return;
         }
+        // D43 rule 3: an add is refused while an exit is pending, so the
+        // campaign does not drive one into a revert.
+        (bool exitPending,) = MANAGER.positionFlags(positionId);
+        if (exitPending) {
+            return;
+        }
 
         uint256 amount = bound(amountSeed, MIN_POST, MAX_POST);
         _fund(owner, amount);
@@ -369,6 +390,83 @@ contract ProtocolHandler is Test {
         }
 
         _dropAdd(at);
+        _check();
+    }
+
+    /// @dev D69: the owner asks to close an open position. The brake and PAXG
+    ///      do not refuse it (I14, I26, I28), so the only reasons it would not
+    ///      go through are an exit already pending or an add still waiting,
+    ///      which this guards so the campaign never drives a revert (D43 rule 3).
+    function requestClose(uint256 positionSeed) external {
+        uint256 count = _open.length;
+        if (count == 0) {
+            return;
+        }
+        uint256 positionId = _open[positionSeed % count];
+        // forge-lint: disable-next-line(unused-return)
+        (address owner,,,,, bool open) = MANAGER.positionAt(positionId);
+        if (!open) {
+            return;
+        }
+        (bool exitPending,) = MANAGER.positionFlags(positionId);
+        if (exitPending || MANAGER.pendingAddsFor(positionId) != 0) {
+            return;
+        }
+
+        uint256 fee = MANAGER.GAS_CLOSE() * GAS_PRICE;
+        vm.deal(owner, owner.balance + fee);
+
+        vm.prank(owner);
+        // forge-lint: disable-next-line(reentrancy-no-eth)
+        uint256 id = MANAGER.requestClose{value: fee}(positionId);
+        _pendingCloses.push(id);
+        closeRequests += 1;
+
+        _check();
+    }
+
+    /// @dev Anyone may settle (D62). A close is never rejected (D70, r6.19), so
+    ///      it settles or it waits for its window; this also checks I2 (the
+    ///      payout never passes the size) and I27 (TGAUX leaves the pool on a
+    ///      close only to the owner, the treasury and the fund).
+    function settleClose(uint256 idSeed) external {
+        uint256 count = _pendingCloses.length;
+        if (count == 0) {
+            return;
+        }
+        uint256 at = idSeed % count;
+        uint256 id = _pendingCloses[at];
+
+        // forge-lint: disable-next-line(unused-return)
+        (,,, uint256 targetTime, uint256 positionId,,, PositionManager.State before) = MANAGER.requestAt(id);
+        if (before != PositionManager.State.Pending) {
+            _dropClose(at);
+            return;
+        }
+        if (vm.getBlockTimestamp() < targetTime || vm.getBlockTimestamp() >= targetTime + MANAGER.REQUEST_EXPIRY()) {
+            return;
+        }
+
+        // forge-lint: disable-next-line(unused-return)
+        (address owner, uint256 size,,,,) = MANAGER.positionAt(positionId);
+        uint256 ownerBefore = GOLD.balanceOf(owner);
+        uint256 setBefore = _closeSet(owner);
+
+        vm.deal(address(this), address(this).balance + PYTH_FEE);
+        // forge-lint: disable-next-line(reentrancy-no-eth)
+        MANAGER.settleClose{value: PYTH_FEE}(id, abi.encode(_report(targetTime)), _pythUpdate(targetTime));
+
+        uint256 payout = GOLD.balanceOf(owner) - ownerBefore;
+        if (payout > size) {
+            payoutAboveSize += 1;
+        }
+        if (_closeSet(owner) != setBefore) {
+            closeLeaks += 1;
+        }
+        closeSettlements += 1;
+
+        _removeOpen(positionId);
+        _dropClose(at);
         _check();
     }
 
@@ -473,6 +571,36 @@ contract ProtocolHandler is Test {
             _pending[at] = _pending[last];
         }
         _pending.pop();
+    }
+
+    function _dropClose(uint256 at) private {
+        uint256 last = _pendingCloses.length - 1;
+        if (at != last) {
+            _pendingCloses[at] = _pendingCloses[last];
+        }
+        _pendingCloses.pop();
+    }
+
+    /// @dev Drop a position from the open ghost once it has closed, so the I15b
+    ///      sum stops counting it.
+    function _removeOpen(uint256 positionId) private {
+        uint256 last = _open.length - 1;
+        for (uint256 i = 0; i < _open.length; i++) {
+            if (_open[i] == positionId) {
+                if (i != last) {
+                    _open[i] = _open[last];
+                }
+                _open.pop();
+                return;
+            }
+        }
+    }
+
+    /// @dev The four accounts a close may move TGAUX between: the pool, the
+    ///      owner, the treasury and the fund (D71 rule 5, I27).
+    function _closeSet(address owner) private view returns (uint256) {
+        return GOLD.balanceOf(address(POOL)) + GOLD.balanceOf(owner) + GOLD.balanceOf(TREASURY)
+            + GOLD.balanceOf(address(FUND));
     }
 
     function _actor(uint256 seed) private view returns (address) {

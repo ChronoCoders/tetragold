@@ -10,7 +10,7 @@ import {ProtocolHandler} from "./handlers/ProtocolHandler.sol";
 ///         and the hand driver that proves none of them pass vacuously.
 /// forge-config: default.invariant.fail-on-revert = true
 contract ProtocolInvariantTest is ProtocolInvariants {
-    uint256 private constant SELECTORS = 10;
+    uint256 private constant SELECTORS = 12;
     uint256 private constant DRIVE_DEPOSIT = 40 ether;
     uint256 private constant DRIVE_POST = 5 ether;
     uint256 private constant DRIVE_ADD = 1 ether;
@@ -32,6 +32,8 @@ contract ProtocolInvariantTest is ProtocolInvariants {
         selectors[7] = ProtocolHandler.requestAdd.selector;
         selectors[8] = ProtocolHandler.settleAdd.selector;
         selectors[9] = ProtocolHandler.dustTheOracle.selector;
+        selectors[10] = ProtocolHandler.requestClose.selector;
+        selectors[11] = ProtocolHandler.settleClose.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
     }
@@ -87,9 +89,18 @@ contract ProtocolInvariantTest is ProtocolInvariants {
         handler.requestOpen(1, DRIVE_POST, 0);
         assertGt(handler.requests(), 2, "the request path did not come back");
 
+        // Drive the close so I15b, I2 and I27 are not vacuous on it.
+        handler.requestClose(0);
+        assertEq(handler.closeRequests(), 1, "no close was requested");
+        handler.passTime(TARGET_DELAY);
+        handler.settleClose(0);
+        assertEq(handler.closeSettlements(), 1, "the close did not settle");
+
         assertEq(handler.escrowMismatches(), NOTHING, "D66 broke during the drive");
         assertEq(handler.conservationBreaks(), NOTHING, "I1 broke during the drive");
         assertEq(handler.coverageBreaks(), NOTHING, "I15a broke during the drive");
         assertEq(handler.sideInversions(), NOTHING, "I6 broke during the drive");
+        assertEq(handler.payoutAboveSize(), NOTHING, "I2 broke during the drive");
+        assertEq(handler.closeLeaks(), NOTHING, "I27 broke during the drive");
     }
 }

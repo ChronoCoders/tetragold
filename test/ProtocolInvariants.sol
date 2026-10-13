@@ -68,4 +68,16 @@ abstract contract ProtocolInvariants is ProtocolDeployment {
     function invariant_I17_RequestsEndWhereTheyShould() public view {
         assertEq(handler.wrongEndings(), NOTHING, "I17: a request ended somewhere else");
     }
+
+    /// @notice I2: a close never pays an owner more than the position's size in
+    ///         ounces, which is what D46's reservation guarantees.
+    function invariant_I2_PayoutNeverAboveTheSize() public view {
+        assertEq(handler.payoutAboveSize(), NOTHING, "I2: a close paid above the position size");
+    }
+
+    /// @notice I27: on a close, TGAUX leaves the pool only as the owner's
+    ///         payout and the treasury and fund fee shares (D71 rule 5).
+    function invariant_I27_CloseMovesTgauxOnlyWhereItMay() public view {
+        assertEq(handler.closeLeaks(), NOTHING, "I27: a close moved TGAUX out of the close set");
+    }
 }
