@@ -1,17 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
 
-import {Test} from "forge-std/Test.sol";
-import {CounterpartyPool} from "../src/CounterpartyPool.sol";
-import {FeeIndex} from "../src/libraries/FeeIndex.sol";
-import {InsuranceFund} from "../src/InsuranceFund.sol";
 import {PositionManager} from "../src/PositionManager.sol";
 import {PushFallbackPrice} from "../src/oracle/PushFallbackPrice.sol";
 import {ReentrancyLock} from "../src/ReentrancyLock.sol";
 import {SettlementOracle} from "../src/oracle/SettlementOracle.sol";
-import {TGAUX} from "../src/TGAUX.sol";
 import {TgauxVault} from "../src/TgauxVault.sol";
 import {TradingCalendar} from "../src/oracle/TradingCalendar.sol";
+import {ProtocolInvariants} from "./ProtocolInvariants.sol";
 import {ProtocolHandler} from "./handlers/ProtocolHandler.sol";
 import {MockChainlinkOracle} from "./mocks/MockChainlinkOracle.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
@@ -20,19 +16,13 @@ import {MockPyth} from "./mocks/MockPyth.sol";
 import {MockVerifierProxy} from "./mocks/MockVerifierProxy.sol";
 import {PositionManagerHarness} from "./mocks/PositionManagerHarness.sol";
 
-/// @notice The vault, the pool, the fund and the manager under one campaign.
-/// @dev The invariants that span contracts live here rather than in any one of
-///      them: the escrow identity of D66, conservation of TGAUX across every
-///      holder, I15a, I6 and I19. The per contract invariants keep their own
-///      suites.
-///
-///      The handler swallows nothing: it returns early when a step has nothing
-///      to act on, so a revert in a sequence is a defect.
+/// @notice The vault, the pool, the fund and the manager under one campaign,
+///         with the deep default pool. The invariants it checks are the shared
+///         set in ProtocolInvariants; this contract adds the base selector mix
+///         and the hand driver that proves none of them pass vacuously.
 /// forge-config: default.invariant.fail-on-revert = true
-contract ProtocolInvariantTest is Test {
-    uint256 private constant NOTHING = 0;
+contract ProtocolInvariantTest is ProtocolInvariants {
     uint256 private constant SELECTORS = 10;
-    uint256 private constant U_MAX_BPS = 8000;
     uint256 private constant EXPIRY = 600;
     uint256 private constant IF_TARGET = 100 ether;
     uint256 private constant FEE_FLOOR = 0.0894e18;
@@ -63,13 +53,7 @@ contract ProtocolInvariantTest is Test {
     /// @dev One slot, which a request's target sits at (section 7 rule 2).
     uint256 private constant TARGET_DELAY = 12;
 
-    PositionManagerHarness public manager;
-    CounterpartyPool public pool;
-    InsuranceFund public fund;
-    ProtocolHandler public handler;
-    TGAUX public gold;
-
-    function setUp() public virtual {
+    function setUp() public {
         vm.warp(START);
         vm.txGasPrice(GAS_PRICE);
 
@@ -141,65 +125,9 @@ contract ProtocolInvariantTest is Test {
         targetContract(address(handler));
     }
 
-    /// @notice D66: the manager holds TGAUX for pending requests and nothing
-    ///         else, so its balance is its escrow total.
-    function invariant_D66_TheManagerHoldsOnlyItsEscrow() public view {
-        assertEq(handler.escrowMismatches(), NOTHING, "D66: the manager's balance left its escrow total");
-        assertEq(gold.balanceOf(address(manager)), manager.escrowedOunces(), "D66: and it disagrees right now");
-    }
-
-    /// @notice I1 across the protocol: every ounce of TGAUX is held by one of
-    ///         the accounts this campaign accounts for, so none has leaked.
-    function invariant_I1_EveryOunceIsAccountedFor() public view {
-        assertEq(handler.conservationBreaks(), NOTHING, "I1: TGAUX left the accounted set");
-    }
-
-    /// @notice I15a: pool ounces cover the reserve at every step.
-    function invariant_I15a_OuncesCoverTheReserve() public view {
-        assertEq(handler.coverageBreaks(), NOTHING, "I15a: pool ounces fell under R");
-        assertGe(pool.ounces(), pool.reserved(), "I15a: and they do right now");
-    }
-
-    /// @notice I15b as D46 states it: pool ounces cover the payout every open
-    ///         position would take at the price in use. I15a's reserve bound
-    ///         implies this only while D46 holds, so an add that pushed a
-    ///         position's collateral above its open notional is caught here
-    ///         where the reserve bound would not see it.
-    function invariant_I15b_PoolCoversEveryPayout() public view {
-        assertGe(pool.ounces(), handler.i15bPayoutOunces(), "I15b: pool ounces fell under the payouts it must make");
-    }
-
-    /// @notice I7: R stays inside u_max of pool ounces.
-    function invariant_I7_ReservedStaysInsideUMax() public view {
-        assertLe(pool.reserved() * 10_000, pool.ounces() * U_MAX_BPS, "I7: R rose above u_max of pool ounces");
-    }
-
-    /// @notice I6: the withdrawal measure never falls under the deposit
-    ///         measure, with the close fee of D71 rule 6 in the latter.
-    function invariant_I6_LowSideNeverUnderTheHighSide() public view {
-        assertEq(handler.sideInversions(), NOTHING, "I6: the low side fell under the high side");
-    }
-
-    /// @notice I19: the holding fee rate never falls as utilisation rises.
-    function invariant_I19_RateIsMonotonicInUtilisation() public view {
-        assertEq(handler.rateInversions(), NOTHING, "I19: the rate moved against utilisation");
-    }
-
-    /// @notice I26 and D50: while PAXG is unusable no open request is taken,
-    ///         and nothing else about it changes.
-    function invariant_I26_NoInflowWhilePaxgIsUnusable() public view {
-        assertEq(handler.inflowsAllowedWhileUnusable(), NOTHING, "I26: an open was taken while PAXG was unusable");
-    }
-
-    /// @notice I17 and D70: every request this campaign finished ended in one
-    ///         of the terminal states, never back in pending.
-    function invariant_I17_RequestsEndWhereTheyShould() public view {
-        assertEq(handler.wrongEndings(), NOTHING, "I17: a request ended somewhere else");
-    }
-
-    /// @dev Every assertion above holds on a campaign that did nothing, so this
-    ///      drives each step by hand first.
-    function test_HandlerReachesEveryStep() public virtual {
+    /// @dev Every invariant holds on a campaign that did nothing, so this drives
+    ///      each step by hand first.
+    function test_HandlerReachesEveryStep() public {
         handler.lpDeposit(0, DRIVE_DEPOSIT);
         assertGt(pool.ounces(), NOTHING, "the pool took no deposit");
         assertGt(pool.shareSupply(), NOTHING, "the pool minted no shares");

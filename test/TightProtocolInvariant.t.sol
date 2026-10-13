@@ -10,7 +10,7 @@ import {SettlementOracle} from "../src/oracle/SettlementOracle.sol";
 import {TGAUX} from "../src/TGAUX.sol";
 import {TgauxVault} from "../src/TgauxVault.sol";
 import {TradingCalendar} from "../src/oracle/TradingCalendar.sol";
-import {ProtocolInvariantTest} from "./ProtocolInvariant.t.sol";
+import {ProtocolInvariants} from "./ProtocolInvariants.sol";
 import {ProtocolHandler} from "./handlers/ProtocolHandler.sol";
 import {TightProtocolHandler} from "./handlers/TightProtocolHandler.sol";
 import {MockChainlinkOracle} from "./mocks/MockChainlinkOracle.sol";
@@ -26,8 +26,7 @@ import {PositionManagerHarness} from "./mocks/PositionManagerHarness.sol";
 ///         reserve slack hides a claim that outgrew its notional; this one
 ///         leaves no slack, so I15b sees the shortfall a broken D46 lets in.
 /// forge-config: default.invariant.fail-on-revert = true
-contract TightProtocolInvariantTest is ProtocolInvariantTest {
-    uint256 private constant U_MAX_BPS = 8000;
+contract TightProtocolInvariantTest is ProtocolInvariants {
     uint256 private constant EXPIRY = 600;
     uint256 private constant IF_TARGET = 100 ether;
     uint256 private constant FEE_FLOOR = 0.0894e18;
@@ -56,7 +55,7 @@ contract TightProtocolInvariantTest is ProtocolInvariantTest {
     uint256 private constant ADD_WEIGHT = 4;
     uint256 private constant TIGHT_SELECTORS = 6 + 2 * ADD_WEIGHT;
 
-    function setUp() public override {
+    function setUp() public {
         vm.warp(START);
         vm.txGasPrice(GAS_PRICE);
 
@@ -130,10 +129,4 @@ contract TightProtocolInvariantTest is ProtocolInvariantTest {
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
     }
-
-    /// @dev The base drive assumes the base selector mix and a deep pool, so it
-    ///      has nothing to say about the tight campaign. The invariants carry
-    ///      their own anti vacuity in the live assertions, and the metrics table
-    ///      shows each step is reached.
-    function test_HandlerReachesEveryStep() public override {}
 }
