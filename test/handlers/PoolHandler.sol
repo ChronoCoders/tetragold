@@ -89,12 +89,12 @@ contract PoolHandler is Test {
     uint256 public outsideCallsAllowed;
     uint256 public lateSettlementsAllowed;
 
-    constructor(ReentrancyLock lock, uint256 uMaxBps, uint256 requestExpiry) {
+    constructor(ReentrancyLock lock, uint256 uMaxBps) {
         LOCK = lock;
         PAXG = new MockERC20("Paxos Gold", "PAXG", 18);
         VAULT = new TgauxVault(address(PAXG), makeAddr("vault treasury"), 0, 0);
         GOLD = VAULT.TOKEN();
-        BOOK = new MockPositionBook(address(GOLD), address(lock), uMaxBps, requestExpiry);
+        BOOK = new MockPositionBook(address(GOLD), address(lock), uMaxBps);
         POOL = BOOK.POOL();
         SHARES = POOL.SHARES();
 

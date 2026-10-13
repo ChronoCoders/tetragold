@@ -10,7 +10,7 @@ import {ProtocolHandler} from "./handlers/ProtocolHandler.sol";
 ///         and the hand driver that proves none of them pass vacuously.
 /// forge-config: default.invariant.fail-on-revert = true
 contract ProtocolInvariantTest is ProtocolInvariants {
-    uint256 private constant SELECTORS = 13;
+    uint256 private constant SELECTORS = 14;
     uint256 private constant DRIVE_DEPOSIT = 40 ether;
     uint256 private constant DRIVE_POST = 5 ether;
     uint256 private constant DRIVE_ADD = 1 ether;
@@ -35,6 +35,7 @@ contract ProtocolInvariantTest is ProtocolInvariants {
         selectors[10] = ProtocolHandler.requestClose.selector;
         selectors[11] = ProtocolHandler.settleClose.selector;
         selectors[12] = ProtocolHandler.expireClose.selector;
+        selectors[13] = ProtocolHandler.expireAdd.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
     }
@@ -57,7 +58,7 @@ contract ProtocolInvariantTest is ProtocolInvariants {
 
         handler.requestOpen(2, DRIVE_POST, 2);
         handler.passTime(EXPIRY * 2);
-        handler.expireOpen(0);
+        handler.expireOpen(0, 0);
         assertEq(handler.expiries(), 1, "the request did not expire");
 
         handler.requestAdd(0, DRIVE_ADD);
@@ -65,6 +66,12 @@ contract ProtocolInvariantTest is ProtocolInvariants {
         handler.passTime(TARGET_DELAY);
         handler.settleAdd(0);
         assertEq(handler.addSettlements(), 1, "the add did not settle");
+
+        // D72: an add that outlives its window is expired by an actor.
+        handler.requestAdd(0, DRIVE_ADD);
+        handler.passTime(EXPIRY * 2);
+        handler.expireAdd(0, 0);
+        assertEq(handler.addExpiries(), 1, "the add did not expire");
 
         handler.requestAdd(0, type(uint256).max);
         handler.passTime(TARGET_DELAY);
@@ -100,7 +107,7 @@ contract ProtocolInvariantTest is ProtocolInvariants {
         // A close that outlives its window expires and clears the exit flag.
         handler.requestClose(0);
         handler.passTime(EXPIRY * 2);
-        handler.expireClose(0);
+        handler.expireClose(0, 0);
         assertEq(handler.closeExpiries(), 1, "the close did not expire");
         assertEq(handler.exitFlagStranded(), NOTHING, "an expired close stranded the exit flag");
 
@@ -110,5 +117,6 @@ contract ProtocolInvariantTest is ProtocolInvariants {
         assertEq(handler.sideInversions(), NOTHING, "I6 broke during the drive");
         assertEq(handler.payoutAboveSize(), NOTHING, "I2 broke during the drive");
         assertEq(handler.closeLeaks(), NOTHING, "I27 broke during the drive");
+        assertEq(handler.ethMismatches(), NOTHING, "I29 broke during the drive");
     }
 }

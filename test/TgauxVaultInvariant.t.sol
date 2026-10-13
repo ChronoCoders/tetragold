@@ -24,7 +24,7 @@ contract TgauxVaultInvariantTest is Test {
     uint256 private constant SENTINEL_STABLE = 1_000_000e6;
     uint256 private constant SENTINEL_PAXG = 10 ether;
     uint256 private constant U_MAX_BPS = 8000;
-    uint256 private constant EXPIRY = 600;
+    uint256 private constant EXPIRY = 300;
     uint256 private constant ACTOR = 0;
     uint256 private constant DRIVE_DEPOSIT = 100 ether;
     uint256 private constant ONE_WEI = 1;
@@ -60,7 +60,7 @@ contract TgauxVaultInvariantTest is Test {
         usdc = new MockERC20("USD Coin", "USDC", STABLE_DECIMALS);
         usdt = new MockERC20("Tether USD", "USDT", STABLE_DECIMALS);
         ReentrancyLock sentinelLock = new ReentrancyLock();
-        pool = new CounterpartyPool(address(token), address(sentinelLock), U_MAX_BPS, EXPIRY);
+        pool = new CounterpartyPool(address(token), address(sentinelLock), U_MAX_BPS);
         insuranceFund = new InsuranceFund(address(token), makeAddr("treasury"), address(sentinelLock), 1 ether);
 
         usdc.mint(address(pool), SENTINEL_STABLE);

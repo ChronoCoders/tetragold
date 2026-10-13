@@ -79,7 +79,6 @@ contract PositionManager is IPositionBook {
     /// @param windDown The multisig that may start a wind down (D21, D68).
     /// @param treasury Where the treasury share goes (D20).
     /// @param poolUMaxBps The pool's utilisation ceiling, in basis points.
-    /// @param requestExpiry Seconds a pool request stays settleable.
     /// @param insuranceTarget The routing ceiling of the fund (D20, D49).
     /// @param feeFloorRate Yearly holding fee at no utilisation (D42).
     /// @param feeCapRate Yearly holding fee at the ceiling and above (D53).
@@ -109,7 +108,6 @@ contract PositionManager is IPositionBook {
         address windDown;
         address treasury;
         uint256 poolUMaxBps;
-        uint256 requestExpiry;
         uint256 insuranceTarget;
         uint256 feeFloorRate;
         uint256 feeCapRate;
@@ -154,7 +152,8 @@ contract PositionManager is IPositionBook {
     uint256 public immutable FEE_EXPONENT;
 
     /// @notice f of D71: the fee a position pays on its size in ounces at open
-    ///         and again at an owner's close, in basis points (O5).
+    ///         and again at an owner's close, in basis points, greater than
+    ///         zero (D72 rule 5, O5).
     uint256 public immutable POSITION_FEE_BPS;
 
     /// @notice How a collected fee is split (D20, O3). The three sum to one.
@@ -189,9 +188,11 @@ contract PositionManager is IPositionBook {
     ///         must be able to price a settlement before sending it (D65, O5).
     uint256 public immutable GAS_OVERHEAD;
 
-    /// @notice How long a request stays settleable before it can expire, the
-    ///         same window the pool uses (section 7 rule 4, O5).
-    uint256 public immutable REQUEST_EXPIRY;
+    /// @notice How long a request stays settleable before it can expire, fixed
+    ///         at 300 seconds, the same window the pool uses (D72 rule 1,
+    ///         section 7 rule 4).
+    uint256 public constant REQUEST_EXPIRY = 300;
+
     /// @notice Whether the guardian has paused inflows (D58 rule 2).
     bool public inflowsPaused;
 
@@ -330,7 +331,8 @@ contract PositionManager is IPositionBook {
         uint256 badDebt
     );
     event RequestRejected(uint256 indexed id, address indexed requester, Reason reason, uint256 price18);
-    event RequestExpired(uint256 indexed id, address indexed requester, uint256 escrowed, uint256 fee);
+    event RequestExpired(uint256 indexed id, address indexed requester, uint256 refunded, uint256 fee);
+    event ExpirerPaid(uint256 indexed id, address indexed expirer, uint256 paid, uint256 toTreasury);
     event FeeRouted(uint256 toTreasury, uint256 toInsuranceFund, uint256 toPool);
     event SettlerPaid(uint256 indexed id, address indexed settler, uint256 paid, uint256 credited);
     event CreditWithdrawn(address indexed account, uint256 amount);
@@ -341,6 +343,7 @@ contract PositionManager is IPositionBook {
     error FeeTooHighForLeverage(uint256 bps, uint256 leverage);
     error SharesDoNotSumToOne(uint256 total);
     error ZeroMinimumNotional();
+    error ZeroPositionFee();
     error ZeroGasEstimate();
     error ZeroAmount();
     error BadLeverage(uint256 leverage);
@@ -352,7 +355,6 @@ contract PositionManager is IPositionBook {
     error TooEarly(uint256 targetTime);
     error TooLate(uint256 expiresAt);
     error NotExpiredYet(uint256 expiresAt);
-    error NotRequester(address caller, address requester);
     error NothingReceived();
     error NothingToWithdraw();
     error TransferFailed(address to, uint256 amount);
@@ -406,6 +408,11 @@ contract PositionManager is IPositionBook {
         FEE_CAP_RATE = config.feeCapRate;
         FEE_U_MAX = (config.poolUMaxBps * WAD) / BPS_DENOMINATOR;
         FEE_EXPONENT = config.feeExponent;
+        // D72 rule 5: f must be greater than zero, so an open always pays a fee
+        // and an open that expires cannot be a free option on the price.
+        if (config.positionFeeBps == 0) {
+            revert ZeroPositionFee();
+        }
         // The open fee is f of the size, and the size is q times the leverage,
         // so the fee comes to q times f times k. Once that reaches q the fee
         // would be the whole collateral and the subtraction below would panic
@@ -440,7 +447,6 @@ contract PositionManager is IPositionBook {
         GAS_ADD = config.gasAdd;
         GAS_CLOSE = config.gasClose;
         GAS_OVERHEAD = config.gasOverhead;
-        REQUEST_EXPIRY = config.requestExpiry;
 
         FeeIndex.validate(
             FeeIndex.Params({
@@ -451,7 +457,7 @@ contract PositionManager is IPositionBook {
             })
         );
 
-        POOL = new CounterpartyPool(config.gold, config.lock, config.poolUMaxBps, config.requestExpiry);
+        POOL = new CounterpartyPool(config.gold, config.lock, config.poolUMaxBps);
         INSURANCE_FUND = new InsuranceFund(config.gold, config.treasury, config.lock, config.insuranceTarget);
 
         // The index measures from here, not from the epoch.
@@ -709,17 +715,22 @@ contract PositionManager is IPositionBook {
         LOCK.exit();
     }
 
-    /// @notice Refund a request no price ever qualified for (section 7 rule 4).
-    /// @dev The requester calls it, so a keeper cannot cancel a request that is
-    ///      still settleable, and the whole execution fee goes back (D65).
+    /// @notice Expire a request no price ever qualified for (section 7 rule 4).
+    /// @dev Anyone may call it once the window has closed (D72 rule 2), so a
+    ///      stale request never strands its requester: the escrow always goes
+    ///      back to the requester, never to the caller. Expiry is not free
+    ///      (D72 rule 3): the execution fee is not refunded. The caller is paid
+    ///      its gas out of the fee, capped at the fee, and the rest is credited
+    ///      to the treasury, so a requester expiring its own request recovers
+    ///      only its gas. An open that expires still owes the open fee of D71,
+    ///      taken from its escrowed q and routed per D20 (D72 rule 4); an add or
+    ///      a close takes no ounces.
     /// @param id Request to expire.
     function expireRequest(uint256 id) external {
+        uint256 gasAtEntry = gasleft();
         Request storage request = _requests[id];
         if (request.state != State.Pending) {
             revert NoSuchRequest(id);
-        }
-        if (msg.sender != request.requester) {
-            revert NotRequester(msg.sender, request.requester);
         }
         uint256 expiresAt = request.targetTime + REQUEST_EXPIRY;
         // The deadline is slot time, which post merge Ethereum fixes
@@ -732,32 +743,54 @@ contract PositionManager is IPositionBook {
 
         uint256 escrowed = request.escrowed;
         uint256 fee = request.executionFee;
+        address requester = request.requester;
         request.state = State.Expired;
-        // An expiring add leaves Pending, so the position's pending count falls
-        // by one, the same as a settled add (D43 rule 3).
+
+        uint256 refund = escrowed;
+        uint256 charge = 0;
+        uint256 toTreasury = 0;
+        uint256 toFund = 0;
+        uint256 toPool = 0;
         if (request.kind == Kind.Add) {
+            // An expiring add leaves Pending, so the position's pending count
+            // falls by one, the same as a settled add (D43 rule 3). It takes no
+            // ounces (D72 rule 4).
             pendingAddsFor[request.positionId] -= 1;
         } else if (request.kind == Kind.Close) {
             // An expiring close releases the exit flag, or the position is
             // stranded: requestClose would revert ExitPending and no add could
-            // be made, so it could never be exited (I14, D58).
+            // be made, so it could never be exited (I14, D58). It takes no
+            // ounces (D72 rule 4).
             _positions[request.positionId].exitPending = false;
+        } else {
+            // D72 rule 4: an open that expires still owes the open fee of D71.
+            // The charge is f of s = q * k at the request's leverage, rounded up
+            // against the position (D29), and routed per D20 as it is on a
+            // settled open. The index advances first, because routing adds the
+            // pool's share to pool ounces (D53). The rest of q is refunded.
+            _advance();
+            charge = _feeOunces(escrowed * request.leverage);
+            (toTreasury, toFund, toPool) = _split(charge);
+            refund = escrowed - charge;
         }
+
         if (escrowed != 0) {
             escrowedOunces -= escrowed;
         }
-        if (fee != 0) {
-            ethCredit[request.requester] += fee;
-        }
-        // The state, the escrow total and the credit are written above, and
-        // the only external call before this is taking the section, which holds
-        // nothing a caller can turn against this log.
-        // forge-lint: disable-next-line(reentrancy-events)
-        emit RequestExpired(id, request.requester, escrowed, fee);
 
-        if (escrowed != 0) {
-            IERC20(address(GOLD)).safeTransfer(request.requester, escrowed);
+        // The state, the escrow total and the pending counts are written above,
+        // and the section is held across every transfer below.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit RequestExpired(id, requester, refund, fee);
+
+        if (charge != 0) {
+            _routeFee(toTreasury, toFund, toPool);
         }
+        if (refund != 0) {
+            IERC20(address(GOLD)).safeTransfer(requester, refund);
+        }
+
+        _payTheExpirer(id, fee, gasAtEntry);
 
         LOCK.exit();
     }
@@ -1450,6 +1483,35 @@ contract PositionManager is IPositionBook {
         uint256 toSettler = paid + surplus;
         if (toSettler != 0) {
             _sendEth(msg.sender, toSettler);
+        }
+    }
+
+    /// @dev Pay the account that expired a request its gas, capped at the fee,
+    ///      and credit the rest to the treasury (D72 rule 3). The gas is
+    ///      measured as the settler's is: used times the gas price, with the
+    ///      same overhead the settler payment adds, so the two paths price a
+    ///      caller's work the same way. No Pyth fee and no surplus arise, since
+    ///      expiry reads no oracle and carries no value. The caller chose to be
+    ///      here, as a settler does, so its share is pushed last; the treasury's
+    ///      is pulled (D70), so a treasury that cannot receive ETH is its own
+    ///      problem and never an expiry's.
+    function _payTheExpirer(uint256 id, uint256 fee, uint256 gasAtEntry) private {
+        uint256 used = gasAtEntry - gasleft() + GAS_OVERHEAD;
+        uint256 owed = used * tx.gasprice;
+        uint256 paid = owed > fee ? fee : owed;
+        uint256 toTreasury = fee - paid;
+
+        if (toTreasury != 0) {
+            ethCredit[TREASURY] += toTreasury;
+        }
+        // The treasury's credit is written above and the payment below is the
+        // last thing this transaction does, after every transfer the expiry
+        // made.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit ExpirerPaid(id, msg.sender, paid, toTreasury);
+
+        if (paid != 0) {
+            _sendEth(msg.sender, paid);
         }
     }
 

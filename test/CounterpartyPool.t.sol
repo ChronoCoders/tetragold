@@ -12,7 +12,7 @@ import {VaultStub} from "./mocks/VaultStub.sol";
 contract CounterpartyPoolTest is Test {
     uint256 private constant U_MAX_BPS = 8000;
     uint256 private constant BPS = 10_000;
-    uint256 private constant EXPIRY = 600;
+    uint256 private constant EXPIRY = 300;
     uint256 private constant DELAY = 12;
     uint256 private constant PRICE = 2000e18;
     uint256 private constant HUNDRED = 100 ether;
@@ -47,7 +47,7 @@ contract CounterpartyPoolTest is Test {
         vault = new VaultStub();
         gold = vault.TOKEN();
         lock = new ReentrancyLock();
-        book = new MockPositionBook(address(gold), address(lock), U_MAX_BPS, EXPIRY);
+        book = new MockPositionBook(address(gold), address(lock), U_MAX_BPS);
         pool = book.POOL();
         shares = pool.SHARES();
 
@@ -69,19 +69,16 @@ contract CounterpartyPoolTest is Test {
 
     function test_ConstructorRejectsBadArguments() public {
         vm.expectRevert(CounterpartyPool.ZeroAddress.selector);
-        new CounterpartyPool(address(0), address(lock), U_MAX_BPS, EXPIRY);
+        new CounterpartyPool(address(0), address(lock), U_MAX_BPS);
 
         vm.expectRevert(CounterpartyPool.ZeroAddress.selector);
-        new CounterpartyPool(address(gold), address(0), U_MAX_BPS, EXPIRY);
+        new CounterpartyPool(address(gold), address(0), U_MAX_BPS);
 
         vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.UMaxTooHigh.selector, NOTHING));
-        new CounterpartyPool(address(gold), address(lock), NOTHING, EXPIRY);
+        new CounterpartyPool(address(gold), address(lock), NOTHING);
 
         vm.expectRevert(abi.encodeWithSelector(CounterpartyPool.UMaxTooHigh.selector, BPS + 1));
-        new CounterpartyPool(address(gold), address(lock), BPS + 1, EXPIRY);
-
-        vm.expectRevert(CounterpartyPool.ZeroExpiry.selector);
-        new CounterpartyPool(address(gold), address(lock), U_MAX_BPS, NOTHING);
+        new CounterpartyPool(address(gold), address(lock), BPS + 1);
     }
 
     /// @dev D48: the first deposit is one share per ounce, which the virtual

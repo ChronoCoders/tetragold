@@ -35,7 +35,7 @@ contract PositionManagerCloseTest is Test {
     uint256 private constant TARGET_DELAY = 12;
 
     uint256 private constant U_MAX_BPS = 8000;
-    uint256 private constant EXPIRY = 600;
+    uint256 private constant EXPIRY = 300;
     uint256 private constant IF_TARGET = 100 ether;
     uint256 private constant FEE_FLOOR = 0.0894e18;
     uint256 private constant FEE_CAP = 0.3e18;
@@ -46,7 +46,7 @@ contract PositionManagerCloseTest is Test {
     uint256 private constant POOL_SHARE_BPS = 3000;
     uint256 private constant MIN_NOTIONAL_USD = 1000e18;
     uint256 private constant MAINTENANCE_MARGIN_BPS = 600;
-    uint256 private constant GAS_OPEN = 400_000;
+    uint256 private constant GAS_OPEN = 1_000_000;
     uint256 private constant GAS_ADD = 300_000;
     uint256 private constant GAS_CLOSE = 500_000;
     uint256 private constant GAS_OVERHEAD = 80_000;
@@ -630,7 +630,6 @@ contract PositionManagerCloseTest is Test {
             windDown: makeAddr("wind down"),
             treasury: treasury,
             poolUMaxBps: U_MAX_BPS,
-            requestExpiry: EXPIRY,
             insuranceTarget: IF_TARGET,
             feeFloorRate: FEE_FLOOR,
             feeCapRate: FEE_CAP,

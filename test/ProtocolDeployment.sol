@@ -26,7 +26,7 @@ import {PositionManagerHarness} from "./mocks/PositionManagerHarness.sol";
 ///         targets, the selectors and the LP seed it needs.
 abstract contract ProtocolDeployment is Test {
     uint256 internal constant U_MAX_BPS = 8000;
-    uint256 internal constant EXPIRY = 600;
+    uint256 internal constant EXPIRY = 300;
     uint256 internal constant IF_TARGET = 100 ether;
     uint256 internal constant FEE_FLOOR = 0.0894e18;
     uint256 internal constant FEE_CAP = 0.3e18;
@@ -37,7 +37,7 @@ abstract contract ProtocolDeployment is Test {
     uint256 internal constant POOL_SHARE_BPS = 3000;
     uint256 internal constant MIN_NOTIONAL_USD = 1000e18;
     uint256 internal constant MAINTENANCE_MARGIN_BPS = 600;
-    uint256 internal constant GAS_OPEN = 400_000;
+    uint256 internal constant GAS_OPEN = 1_000_000;
     uint256 internal constant GAS_ADD = 300_000;
     uint256 internal constant GAS_CLOSE = 500_000;
     uint256 internal constant GAS_OVERHEAD = 80_000;
@@ -100,7 +100,6 @@ abstract contract ProtocolDeployment is Test {
                 windDown: makeAddr("wind down"),
                 treasury: makeAddr("treasury"),
                 poolUMaxBps: U_MAX_BPS,
-                requestExpiry: EXPIRY,
                 insuranceTarget: IF_TARGET,
                 feeFloorRate: FEE_FLOOR,
                 feeCapRate: FEE_CAP,

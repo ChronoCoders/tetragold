@@ -30,7 +30,7 @@ contract PositionManagerTest is Test {
     uint256 private constant BPS = 10_000;
     uint256 private constant NOTHING = 0;
     uint256 private constant U_MAX_BPS = 8000;
-    uint256 private constant EXPIRY = 600;
+    uint256 private constant EXPIRY = 300;
     uint256 private constant IF_TARGET = 100 ether;
     uint256 private constant FEE_FLOOR = 0.0894e18;
     uint256 private constant FEE_CAP = 0.3e18;
@@ -42,7 +42,7 @@ contract PositionManagerTest is Test {
     uint256 private constant POOL_SHARE_BPS = 3000;
     uint256 private constant MIN_NOTIONAL_USD = 100e18;
     uint256 private constant MAINTENANCE_MARGIN_BPS = 600;
-    uint256 private constant GAS_OPEN = 400_000;
+    uint256 private constant GAS_OPEN = 1_000_000;
     uint256 private constant GAS_ADD = 300_000;
     uint256 private constant GAS_CLOSE = 500_000;
     uint256 private constant GAS_OVERHEAD = 80_000;
@@ -284,6 +284,12 @@ contract PositionManagerTest is Test {
         config.gasAdd = NOTHING;
         vm.expectRevert(PositionManager.ZeroGasEstimate.selector);
         new PositionManagerHarness(config);
+
+        // D72 rule 5: f must be greater than zero, so an open always pays a fee.
+        config = _config();
+        config.positionFeeBps = NOTHING;
+        vm.expectRevert(PositionManager.ZeroPositionFee.selector);
+        new PositionManagerHarness(config);
     }
 
     function _config() private returns (PositionManager.Config memory) {
@@ -307,7 +313,6 @@ contract PositionManagerTest is Test {
             windDown: windDown,
             treasury: treasury,
             poolUMaxBps: U_MAX_BPS,
-            requestExpiry: EXPIRY,
             insuranceTarget: IF_TARGET,
             feeFloorRate: FEE_FLOOR,
             feeCapRate: FEE_CAP,

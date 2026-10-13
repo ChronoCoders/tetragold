@@ -14,7 +14,7 @@ import {PoolHandler} from "./handlers/PoolHandler.sol";
 ///         and close, so a claim can never sit above what the reserve allows.
 contract PoolHandlerClaimRefreshTest is Test {
     uint256 private constant U_MAX_BPS = 8000;
-    uint256 private constant EXPIRY = 600;
+    uint256 private constant EXPIRY = 300;
     uint256 private constant WAD = 1e18;
 
     CounterpartyPool private pool;
@@ -22,7 +22,7 @@ contract PoolHandlerClaimRefreshTest is Test {
 
     function setUp() public {
         ReentrancyLock lock = new ReentrancyLock();
-        handler = new PoolHandler(lock, U_MAX_BPS, EXPIRY);
+        handler = new PoolHandler(lock, U_MAX_BPS);
         pool = handler.POOL();
     }
 

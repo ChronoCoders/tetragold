@@ -34,7 +34,7 @@ contract PositionManagerOpenTest is Test {
     uint256 private constant TARGET_DELAY = 12;
 
     uint256 private constant U_MAX_BPS = 8000;
-    uint256 private constant EXPIRY = 600;
+    uint256 private constant EXPIRY = 300;
     uint256 private constant IF_TARGET = 100 ether;
     uint256 private constant FEE_FLOOR = 0.0894e18;
     uint256 private constant FEE_CAP = 0.3e18;
@@ -45,7 +45,7 @@ contract PositionManagerOpenTest is Test {
     uint256 private constant POOL_SHARE_BPS = 3000;
     uint256 private constant MIN_NOTIONAL_USD = 1000e18;
     uint256 private constant MAINTENANCE_MARGIN_BPS = 600;
-    uint256 private constant GAS_OPEN = 400_000;
+    uint256 private constant GAS_OPEN = 1_000_000;
     uint256 private constant GAS_ADD = 300_000;
     uint256 private constant GAS_CLOSE = 500_000;
     uint256 private constant GAS_OVERHEAD = 80_000;
@@ -553,9 +553,11 @@ contract PositionManagerOpenTest is Test {
         ReenteringSettler attacker = new ReenteringSettler(manager);
         vm.deal(address(attacker), FUNDING);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(PositionManager.TransferFailed.selector, address(attacker), _settlerPay(id))
-        );
+        // The push to the settler fails because the attacker's fallback reverts;
+        // the amount is its own reimbursement, which is now its actual gas
+        // rather than the whole fee (the fee covers more than one open costs),
+        // so the selector alone is matched.
+        vm.expectPartialRevert(PositionManager.TransferFailed.selector);
         attacker.settle(
             id, abi.encode(_report(target)), _pythUpdate(target), PYTH_FEE, POST, LEVERAGE, _feeFloor(GAS_OPEN), true
         );
@@ -639,29 +641,53 @@ contract PositionManagerOpenTest is Test {
         assertEq(gold.balanceOf(trader), SEED, "the escrow was not refunded");
     }
 
-    /// @dev Section 7 rule 4: the requester takes the whole fee back on expiry,
-    ///      with the escrow.
-    function test_AnExpiredRequestRefundsEverything() public {
+    /// @dev D72: an open that expires still owes the open fee of D71, a stranger
+    ///      may expire it, the rest of the escrow refunds and the execution fee
+    ///      is kept, paying the stranger its gas and crediting the treasury the
+    ///      rest.
+    function test_AnExpiredOpenChargesTheFeeRefundsTheRestAndKeepsTheFee() public {
         uint256 fee = _feeFloor(GAS_OPEN);
+        uint256 traderBefore = gold.balanceOf(trader);
         uint256 id = _requestOpenWithFee(trader, POST, LEVERAGE, fee);
         uint256 target = START + TARGET_DELAY;
 
+        // Before the deadline even a stranger is refused.
         vm.warp(target + EXPIRY - 1);
-        vm.prank(trader);
+        vm.prank(lp);
         vm.expectRevert(abi.encodeWithSelector(PositionManager.NotExpiredYet.selector, target + EXPIRY));
         manager.expireRequest(id);
 
         vm.warp(target + EXPIRY);
-        vm.prank(lp);
-        vm.expectRevert(abi.encodeWithSelector(PositionManager.NotRequester.selector, lp, trader));
-        manager.expireRequest(id);
+        uint256 charge = (POST * LEVERAGE * POSITION_FEE_BPS + BPS - 1) / BPS;
+        uint256 strangerEth = lp.balance;
 
-        vm.prank(trader);
-        manager.expireRequest(id);
+        // D72 rule 4: the open fee is taken from q and routed per D20; the rest
+        // of q refunds to the requester, and a stranger may expire it (rule 2).
+        {
+            uint256 toTreasury = (charge * TREASURY_SHARE_BPS) / BPS;
+            uint256 toFund = fund.atTarget() ? 0 : (charge * INSURANCE_SHARE_BPS) / BPS;
+            uint256 treasuryGold = gold.balanceOf(treasury);
+            uint256 fundGold = gold.balanceOf(address(fund));
+            uint256 poolGold = gold.balanceOf(address(pool));
 
-        assertEq(gold.balanceOf(trader), SEED, "the escrow did not come back");
-        assertEq(manager.escrowedOunces(), NOTHING);
-        assertEq(manager.ethCredit(trader), fee, "the whole fee was not credited");
+            vm.prank(lp);
+            manager.expireRequest(id);
+
+            assertGt(charge, NOTHING, "the open charge is zero, so this proves nothing");
+            assertEq(gold.balanceOf(trader), traderBefore - charge, "the rest of the escrow did not refund");
+            assertEq(manager.escrowedOunces(), NOTHING, "the escrow total did not clear");
+            assertEq(gold.balanceOf(treasury) - treasuryGold, toTreasury, "treasury fee share");
+            assertEq(gold.balanceOf(address(fund)) - fundGold, toFund, "fund fee share");
+            assertEq(gold.balanceOf(address(pool)) - poolGold, charge - toTreasury - toFund, "pool fee share");
+        }
+
+        // D72 rule 3: the fee is not refunded. The stranger is paid its gas,
+        // capped at the fee, and the treasury is credited the rest to pull.
+        uint256 paid = lp.balance - strangerEth;
+        assertEq(manager.ethCredit(trader), NOTHING, "the requester was wrongly refunded the fee");
+        assertLe(paid, fee, "the gas paid rose above the fee");
+        assertGt(paid, NOTHING, "the stranger was paid no gas, so the cap proves nothing");
+        assertEq(manager.ethCredit(treasury), fee - paid, "the treasury credit is not the fee less the gas");
     }
 
     /// @dev D71 rule 6: the deposit measure also carries the close fee every
@@ -715,6 +741,10 @@ contract PositionManagerOpenTest is Test {
 
         assertLt(requestGas, REQUEST_CEILING, "a request cost more than the stated ceiling");
         assertLt(settleGas, SETTLE_CEILING, "a settlement cost more than the stated ceiling");
+        // D72 rule 7: the execution fee estimate covers the fresh settlement it
+        // pays for, the first open being the costliest (it also writes the
+        // claim book's one time tree init), so a settler is reimbursed (D65).
+        assertLt(settleGas, GAS_OPEN, "the first open outgrew the GAS_OPEN estimate");
     }
 
     function _config() private returns (PositionManager.Config memory) {
@@ -736,7 +766,6 @@ contract PositionManagerOpenTest is Test {
             windDown: makeAddr("wind down"),
             treasury: treasury,
             poolUMaxBps: U_MAX_BPS,
-            requestExpiry: EXPIRY,
             insuranceTarget: IF_TARGET,
             feeFloorRate: FEE_FLOOR,
             feeCapRate: FEE_CAP,
@@ -833,12 +862,6 @@ contract PositionManagerOpenTest is Test {
 
     /// @dev What the manager owes a settler for a request, which is the whole
     ///      deposited fee whenever the gas it took exceeds the deposit.
-    function _settlerPay(uint256 id) private view returns (uint256) {
-        // forge-lint: disable-next-line(unused-return)
-        (,, uint256 fee,,,,,) = manager.requestAt(id);
-        return fee;
-    }
-
     function _feeFloor(uint256 gasEstimate) private pure returns (uint256) {
         return gasEstimate * GAS_PRICE;
     }

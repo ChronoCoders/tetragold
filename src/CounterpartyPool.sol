@@ -55,6 +55,11 @@ contract CounterpartyPool {
     /// @notice Delay from request to target time: one slot (section 7 rule 2).
     uint256 public constant TARGET_DELAY = 12;
 
+    /// @notice How long a request stays settleable before it can expire, fixed
+    ///         at 300 seconds for every request type (D72 rule 1, section 7
+    ///         rule 4).
+    uint256 public constant REQUEST_EXPIRY = 300;
+
     /// @notice One unit of the 18 decimal scale both ounces and the price use.
     uint256 private constant WAD = 1e18;
 
@@ -116,9 +121,6 @@ contract CounterpartyPool {
     ///         at most one (D46, O5).
     uint256 public immutable U_MAX_BPS;
 
-    /// @notice How long a request stays settleable before it can expire (O5).
-    uint256 public immutable REQUEST_EXPIRY;
-
     /// @notice Pool ounces: LP deposits plus trader collateral plus retained
     ///         losses and fees, less payouts (section 6).
     uint256 public ounces;
@@ -161,7 +163,6 @@ contract CounterpartyPool {
     error ZeroAmount();
     error ZeroPrice();
     error UMaxTooHigh(uint256 bps);
-    error ZeroExpiry();
     error NotPositionManager(address caller);
     error NotRequestOwner(address caller, address lp);
     error LockNotHeld(address caller, address holder);
@@ -178,23 +179,18 @@ contract CounterpartyPool {
     /// @param gold The TGAUX token.
     /// @param lock The shared reentrancy guard.
     /// @param uMaxBps Upper bound on u in basis points, at most 10000 (D46).
-    /// @param requestExpiry Seconds after the target time a request may expire.
-    constructor(address gold, address lock, uint256 uMaxBps, uint256 requestExpiry) {
+    constructor(address gold, address lock, uint256 uMaxBps) {
         if (gold == address(0) || lock == address(0)) {
             revert ZeroAddress();
         }
         if (uMaxBps == 0 || uMaxBps > BPS_DENOMINATOR) {
             revert UMaxTooHigh(uMaxBps);
         }
-        if (requestExpiry == 0) {
-            revert ZeroExpiry();
-        }
 
         GOLD = TGAUX(gold);
         POSITION_MANAGER = IPositionBook(msg.sender);
         LOCK = ReentrancyLock(lock);
         U_MAX_BPS = uMaxBps;
-        REQUEST_EXPIRY = requestExpiry;
         SHARES = new LPToken("Tetra Gold LP", "TGLP");
     }
 

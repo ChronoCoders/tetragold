@@ -82,6 +82,14 @@ contract ProtocolHandler is Test {
     uint256 public closeSettlements;
     uint256 public closeExpiries;
 
+    /// @notice Expiries of open and add requests, counted so a campaign cannot
+    ///         look green on an expiry path it never drove (D72).
+    uint256 public addExpiries;
+
+    /// @notice I29: the ETH the manager held drifted from the sum of its pending
+    ///         execution fees and the ETH it has credited (D65, D72).
+    uint256 public ethMismatches;
+
     /// @notice I2: a close paid an owner more than the position's size in
     ///         ounces, which D46 forbids.
     uint256 public payoutAboveSize;
@@ -285,7 +293,11 @@ contract ProtocolHandler is Test {
         _check();
     }
 
-    function expireOpen(uint256 idSeed) external {
+    /// @dev D72 rule 2: anyone may expire a request, so the caller is a random
+    ///      actor rather than the requester. The caller is paid its gas out of
+    ///      the fee and the treasury keeps the rest; the escrow still goes to
+    ///      the requester.
+    function expireOpen(uint256 actorSeed, uint256 idSeed) external {
         uint256 count = _pending.length;
         if (count == 0) {
             return;
@@ -293,7 +305,7 @@ contract ProtocolHandler is Test {
         uint256 at = idSeed % count;
         uint256 id = _pending[at];
 
-        (address requester,,, uint256 targetTime,,,, PositionManager.State state) = MANAGER.requestAt(id);
+        (,,, uint256 targetTime,,,, PositionManager.State state) = MANAGER.requestAt(id);
         if (state != PositionManager.State.Pending) {
             _drop(at);
             return;
@@ -302,7 +314,7 @@ contract ProtocolHandler is Test {
             return;
         }
 
-        vm.prank(requester);
+        vm.prank(_actor(actorSeed));
         MANAGER.expireRequest(id);
         expiries += 1;
 
@@ -474,10 +486,11 @@ contract ProtocolHandler is Test {
         _check();
     }
 
-    /// @dev A close that outlived its window is expired by its owner (section 7
-    ///      rule 4). The fix under test is that this clears the position's exit
-    ///      flag; the invariant catches it if it does not.
-    function expireClose(uint256 idSeed) external {
+    /// @dev A close that outlived its window is expired by a random actor
+    ///      (section 7 rule 4, D72 rule 2). The fix under test is that this
+    ///      clears the position's exit flag; the invariant catches it if it does
+    ///      not.
+    function expireClose(uint256 actorSeed, uint256 idSeed) external {
         uint256 count = _pendingCloses.length;
         if (count == 0) {
             return;
@@ -485,7 +498,7 @@ contract ProtocolHandler is Test {
         uint256 at = idSeed % count;
         uint256 id = _pendingCloses[at];
 
-        (address requester,,, uint256 targetTime,,,, PositionManager.State state) = MANAGER.requestAt(id);
+        (,,, uint256 targetTime,,,, PositionManager.State state) = MANAGER.requestAt(id);
         if (state != PositionManager.State.Pending) {
             _dropClose(at);
             return;
@@ -494,11 +507,39 @@ contract ProtocolHandler is Test {
             return;
         }
 
-        vm.prank(requester);
+        vm.prank(_actor(actorSeed));
         MANAGER.expireRequest(id);
         closeExpiries += 1;
 
         _dropClose(at);
+        _check();
+    }
+
+    /// @dev An add that outlived its window is expired by a random actor (D72
+    ///      rule 2). An add expiry takes no ounces (rule 4): the whole escrow
+    ///      returns and the pending count falls by one.
+    function expireAdd(uint256 actorSeed, uint256 idSeed) external {
+        uint256 count = _pendingAdds.length;
+        if (count == 0) {
+            return;
+        }
+        uint256 at = idSeed % count;
+        uint256 id = _pendingAdds[at];
+
+        (,,, uint256 targetTime,,,, PositionManager.State state) = MANAGER.requestAt(id);
+        if (state != PositionManager.State.Pending) {
+            _dropAdd(at);
+            return;
+        }
+        if (vm.getBlockTimestamp() < targetTime + MANAGER.REQUEST_EXPIRY()) {
+            return;
+        }
+
+        vm.prank(_actor(actorSeed));
+        MANAGER.expireRequest(id);
+        addExpiries += 1;
+
+        _dropAdd(at);
         _check();
     }
 
@@ -561,6 +602,33 @@ contract ProtocolHandler is Test {
             (bool exitPending,) = MANAGER.positionFlags(_open[i]);
             if (exitPending && !_hasPendingClose(_open[i])) {
                 exitFlagStranded += 1;
+            }
+        }
+
+        // I29: between operations the manager's ETH is exactly the execution
+        // fees of its pending requests plus the ETH it has credited and not yet
+        // paid out (D65, D72). A settler's surplus and an expirer's gas are both
+        // pushed, so neither sits here; a rejected or underused fee and the
+        // treasury's share of an expiry are credited, so both do.
+        uint256 pendingFees =
+            _sumPendingFees(_pending) + _sumPendingFees(_pendingAdds) + _sumPendingFees(_pendingCloses);
+        uint256 credits = MANAGER.ethCredit(TREASURY);
+        for (uint256 i = 0; i < ACTORS; i++) {
+            credits += MANAGER.ethCredit(_actors[i]);
+        }
+        if (address(MANAGER).balance != pendingFees + credits) {
+            ethMismatches += 1;
+        }
+    }
+
+    /// @dev The execution fees still held for the pending requests in a list.
+    ///      A list entry that has already left Pending carries no fee here, so
+    ///      an id not yet dropped does not double count.
+    function _sumPendingFees(uint256[] storage ids) private view returns (uint256 total) {
+        for (uint256 i = 0; i < ids.length; i++) {
+            (,, uint256 fee,,,,, PositionManager.State state) = MANAGER.requestAt(ids[i]);
+            if (state == PositionManager.State.Pending) {
+                total += fee;
             }
         }
     }

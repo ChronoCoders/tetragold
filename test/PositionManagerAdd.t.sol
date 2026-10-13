@@ -33,7 +33,7 @@ contract PositionManagerAddTest is Test {
     uint256 private constant TARGET_DELAY = 12;
 
     uint256 private constant U_MAX_BPS = 8000;
-    uint256 private constant EXPIRY = 600;
+    uint256 private constant EXPIRY = 300;
     uint256 private constant IF_TARGET = 100 ether;
     uint256 private constant FEE_FLOOR = 0.0894e18;
     uint256 private constant FEE_CAP = 0.3e18;
@@ -44,7 +44,7 @@ contract PositionManagerAddTest is Test {
     uint256 private constant POOL_SHARE_BPS = 3000;
     uint256 private constant MIN_NOTIONAL_USD = 1000e18;
     uint256 private constant MAINTENANCE_MARGIN_BPS = 600;
-    uint256 private constant GAS_OPEN = 400_000;
+    uint256 private constant GAS_OPEN = 1_000_000;
     uint256 private constant GAS_ADD = 300_000;
     uint256 private constant GAS_CLOSE = 500_000;
     uint256 private constant GAS_OVERHEAD = 80_000;
@@ -447,20 +447,35 @@ contract PositionManagerAddTest is Test {
         assertTrue(manager.liquidatableAt(edgeId, PRICE_18), "the holding fee was not charged at the ceiling");
     }
 
-    /// @dev Section 7 rule 4: an add that nobody settles inside its window
-    ///      gives the gold and the fee back, like any other request (I17).
-    function test_AnExpiredAddReturnsTheGoldAndTheFee() public {
+    /// @dev D72 rule 4: an add that nobody settles inside its window gives the
+    ///      gold back in full, because an add expiry takes no ounces. D72 rule
+    ///      3: the execution fee is not refunded. A requester expiring its own
+    ///      request recovers only its gas, and the treasury is credited the
+    ///      rest.
+    function test_AnExpiredAddReturnsTheGoldInFullButKeepsTheFee() public {
         uint256 traderBefore = gold.balanceOf(trader);
         uint256 id = _requestAdd(trader, positionId, ADD);
         (,, uint256 fee, uint256 target,,,,) = manager.requestAt(id);
 
         vm.warp(target + EXPIRY);
+        uint256 traderEthBefore = trader.balance;
+        // The requester may already hold a credit from the open fixture's
+        // settlement; the expiry must not add to it.
+        uint256 traderCreditBefore = manager.ethCredit(trader);
+        uint256 treasuryCreditBefore = manager.ethCredit(treasury);
         vm.prank(trader);
         manager.expireRequest(id);
 
-        assertEq(gold.balanceOf(trader), traderBefore, "the escrow did not come back");
+        assertEq(gold.balanceOf(trader), traderBefore, "the add escrow did not come back in full");
         assertEq(manager.escrowedOunces(), NOTHING, "the escrow total still holds an expired add");
-        assertEq(manager.ethCredit(trader), fee, "the execution fee was not credited back");
+
+        uint256 gas = trader.balance - traderEthBefore;
+        assertEq(manager.ethCredit(trader), traderCreditBefore, "the requester was wrongly credited the fee");
+        assertGt(gas, NOTHING, "the requester recovered no gas, so this proves nothing");
+        assertLe(gas, fee, "the gas recovered rose above the fee");
+        assertEq(
+            manager.ethCredit(treasury) - treasuryCreditBefore, fee - gas, "the treasury was not credited the rest"
+        );
         assertEq(uint256(_stateOf(id)), uint256(PositionManager.State.Expired));
     }
 
@@ -500,6 +515,9 @@ contract PositionManagerAddTest is Test {
 
         assertLt(request, REQUEST_CEILING, "the add request outgrew its ceiling");
         assertLt(settle, SETTLE_CEILING, "the add settlement outgrew its ceiling");
+        // D72 rule 7: the execution fee estimate covers the settlement it pays
+        // for, so a settler is reimbursed its gas (D65).
+        assertLt(settle, GAS_ADD, "the add settlement outgrew the GAS_ADD estimate");
     }
 
     /// @dev One read of everything an add is meant to move, and of everything
@@ -600,7 +618,6 @@ contract PositionManagerAddTest is Test {
             windDown: makeAddr("wind down"),
             treasury: treasury,
             poolUMaxBps: U_MAX_BPS,
-            requestExpiry: EXPIRY,
             insuranceTarget: IF_TARGET,
             feeFloorRate: FEE_FLOOR,
             feeCapRate: FEE_CAP,

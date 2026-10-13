@@ -87,4 +87,13 @@ abstract contract ProtocolInvariants is ProtocolDeployment {
     function invariant_ExitFlagFollowsAPendingClose() public view {
         assertEq(handler.exitFlagStranded(), NOTHING, "a position's exit flag outlived its close request");
     }
+
+    /// @notice I29: between operations the ETH the manager holds is exactly the
+    ///         execution fees of its pending requests plus the ETH it has
+    ///         credited and not yet paid out (D65, D72). An expiry keeps the fee
+    ///         rather than refunding it, so this is what catches a fee that
+    ///         leaked or was double counted.
+    function invariant_I29_ManagerEthMatchesFeesAndCredits() public view {
+        assertEq(handler.ethMismatches(), NOTHING, "I29: the manager's ETH left the fees and credits it should hold");
+    }
 }

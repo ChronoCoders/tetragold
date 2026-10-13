@@ -20,8 +20,8 @@ contract MockPositionBook is IPositionBook {
     uint256 private _depositClaimUsd;
     uint256 private _withdrawalClaimUsd;
 
-    constructor(address gold, address lock, uint256 uMaxBps, uint256 requestExpiry) {
-        POOL = new CounterpartyPool(gold, lock, uMaxBps, requestExpiry);
+    constructor(address gold, address lock, uint256 uMaxBps) {
+        POOL = new CounterpartyPool(gold, lock, uMaxBps);
     }
 
     /// @notice The front door of D69: every request arrives through here and

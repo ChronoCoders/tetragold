@@ -19,7 +19,7 @@ import {PoolHandler} from "./handlers/PoolHandler.sol";
 contract CounterpartyPoolInvariantTest is Test {
     uint256 private constant U_MAX_BPS = 8000;
     uint256 private constant BPS = 10_000;
-    uint256 private constant EXPIRY = 600;
+    uint256 private constant EXPIRY = 300;
     uint256 private constant WAD = 1e18;
     uint256 private constant NOTHING = 0;
     uint256 private constant DRIVE_DEPOSIT = 50 ether;
@@ -40,7 +40,7 @@ contract CounterpartyPoolInvariantTest is Test {
 
     function setUp() public {
         lock = new ReentrancyLock();
-        handler = new PoolHandler(lock, U_MAX_BPS, EXPIRY);
+        handler = new PoolHandler(lock, U_MAX_BPS);
         pool = handler.POOL();
         vault = handler.VAULT();
         gold = handler.GOLD();
