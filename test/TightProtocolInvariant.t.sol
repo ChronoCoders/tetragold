@@ -41,5 +41,6 @@ contract TightProtocolInvariantTest is ProtocolInvariants {
         }
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
+        _excludeSystemSenders();
     }
 }

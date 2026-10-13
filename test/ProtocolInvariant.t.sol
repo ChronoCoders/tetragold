@@ -39,6 +39,7 @@ contract ProtocolInvariantTest is ProtocolInvariants {
         selectors[14] = ProtocolHandler.settleStalePrimary.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
+        _excludeSystemSenders();
     }
 
     /// @dev Every invariant holds on a campaign that did nothing, so this drives
@@ -130,5 +131,44 @@ contract ProtocolInvariantTest is ProtocolInvariants {
         assertEq(handler.ethMismatches(), NOTHING, "I29 broke during the drive");
         assertEq(handler.staleLeaked(), NOTHING, "D73: a stale report settled during the drive");
         assertEq(handler.staleEndedRejected(), NOTHING, "D73: staleness rejected during the drive");
+    }
+
+    /// @dev Regression for the I29 finding, deterministic and without the
+    ///      fuzzer. The fuzzer draws senders from its address dictionary, which
+    ///      holds the deployed contracts, and funds whichever it picks. With the
+    ///      manager left in that set it was handed ETH that is neither a pending
+    ///      fee nor a credit, so I29 tripped on a balance the manager never took
+    ///      in. This first reproduces that break by handing the manager stray
+    ///      ETH directly, then checks the fix: the manager is excluded from the
+    ///      sender set, so the fuzzer can never fund it. Undo the exclusion and
+    ///      the last assertion fails, as the campaign does.
+    function test_I29_SenderFundingOfTheManagerIsExcluded() public {
+        handler.lpDeposit(0, DRIVE_DEPOSIT);
+        handler.requestOpen(1, DRIVE_POST, 0);
+        handler.passTime(TARGET_DELAY);
+        handler.settleOpen(0);
+        assertEq(handler.ethMismatches(), NOTHING, "the ledger was not balanced before the stray funding");
+
+        // What the fuzzer's sender funding did to the manager, done by hand.
+        vm.deal(address(manager), address(manager).balance + 1 ether);
+        handler.passTime(1);
+        assertGt(handler.ethMismatches(), NOTHING, "stray ETH in the manager did not trip I29");
+
+        address[] memory excluded = excludeSenders();
+        assertTrue(_isExcluded(excluded, address(manager)), "the manager must be excluded as a fuzz sender");
+        assertTrue(_isExcluded(excluded, address(pool)), "the pool must be excluded as a fuzz sender");
+        assertTrue(_isExcluded(excluded, address(fund)), "the fund must be excluded as a fuzz sender");
+        assertTrue(
+            _isExcluded(excluded, address(manager.SETTLEMENT_ORACLE())), "the oracle must be excluded as a fuzz sender"
+        );
+    }
+
+    function _isExcluded(address[] memory xs, address a) private pure returns (bool) {
+        for (uint256 i = 0; i < xs.length; i++) {
+            if (xs[i] == a) {
+                return true;
+            }
+        }
+        return false;
     }
 }

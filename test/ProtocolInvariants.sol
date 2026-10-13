@@ -13,6 +13,23 @@ import {ProtocolDeployment} from "./ProtocolDeployment.sol";
 abstract contract ProtocolInvariants is ProtocolDeployment {
     uint256 internal constant NOTHING = 0;
 
+    /// @dev Keep the protocol's own contracts out of the fuzzer's sender set.
+    ///      I29 reads the manager's ETH balance, and the fuzzer funds whatever
+    ///      address it draws as a sender. Left in that set, the manager (or
+    ///      another system contract whose balance a check reads) would be handed
+    ///      ETH that is neither a pending execution fee nor a credit, so I29
+    ///      would trip on a balance the manager never actually took in. The
+    ///      handler ignores msg.sender and pranks an actor for every manager
+    ///      call, so excluding these changes nothing a step does. Each campaign
+    ///      calls this once its handler and the protocol are deployed.
+    function _excludeSystemSenders() internal {
+        excludeSender(address(manager));
+        excludeSender(address(pool));
+        excludeSender(address(fund));
+        excludeSender(address(manager.SETTLEMENT_ORACLE()));
+        excludeSender(address(handler));
+    }
+
     /// @notice D66: the manager holds TGAUX for pending requests and nothing
     ///         else, so its balance is its escrow total.
     function invariant_D66_TheManagerHoldsOnlyItsEscrow() public view {
