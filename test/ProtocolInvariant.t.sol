@@ -10,7 +10,7 @@ import {ProtocolHandler} from "./handlers/ProtocolHandler.sol";
 ///         and the hand driver that proves none of them pass vacuously.
 /// forge-config: default.invariant.fail-on-revert = true
 contract ProtocolInvariantTest is ProtocolInvariants {
-    uint256 private constant SELECTORS = 15;
+    uint256 private constant SELECTORS = 16;
     uint256 private constant DRIVE_DEPOSIT = 40 ether;
     uint256 private constant DRIVE_POST = 5 ether;
     uint256 private constant DRIVE_ADD = 1 ether;
@@ -37,6 +37,7 @@ contract ProtocolInvariantTest is ProtocolInvariants {
         selectors[12] = ProtocolHandler.expireClose.selector;
         selectors[13] = ProtocolHandler.expireAdd.selector;
         selectors[14] = ProtocolHandler.settleStalePrimary.selector;
+        selectors[15] = ProtocolHandler.dustTheManager.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
         _excludeSystemSenders();
@@ -83,6 +84,14 @@ contract ProtocolInvariantTest is ProtocolInvariants {
 
         handler.dustTheOracle(1 ether);
         assertGt(handler.oracleDustings(), NOTHING, "the oracle was never dusted, so this proves nothing");
+
+        // I29 r6.22: ETH forced into the manager is tracked and tolerated; a
+        // settlement still goes through with it sitting in the manager.
+        handler.dustTheManager(1 ether);
+        assertGt(handler.managerDustings(), NOTHING, "the manager was never dusted, so this proves nothing");
+        assertEq(handler.totalForced(), 1 ether, "the forced total was not tracked");
+        assertEq(handler.ethMismatches(), NOTHING, "I29 tripped on forced ETH it should account for");
+
         handler.requestOpen(1, DRIVE_POST, 0);
         handler.passTime(TARGET_DELAY);
         handler.settleOpen(0);

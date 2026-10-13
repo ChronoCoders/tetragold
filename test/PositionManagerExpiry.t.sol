@@ -108,6 +108,19 @@ contract PositionManagerExpiryTest is Test {
         bool sawFeeRouted;
     }
 
+    /// @dev Everything an open, add, close and open expiry pay, credit or refund
+    ///      in one pass, for comparing a run with forced ETH against one without.
+    struct CycleObs {
+        uint256 openClaim;
+        uint256 addClaim;
+        uint256 closePayoutGold;
+        uint256 closeRequesterCreditEth;
+        uint256 expireRefundGold;
+        uint256 expireTreasuryEth;
+        uint256 expireGasToExpirerEth;
+        uint256 managerBalanceAfter;
+    }
+
     function setUp() public {
         guardian = makeAddr("guardian");
         treasury = makeAddr("treasury");
@@ -421,6 +434,148 @@ contract PositionManagerExpiryTest is Test {
         assertEq(uint256(expired), uint256(PositionManager.State.Expired), "a stale open did not expire under D72");
     }
 
+    // --- I29 r6.22: forced ETH changes nothing ------------------------------
+
+    /// @notice ETH forced into the manager (as a self destruct or a block reward
+    ///         would, bypassing receive()) changes no payout, credit or refund:
+    ///         an open, an add, a close and an open expiry settle to exactly the
+    ///         same figures with the forced ETH present as without it, and the
+    ///         forced ETH is still there at the end because nothing reads the
+    ///         balance or pays it out (I29 r6.22).
+    function test_ForcedEthChangesNoPayoutCreditOrRefund() public {
+        uint256 forced = 0.5 ether;
+
+        uint256 snap = vm.snapshotState();
+        CycleObs memory clean = _cycle();
+
+        vm.revertToState(snap);
+        vm.deal(address(manager), address(manager).balance + forced);
+        CycleObs memory dusted = _cycle();
+
+        assertEq(dusted.openClaim, clean.openClaim, "the open claim changed with forced ETH");
+        assertEq(dusted.addClaim, clean.addClaim, "the add claim changed with forced ETH");
+        assertEq(dusted.closePayoutGold, clean.closePayoutGold, "the close payout changed with forced ETH");
+        assertEq(
+            dusted.closeRequesterCreditEth,
+            clean.closeRequesterCreditEth,
+            "the close fee credit changed with forced ETH"
+        );
+        assertEq(dusted.expireRefundGold, clean.expireRefundGold, "the expiry refund changed with forced ETH");
+        assertEq(
+            dusted.expireTreasuryEth, clean.expireTreasuryEth, "the expiry treasury credit changed with forced ETH"
+        );
+        assertEq(
+            dusted.expireGasToExpirerEth, clean.expireGasToExpirerEth, "the expiry gas payment changed with forced ETH"
+        );
+
+        // The forced ETH never left: the manager holds exactly the clean amount
+        // plus what was forced in (I29 r6.22, none pays forced ETH out).
+        assertEq(dusted.managerBalanceAfter, clean.managerBalanceAfter + forced, "forced ETH was read or paid out");
+    }
+
+    /// @notice withdrawCredit pays exactly the credit on the ledger, never the
+    ///         contract's balance, so forced ETH is not swept out with it (I29
+    ///         r6.22: no function pays forced ETH out).
+    function test_WithdrawCreditIgnoresForcedEth() public {
+        _openPosition();
+        uint256 credit = manager.ethCredit(trader);
+        assertGt(credit, NOTHING, "the open accrued no credit, so this proves nothing");
+
+        uint256 forced = 0.5 ether;
+        vm.deal(address(manager), address(manager).balance + forced);
+        uint256 managerBefore = address(manager).balance;
+        uint256 traderBefore = trader.balance;
+
+        vm.prank(trader);
+        manager.withdrawCredit();
+
+        assertEq(trader.balance - traderBefore, credit, "withdrawCredit paid other than the credit");
+        assertEq(managerBefore - address(manager).balance, credit, "withdrawCredit moved more than the credit");
+        assertEq(manager.ethCredit(trader), NOTHING, "the credit was not cleared");
+        assertGe(address(manager).balance, forced, "the forced ETH was swept out with the credit");
+    }
+
+    /// @dev The fees are the floor at this file's fixed gas price, written as
+    ///      the constant product rather than read from tx.gasprice, so the
+    ///      snapshot and the revert comparison do not read the environment
+    ///      across the revert.
+    /// @notice The settler payment caps the reimbursement at the deposited fee,
+    ///         not at the contract's balance. With forced ETH inflating the
+    ///         balance far above the gas owed, a settlement whose gas owed
+    ///         exceeds the fee still caps at the fee and goes through; a cap read
+    ///         from the balance would reimburse past the fee and the credit would
+    ///         underflow (I29 r6.22: no function reads the contract's balance).
+    function test_TheSettlerPaymentCapsAtTheFeeNotTheBalance() public {
+        uint256 openFee = GAS_OPEN * GAS_PRICE;
+        uint256 id = _pendingOpenWithFee(POST, LEVERAGE, openFee);
+
+        vm.deal(address(manager), address(manager).balance + 100 ether);
+
+        (,,, uint256 target,,,,) = manager.requestAt(id);
+        vm.warp(target);
+        // A gas price high enough that the gas owed passes the fee, so the cap
+        // binds; capping at the fee keeps the credit non negative.
+        vm.txGasPrice(10 gwei);
+        vm.deal(settler, settler.balance + PYTH_FEE);
+        vm.prank(settler);
+        manager.settleOpen{value: PYTH_FEE}(id, abi.encode(_report(target, PRICE_18)), _pyth(target, PRICE_18));
+
+        uint256 positionId = manager.nextPositionId() - 1;
+        (,,,,, bool open) = manager.positionAt(positionId);
+        assertTrue(open, "the settle did not open the position");
+    }
+
+    function _cycle() private returns (CycleObs memory o) {
+        uint256 openFee = GAS_OPEN * GAS_PRICE;
+        uint256 addFee = GAS_ADD * GAS_PRICE;
+        uint256 closeFee = GAS_CLOSE * GAS_PRICE;
+
+        uint256 positionId = _openPositionWithFee(openFee);
+        (,, uint256 claimOpen,,,) = manager.positionAt(positionId);
+        o.openClaim = claimOpen;
+
+        _settleFresh(_pendingAddWithFee(positionId, 0.3 ether, addFee), Kind.Add);
+        (,, uint256 claimAdd,,,) = manager.positionAt(positionId);
+        o.addClaim = claimAdd;
+
+        uint256 ownerGold = gold.balanceOf(trader);
+        uint256 ownerCredit = manager.ethCredit(trader);
+        _settleFresh(_pendingCloseWithFee(positionId, closeFee), Kind.Close);
+        o.closePayoutGold = gold.balanceOf(trader) - ownerGold;
+        o.closeRequesterCreditEth = manager.ethCredit(trader) - ownerCredit;
+
+        uint256 traderGold = gold.balanceOf(trader);
+        uint256 treasuryCredit = manager.ethCredit(treasury);
+        uint256 strangerEth = stranger.balance;
+        uint256 openId = _pendingOpenWithFee(POST, LEVERAGE, openFee);
+        _warpToDeadline(openId);
+        _expire(openId, stranger);
+        o.expireRefundGold = gold.balanceOf(trader) - traderGold;
+        o.expireTreasuryEth = manager.ethCredit(treasury) - treasuryCredit;
+        o.expireGasToExpirerEth = stranger.balance - strangerEth;
+
+        o.managerBalanceAfter = address(manager).balance;
+    }
+
+    enum Kind {
+        Add,
+        Close
+    }
+
+    function _settleFresh(uint256 id, Kind kind) private {
+        (,,, uint256 target,,,,) = manager.requestAt(id);
+        vm.warp(target);
+        vm.deal(settler, settler.balance + PYTH_FEE);
+        vm.prank(settler);
+        if (kind == Kind.Add) {
+            manager.settleAddCollateral{value: PYTH_FEE}(
+                id, abi.encode(_report(target, PRICE_18)), _pyth(target, PRICE_18)
+            );
+        } else {
+            manager.settleClose{value: PYTH_FEE}(id, abi.encode(_report(target, PRICE_18)), _pyth(target, PRICE_18));
+        }
+    }
+
     /// @dev A report that spans the target but whose price was last updated one
     ///      second past the deployment's age bound (D73 rule 2).
     function _stale(uint256 target, uint256 price18) private pure returns (ReportV8 memory report) {
@@ -464,22 +619,24 @@ contract PositionManagerExpiryTest is Test {
     }
 
     function _pendingOpen(uint256 post, uint256 leverage) private returns (uint256 id) {
+        return _pendingOpenWithFee(post, leverage, _feeFloor(GAS_OPEN));
+    }
+
+    function _pendingOpenWithFee(uint256 post, uint256 leverage, uint256 fee) private returns (uint256 id) {
         _mint(trader, post);
         vm.prank(trader);
         assertTrue(gold.approve(address(manager), post));
-        vm.deal(trader, trader.balance + _feeFloor(GAS_OPEN));
+        vm.deal(trader, trader.balance + fee);
         vm.prank(trader);
-        id = manager.requestOpen{value: _feeFloor(GAS_OPEN)}(post, leverage);
+        id = manager.requestOpen{value: fee}(post, leverage);
     }
 
     function _openPosition() private returns (uint256 positionId) {
-        _mint(trader, POST);
-        vm.prank(trader);
-        assertTrue(gold.approve(address(manager), POST));
-        vm.deal(trader, trader.balance + _feeFloor(GAS_OPEN));
-        vm.prank(trader);
-        uint256 request = manager.requestOpen{value: _feeFloor(GAS_OPEN)}(POST, LEVERAGE);
+        return _openPositionWithFee(_feeFloor(GAS_OPEN));
+    }
 
+    function _openPositionWithFee(uint256 fee) private returns (uint256 positionId) {
+        uint256 request = _pendingOpenWithFee(POST, LEVERAGE, fee);
         uint256 target = vm.getBlockTimestamp() + TARGET_DELAY;
         vm.warp(target);
         vm.deal(settler, settler.balance + PYTH_FEE);
@@ -492,18 +649,26 @@ contract PositionManagerExpiryTest is Test {
     }
 
     function _pendingAdd(uint256 positionId, uint256 ounces) private returns (uint256 id) {
+        return _pendingAddWithFee(positionId, ounces, _feeFloor(GAS_ADD));
+    }
+
+    function _pendingAddWithFee(uint256 positionId, uint256 ounces, uint256 fee) private returns (uint256 id) {
         _mint(trader, ounces);
         vm.prank(trader);
         assertTrue(gold.approve(address(manager), ounces));
-        vm.deal(trader, trader.balance + _feeFloor(GAS_ADD));
+        vm.deal(trader, trader.balance + fee);
         vm.prank(trader);
-        id = manager.requestAddCollateral{value: _feeFloor(GAS_ADD)}(positionId, ounces);
+        id = manager.requestAddCollateral{value: fee}(positionId, ounces);
     }
 
     function _pendingClose(uint256 positionId) private returns (uint256 id) {
-        vm.deal(trader, trader.balance + _feeFloor(GAS_CLOSE));
+        return _pendingCloseWithFee(positionId, _feeFloor(GAS_CLOSE));
+    }
+
+    function _pendingCloseWithFee(uint256 positionId, uint256 fee) private returns (uint256 id) {
+        vm.deal(trader, trader.balance + fee);
         vm.prank(trader);
-        id = manager.requestClose{value: _feeFloor(GAS_CLOSE)}(positionId);
+        id = manager.requestClose{value: fee}(positionId);
     }
 
     function _config() private returns (PositionManager.Config memory) {

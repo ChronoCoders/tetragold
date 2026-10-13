@@ -87,8 +87,16 @@ contract ProtocolHandler is Test {
     uint256 public addExpiries;
 
     /// @notice I29: the ETH the manager held drifted from the sum of its pending
-    ///         execution fees and the ETH it has credited (D65, D72).
+    ///         execution fees, the ETH it has credited and the ETH forced in
+    ///         (D65, D72, I29 r6.22).
     uint256 public ethMismatches;
+
+    /// @notice ETH forced into the manager from outside its own functions, the
+    ///         way a self destruct or a block reward would in production: it
+    ///         bypasses receive() and is neither a fee nor a credit. The running
+    ///         total is what I29 adds, and the count proves the step ran.
+    uint256 public totalForced;
+    uint256 public managerDustings;
 
     /// @notice D73: a stale primary report was caught waiting (the settle
     ///         reverted and the request stayed Pending), the count proving the
@@ -598,6 +606,21 @@ contract ProtocolHandler is Test {
         _check();
     }
 
+    /// @dev ETH can be forced into the manager too, with SELFDESTRUCT or a block
+    ///      reward, bypassing its receive(). It is neither a pending fee nor a
+    ///      credit, and no function reads the contract's balance or pays it out,
+    ///      so from here on every operation runs with this balance sitting in
+    ///      the manager and settles unchanged (I29 r6.22). Unlike the oracle
+    ///      dust, this adds to the balance and tracks the running total, because
+    ///      I29 reads the manager's balance and must account for it.
+    function dustTheManager(uint256 seed) external {
+        uint256 amount = bound(seed, 1, 1 ether);
+        vm.deal(address(MANAGER), address(MANAGER).balance + amount);
+        totalForced += amount;
+        managerDustings += 1;
+        _check();
+    }
+
     /// @dev D50: PAXG can stop being usable at any time, and only inflows may
     ///      notice. Nothing here asserts the brake, which is the manager's own
     ///      test.
@@ -649,18 +672,20 @@ contract ProtocolHandler is Test {
             }
         }
 
-        // I29: between operations the manager's ETH is exactly the execution
-        // fees of its pending requests plus the ETH it has credited and not yet
-        // paid out (D65, D72). A settler's surplus and an expirer's gas are both
-        // pushed, so neither sits here; a rejected or underused fee and the
-        // treasury's share of an expiry are credited, so both do.
+        // I29 (r6.22): between operations the manager's ETH is exactly the
+        // execution fees of its pending requests, plus the ETH it has credited
+        // and not yet paid out, plus any ETH forced in from outside. A settler's
+        // surplus and an expirer's gas are both pushed, so neither sits here; a
+        // rejected or underused fee and the treasury's share of an expiry are
+        // credited, so both do; forced ETH is counted because no function reads
+        // the balance or pays it out, so it only ever accumulates.
         uint256 pendingFees =
             _sumPendingFees(_pending) + _sumPendingFees(_pendingAdds) + _sumPendingFees(_pendingCloses);
         uint256 credits = MANAGER.ethCredit(TREASURY);
         for (uint256 i = 0; i < ACTORS; i++) {
             credits += MANAGER.ethCredit(_actors[i]);
         }
-        if (address(MANAGER).balance != pendingFees + credits) {
+        if (address(MANAGER).balance != pendingFees + credits + totalForced) {
             ethMismatches += 1;
         }
     }
