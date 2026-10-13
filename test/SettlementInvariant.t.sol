@@ -18,6 +18,7 @@ import {MockVerifierProxy} from "./mocks/MockVerifierProxy.sol";
 contract SettlementInvariantTest is Test {
     uint256 private constant BAND_BPS = 50;
     uint64 private constant PYTH_DELAY = 30;
+    uint256 private constant PRIMARY_AGE = 60;
     uint8 private constant STREAM_DECIMALS = 18;
     uint256 private constant PYTH_FEE = 1;
     uint256 private constant HANDLER_FUNDING = 10 ether;
@@ -44,7 +45,7 @@ contract SettlementInvariantTest is Test {
         pyth = new MockPyth();
         pyth.setFee(PYTH_FEE);
         oracle = new SettlementOracle(
-            address(verifier), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY
+            address(verifier), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY, PRIMARY_AGE
         );
 
         vm.warp(START);

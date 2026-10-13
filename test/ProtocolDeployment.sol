@@ -46,6 +46,7 @@ abstract contract ProtocolDeployment is Test {
     uint256 internal constant START = 1_784_116_800;
     uint256 internal constant BAND_BPS = 50;
     uint64 internal constant PYTH_DELAY = 30;
+    uint256 internal constant PRIMARY_AGE = 60;
     uint8 internal constant STREAM_DECIMALS = 18;
     uint8 internal constant FEED_DECIMALS = 8;
     uint256 internal constant MAX_AGE = 6 hours;
@@ -88,7 +89,8 @@ abstract contract ProtocolDeployment is Test {
                         PYTH_ID,
                         STREAM_DECIMALS,
                         BAND_BPS,
-                        PYTH_DELAY
+                        PYTH_DELAY,
+                        PRIMARY_AGE
                     )
                 ),
                 fallbackPrice: address(

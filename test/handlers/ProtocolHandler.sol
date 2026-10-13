@@ -90,6 +90,13 @@ contract ProtocolHandler is Test {
     ///         execution fees and the ETH it has credited (D65, D72).
     uint256 public ethMismatches;
 
+    /// @notice D73: a stale primary report was caught waiting (the settle
+    ///         reverted and the request stayed Pending), the count proving the
+    ///         path ran; the two defect counters must stay zero.
+    uint256 public staleWaits;
+    uint256 public staleLeaked;
+    uint256 public staleEndedRejected;
+
     /// @notice I2: a close paid an owner more than the position's size in
     ///         ounces, which D46 forbids.
     uint256 public payoutAboveSize;
@@ -290,6 +297,43 @@ contract ProtocolHandler is Test {
         }
 
         _drop(at);
+        _check();
+    }
+
+    /// @dev D73: a settlement attempted with a stale primary report must revert
+    ///      and leave the request Pending, never Rejected. The revert is caught
+    ///      here, so the fail-on-revert campaign sees a clean handler call, and
+    ///      the request is left in place to settle fresh or expire later.
+    function settleStalePrimary(uint256 idSeed) external {
+        uint256 count = _pending.length;
+        if (count == 0) {
+            return;
+        }
+        uint256 at = idSeed % count;
+        uint256 id = _pending[at];
+
+        (,,, uint256 targetTime,,,, PositionManager.State before) = MANAGER.requestAt(id);
+        if (before != PositionManager.State.Pending) {
+            _drop(at);
+            return;
+        }
+        if (vm.getBlockTimestamp() < targetTime || vm.getBlockTimestamp() >= targetTime + MANAGER.REQUEST_EXPIRY()) {
+            return;
+        }
+
+        vm.deal(address(this), address(this).balance + PYTH_FEE);
+        try MANAGER.settleOpen{value: PYTH_FEE}(id, abi.encode(_staleReport(targetTime)), _pythUpdate(targetTime)) {
+            // A stale report must not settle: it should have reverted above.
+            staleLeaked += 1;
+        } catch {
+            (,,,,,,, PositionManager.State after_) = MANAGER.requestAt(id);
+            if (after_ == PositionManager.State.Pending) {
+                staleWaits += 1;
+            } else {
+                staleEndedRejected += 1;
+            }
+        }
+
         _check();
     }
 
@@ -649,10 +693,17 @@ contract ProtocolHandler is Test {
             nativeFee: 0,
             linkFee: 0,
             expiresAt: uint32(target) + EXPIRY_AHEAD,
-            lastUpdateTimestamp: uint32(target),
+            lastUpdateTimestamp: uint64(uint32(target) + WINDOW) * 1e9,
             midPrice: int192(int256(price)),
             marketStatus: OPEN_STATUS
         });
+    }
+
+    /// @dev The same report with its price last updated at the epoch, so its
+    ///      age is the whole observation time, far past any bound (D73).
+    function _staleReport(uint256 target) private view returns (ReportV8 memory report) {
+        report = _report(target);
+        report.lastUpdateTimestamp = 0;
     }
 
     function _pythUpdate(uint256 target) private view returns (bytes[] memory update) {

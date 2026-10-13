@@ -32,6 +32,12 @@ import {ReportV8} from "./ReportV8.sol";
  *      Rule 7: the report's own `expiresAt` is checked here, because the
  *      verifier checks expiry only inside a fee manager it may not have.
  *
+ *      D73: the primary report is also refused when it was observed too long
+ *      after its price was last updated at source, the bound being an immutable
+ *      age in seconds. A stale report reverts rather than rejecting, so the
+ *      request waits for a fresh one and only expiry ends it. The Pyth side
+ *      already bounds its own staleness through the publish window of rule 2.
+ *
  *      Rule 8: the caller pays both verification fees and this contract holds
  *      no balance. Anything the two calls do not take goes back to the caller.
  *
@@ -57,6 +63,12 @@ contract SettlementOracle is ReentrancyGuard {
     int32 private constant MAX_PYTH_EXPO = 18;
     uint256 private constant PYTH_FEEDS_REQUESTED = 1;
 
+    /// @notice Nanoseconds in a second: `lastUpdateTimestamp` is in nanoseconds
+    ///         and the age bound is in seconds, so the former is floored to
+    ///         seconds before the two are compared (D73 rule 2). This is a unit
+    ///         conversion, not the O5 age value.
+    uint256 private constant NANOS_PER_SECOND = 1e9;
+
     IVerifierProxy public immutable VERIFIER;
     IPyth public immutable PYTH;
 
@@ -77,6 +89,12 @@ contract SettlementOracle is ReentrancyGuard {
     /// @notice Multiplier that takes the stream's decimals to 18.
     uint256 public immutable STREAM_SCALE;
 
+    /// @notice How stale the primary report may be, in seconds: the gap between
+    ///         when it was observed and when its price was last updated at
+    ///         source (D73). Immutable, O5, measured from real reports before
+    ///         deployment; the value lives in the deployment, never here.
+    uint256 public immutable MAX_PRIMARY_AGE;
+
     event PriceSettled(uint64 targetTime, uint256 price18, uint256 pythPrice18, uint256 deviationBps);
 
     error ZeroAddress();
@@ -84,9 +102,11 @@ contract SettlementOracle is ReentrancyGuard {
     error UnsupportedDecimals(uint8 streamDecimals);
     error BandTooWide(uint256 bps);
     error ZeroPythDelay();
+    error ZeroPrimaryAge();
     error FeeNotPaid(uint256 provided, uint256 pythFee);
     error WrongFeed(bytes32 reported, bytes32 expected);
     error ReportExpired(uint32 expiresAt, uint256 at);
+    error PrimaryReportStale(uint256 age, uint256 maxAge);
     error ReportNotForTarget(uint32 validFrom, uint32 observations, uint64 targetTime);
     error MarketClosedByReport(uint32 marketStatus);
     error NonPositivePrice(int256 price);
@@ -104,7 +124,8 @@ contract SettlementOracle is ReentrancyGuard {
         bytes32 pythPriceId,
         uint8 streamDecimals,
         uint256 deviationBandBps,
-        uint64 maxPythPublishDelay
+        uint64 maxPythPublishDelay,
+        uint256 maxPrimaryAge
     ) {
         if (verifier == address(0) || pyth == address(0)) {
             revert ZeroAddress();
@@ -123,6 +144,9 @@ contract SettlementOracle is ReentrancyGuard {
         if (maxPythPublishDelay == 0) {
             revert ZeroPythDelay();
         }
+        if (maxPrimaryAge == 0) {
+            revert ZeroPrimaryAge();
+        }
 
         VERIFIER = IVerifierProxy(verifier);
         PYTH = IPyth(pyth);
@@ -130,6 +154,7 @@ contract SettlementOracle is ReentrancyGuard {
         PYTH_PRICE_ID = pythPriceId;
         DEVIATION_BAND_BPS = deviationBandBps;
         MAX_PYTH_PUBLISH_DELAY = maxPythPublishDelay;
+        MAX_PRIMARY_AGE = maxPrimaryAge;
         STREAM_SCALE = DECIMAL_BASE ** (TARGET_DECIMALS - streamDecimals);
     }
 
@@ -166,6 +191,17 @@ contract SettlementOracle is ReentrancyGuard {
         // Rule 2: exactly one report spans T, and this is the test for it.
         if (targetTime < report.validFromTimestamp || targetTime > report.observationsTimestamp) {
             revert ReportNotForTarget(report.validFromTimestamp, report.observationsTimestamp, targetTime);
+        }
+        // D73 rule 2: the report is stale if it was observed too long after its
+        // price was last updated at source. `lastUpdateTimestamp` is in
+        // nanoseconds and floored to seconds; one later than the observation
+        // counts as age zero, not an underflow. A stale report reverts, so the
+        // request waits for a fresh one and only expiry ends it (D73 rule 3).
+        uint256 lastUpdateSeconds = report.lastUpdateTimestamp / NANOS_PER_SECOND;
+        uint256 primaryAge =
+            report.observationsTimestamp > lastUpdateSeconds ? report.observationsTimestamp - lastUpdateSeconds : 0;
+        if (primaryAge > MAX_PRIMARY_AGE) {
+            revert PrimaryReportStale(primaryAge, MAX_PRIMARY_AGE);
         }
         // Rule 3, and the whole of the market test (D61).
         if (report.marketStatus != MARKET_OPEN) {

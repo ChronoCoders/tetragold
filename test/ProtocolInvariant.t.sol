@@ -10,7 +10,7 @@ import {ProtocolHandler} from "./handlers/ProtocolHandler.sol";
 ///         and the hand driver that proves none of them pass vacuously.
 /// forge-config: default.invariant.fail-on-revert = true
 contract ProtocolInvariantTest is ProtocolInvariants {
-    uint256 private constant SELECTORS = 14;
+    uint256 private constant SELECTORS = 15;
     uint256 private constant DRIVE_DEPOSIT = 40 ether;
     uint256 private constant DRIVE_POST = 5 ether;
     uint256 private constant DRIVE_ADD = 1 ether;
@@ -36,6 +36,7 @@ contract ProtocolInvariantTest is ProtocolInvariants {
         selectors[11] = ProtocolHandler.settleClose.selector;
         selectors[12] = ProtocolHandler.expireClose.selector;
         selectors[13] = ProtocolHandler.expireAdd.selector;
+        selectors[14] = ProtocolHandler.settleStalePrimary.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
     }
@@ -97,6 +98,15 @@ contract ProtocolInvariantTest is ProtocolInvariants {
         handler.requestOpen(1, DRIVE_POST, 0);
         assertGt(handler.requests(), 2, "the request path did not come back");
 
+        // D73: a stale primary report on a pending open is caught waiting; it
+        // never settles and never ends Rejected.
+        handler.requestOpen(2, DRIVE_POST, 0);
+        handler.passTime(TARGET_DELAY);
+        handler.settleStalePrimary(0);
+        assertGt(handler.staleWaits(), NOTHING, "the stale primary path never ran");
+        assertEq(handler.staleLeaked(), NOTHING, "a stale report settled during the drive");
+        assertEq(handler.staleEndedRejected(), NOTHING, "staleness rejected a request during the drive");
+
         // Drive the close so I15b, I2 and I27 are not vacuous on it.
         handler.requestClose(0);
         assertEq(handler.closeRequests(), 1, "no close was requested");
@@ -118,5 +128,7 @@ contract ProtocolInvariantTest is ProtocolInvariants {
         assertEq(handler.payoutAboveSize(), NOTHING, "I2 broke during the drive");
         assertEq(handler.closeLeaks(), NOTHING, "I27 broke during the drive");
         assertEq(handler.ethMismatches(), NOTHING, "I29 broke during the drive");
+        assertEq(handler.staleLeaked(), NOTHING, "D73: a stale report settled during the drive");
+        assertEq(handler.staleEndedRejected(), NOTHING, "D73: staleness rejected during the drive");
     }
 }

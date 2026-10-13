@@ -14,7 +14,7 @@ import {TightProtocolHandler} from "./handlers/TightProtocolHandler.sol";
 contract TightProtocolInvariantTest is ProtocolInvariants {
     uint256 private constant SMALL_LP = 3 ether;
     uint256 private constant ADD_WEIGHT = 4;
-    uint256 private constant TIGHT_SELECTORS = 10 + 2 * ADD_WEIGHT;
+    uint256 private constant TIGHT_SELECTORS = 11 + 2 * ADD_WEIGHT;
 
     function setUp() public {
         _deployProtocol();
@@ -34,9 +34,10 @@ contract TightProtocolInvariantTest is ProtocolInvariants {
         selectors[7] = ProtocolHandler.settleClose.selector;
         selectors[8] = ProtocolHandler.expireClose.selector;
         selectors[9] = ProtocolHandler.expireAdd.selector;
+        selectors[10] = ProtocolHandler.settleStalePrimary.selector;
         for (uint256 i = 0; i < ADD_WEIGHT; i++) {
-            selectors[10 + i] = ProtocolHandler.requestAdd.selector;
-            selectors[10 + ADD_WEIGHT + i] = ProtocolHandler.settleAdd.selector;
+            selectors[11 + i] = ProtocolHandler.requestAdd.selector;
+            selectors[11 + ADD_WEIGHT + i] = ProtocolHandler.settleAdd.selector;
         }
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));

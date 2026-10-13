@@ -89,7 +89,7 @@ contract SettlementHandler is Test {
             nativeFee: 0,
             linkFee: 0,
             expiresAt: target + EXPIRY_AHEAD,
-            lastUpdateTimestamp: target,
+            lastUpdateTimestamp: uint64(target + after_) * 1e9,
             midPrice: BASE_PRICE,
             marketStatus: status
         });

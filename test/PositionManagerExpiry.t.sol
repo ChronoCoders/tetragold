@@ -66,6 +66,7 @@ contract PositionManagerExpiryTest is Test {
     uint8 private constant FEED_DECIMALS = 8;
     uint256 private constant BAND_BPS = 50;
     uint64 private constant PYTH_DELAY = 30;
+    uint256 private constant PRIMARY_AGE = 60;
     uint256 private constant MAX_AGE = 6 hours;
     bytes32 private constant FEED_ID = bytes32(uint256(0x0008abc));
     bytes32 private constant PYTH_ID = bytes32(uint256(0x765d2ba9));
@@ -326,6 +327,107 @@ contract PositionManagerExpiryTest is Test {
         assertEq(manager.ethCredit(treasury), out.treasuryEth, "the recorded treasury credit disagreed");
     }
 
+    // --- D73: a stale primary report waits, it is never rejected ------------
+
+    function test_AStaleReportLeavesTheOpenPendingThenAFreshOneSettles() public {
+        uint256 id = _pendingOpen(POST, LEVERAGE);
+        (,,, uint256 target,,,,) = manager.requestAt(id);
+        vm.warp(target);
+
+        vm.deal(settler, settler.balance + PYTH_FEE);
+        vm.prank(settler);
+        vm.expectRevert(
+            abi.encodeWithSelector(SettlementOracle.PrimaryReportStale.selector, PRIMARY_AGE + 1, PRIMARY_AGE)
+        );
+        manager.settleOpen{value: PYTH_FEE}(id, abi.encode(_stale(target, PRICE_18)), _pyth(target, PRICE_18));
+
+        (,,,,,,, PositionManager.State pending) = manager.requestAt(id);
+        assertEq(
+            uint256(pending), uint256(PositionManager.State.Pending), "a stale report did not leave the open pending"
+        );
+
+        vm.deal(settler, settler.balance + PYTH_FEE);
+        vm.prank(settler);
+        manager.settleOpen{value: PYTH_FEE}(id, abi.encode(_report(target, PRICE_18)), _pyth(target, PRICE_18));
+        (,,,,,,, PositionManager.State settled) = manager.requestAt(id);
+        assertEq(uint256(settled), uint256(PositionManager.State.Settled), "a fresh report did not settle the open");
+    }
+
+    function test_AStaleReportLeavesTheAddPendingThenAFreshOneSettles() public {
+        uint256 id = _pendingAdd(_openPosition(), 0.3 ether);
+        (,,, uint256 target,,,,) = manager.requestAt(id);
+        vm.warp(target);
+
+        vm.deal(settler, settler.balance + PYTH_FEE);
+        vm.prank(settler);
+        vm.expectRevert(
+            abi.encodeWithSelector(SettlementOracle.PrimaryReportStale.selector, PRIMARY_AGE + 1, PRIMARY_AGE)
+        );
+        manager.settleAddCollateral{value: PYTH_FEE}(id, abi.encode(_stale(target, PRICE_18)), _pyth(target, PRICE_18));
+
+        (,,,,,,, PositionManager.State pending) = manager.requestAt(id);
+        assertEq(
+            uint256(pending), uint256(PositionManager.State.Pending), "a stale report did not leave the add pending"
+        );
+
+        vm.deal(settler, settler.balance + PYTH_FEE);
+        vm.prank(settler);
+        manager.settleAddCollateral{value: PYTH_FEE}(id, abi.encode(_report(target, PRICE_18)), _pyth(target, PRICE_18));
+        (,,,,,,, PositionManager.State settled) = manager.requestAt(id);
+        assertEq(uint256(settled), uint256(PositionManager.State.Settled), "a fresh report did not settle the add");
+    }
+
+    function test_AStaleReportLeavesTheClosePendingThenAFreshOneSettles() public {
+        uint256 id = _pendingClose(_openPosition());
+        (,,, uint256 target,,,,) = manager.requestAt(id);
+        vm.warp(target);
+
+        vm.deal(settler, settler.balance + PYTH_FEE);
+        vm.prank(settler);
+        vm.expectRevert(
+            abi.encodeWithSelector(SettlementOracle.PrimaryReportStale.selector, PRIMARY_AGE + 1, PRIMARY_AGE)
+        );
+        manager.settleClose{value: PYTH_FEE}(id, abi.encode(_stale(target, PRICE_18)), _pyth(target, PRICE_18));
+
+        (,,,,,,, PositionManager.State pending) = manager.requestAt(id);
+        assertEq(
+            uint256(pending), uint256(PositionManager.State.Pending), "a stale report did not leave the close pending"
+        );
+
+        vm.deal(settler, settler.balance + PYTH_FEE);
+        vm.prank(settler);
+        manager.settleClose{value: PYTH_FEE}(id, abi.encode(_report(target, PRICE_18)), _pyth(target, PRICE_18));
+        (,,,,,,, PositionManager.State settled) = manager.requestAt(id);
+        assertEq(uint256(settled), uint256(PositionManager.State.Settled), "a fresh report did not settle the close");
+    }
+
+    function test_AStaleReportThatNeverGoesFreshExpiresUnderD72() public {
+        uint256 id = _pendingOpen(POST, LEVERAGE);
+        (,,, uint256 target,,,,) = manager.requestAt(id);
+        vm.warp(target);
+
+        vm.deal(settler, settler.balance + PYTH_FEE);
+        vm.prank(settler);
+        vm.expectRevert(
+            abi.encodeWithSelector(SettlementOracle.PrimaryReportStale.selector, PRIMARY_AGE + 1, PRIMARY_AGE)
+        );
+        manager.settleOpen{value: PYTH_FEE}(id, abi.encode(_stale(target, PRICE_18)), _pyth(target, PRICE_18));
+
+        // It never settled, so past the window it expires like any waiting
+        // request (D72); staleness never turns into a D70 rejection.
+        _warpToDeadline(id);
+        _expire(id, stranger);
+        (,,,,,,, PositionManager.State expired) = manager.requestAt(id);
+        assertEq(uint256(expired), uint256(PositionManager.State.Expired), "a stale open did not expire under D72");
+    }
+
+    /// @dev A report that spans the target but whose price was last updated one
+    ///      second past the deployment's age bound (D73 rule 2).
+    function _stale(uint256 target, uint256 price18) private pure returns (ReportV8 memory report) {
+        report = _report(target, price18);
+        report.lastUpdateTimestamp = (uint64(uint32(target) + WINDOW) - uint64(PRIMARY_AGE) - 1) * 1e9;
+    }
+
     // --- helpers ------------------------------------------------------------
 
     function _warpToDeadline(uint256 id) private {
@@ -407,7 +509,7 @@ contract PositionManagerExpiryTest is Test {
     function _config() private returns (PositionManager.Config memory) {
         TradingCalendar calendar = new TradingCalendar(makeAddr("calendar proposer"));
         SettlementOracle oracle = new SettlementOracle(
-            address(verifier), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY
+            address(verifier), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY, PRIMARY_AGE
         );
         PushFallbackPrice fallbackPrice =
             new PushFallbackPrice(address(new MockChainlinkOracle(FEED_DECIMALS)), address(calendar), MAX_AGE);
@@ -465,7 +567,7 @@ contract PositionManagerExpiryTest is Test {
             nativeFee: 0,
             linkFee: 0,
             expiresAt: uint32(target) + EXPIRY_AHEAD,
-            lastUpdateTimestamp: uint32(target),
+            lastUpdateTimestamp: uint64(uint32(target) + WINDOW) * 1e9,
             midPrice: int192(int256(price18)),
             marketStatus: OPEN_STATUS
         });

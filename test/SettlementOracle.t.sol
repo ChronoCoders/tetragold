@@ -12,6 +12,10 @@ contract SettlementOracleTest is Test {
     uint256 private constant BPS = 10_000;
     uint256 private constant BAND_BPS = 50;
     uint64 private constant PYTH_DELAY = 30;
+    /// @dev D73 rule 5: the tests use 60 seconds; the real value is O5 and
+    ///      measured before deployment, never written in src.
+    uint256 private constant PRIMARY_AGE = 60;
+    uint64 private constant NANOS = 1e9;
     uint8 private constant STREAM_DECIMALS = 18;
     uint256 private constant PYTH_FEE = 1;
     uint256 private constant EXTRA = 7;
@@ -51,7 +55,7 @@ contract SettlementOracleTest is Test {
         pyth = new MockPyth();
         pyth.setFee(PYTH_FEE);
         oracle = new SettlementOracle(
-            address(verifier), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY
+            address(verifier), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY, PRIMARY_AGE
         );
         vm.warp(TARGET);
         vm.deal(address(this), 1 ether);
@@ -274,8 +278,9 @@ contract SettlementOracleTest is Test {
     }
 
     function test_ScalesAnEightDecimalStream() public {
-        SettlementOracle eight =
-            new SettlementOracle(address(verifier), address(pyth), FEED_ID, PYTH_ID, 8, BAND_BPS, PYTH_DELAY);
+        SettlementOracle eight = new SettlementOracle(
+            address(verifier), address(pyth), FEED_ID, PYTH_ID, 8, BAND_BPS, PYTH_DELAY, PRIMARY_AGE
+        );
 
         ReportV8 memory report = _report();
         report.midPrice = 4100e8;
@@ -296,18 +301,74 @@ contract SettlementOracleTest is Test {
 
     function test_ConstructorRejectsBadArguments() public {
         vm.expectRevert(SettlementOracle.ZeroAddress.selector);
-        new SettlementOracle(address(0), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY);
+        new SettlementOracle(
+            address(0), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY, PRIMARY_AGE
+        );
 
         vm.expectRevert(SettlementOracle.ZeroId.selector);
         new SettlementOracle(
-            address(verifier), address(pyth), bytes32(0), PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY
+            address(verifier), address(pyth), bytes32(0), PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY, PRIMARY_AGE
         );
 
         vm.expectRevert(abi.encodeWithSelector(SettlementOracle.BandTooWide.selector, BPS));
-        new SettlementOracle(address(verifier), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BPS, PYTH_DELAY);
+        new SettlementOracle(
+            address(verifier), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BPS, PYTH_DELAY, PRIMARY_AGE
+        );
 
         vm.expectRevert(SettlementOracle.ZeroPythDelay.selector);
-        new SettlementOracle(address(verifier), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, 0);
+        new SettlementOracle(
+            address(verifier), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, 0, PRIMARY_AGE
+        );
+
+        // D73 rule 1: a zero age bound is rejected at deploy.
+        vm.expectRevert(SettlementOracle.ZeroPrimaryAge.selector);
+        new SettlementOracle(
+            address(verifier), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY, 0
+        );
+    }
+
+    // --- D73: staleness of the primary price --------------------------------
+
+    function test_AgeAtTheBoundPassesAndOneSecondOverReverts() public {
+        uint64 obs = uint64(TARGET + WINDOW);
+
+        ReportV8 memory atBound = _report();
+        atBound.lastUpdateTimestamp = (obs - uint64(PRIMARY_AGE)) * NANOS;
+        (uint256 price18,) = _settle(atBound, _pythUpdate(PYTH_PRICE, TARGET));
+        assertEq(price18, PRICE_18, "a report exactly at the age bound did not settle");
+
+        ReportV8 memory over = _report();
+        over.lastUpdateTimestamp = (obs - uint64(PRIMARY_AGE) - 1) * NANOS;
+        vm.expectRevert(
+            abi.encodeWithSelector(SettlementOracle.PrimaryReportStale.selector, PRIMARY_AGE + 1, PRIMARY_AGE)
+        );
+        _settle(over, _pythUpdate(PYTH_PRICE, TARGET));
+    }
+
+    function test_ALastUpdateAfterTheObservationCountsAsAgeZero() public {
+        uint64 obs = uint64(TARGET + WINDOW);
+
+        ReportV8 memory report = _report();
+        // Updated five seconds after it was observed: the subtraction would
+        // underflow, so D73 rule 2 counts it as age zero instead.
+        report.lastUpdateTimestamp = (obs + 5) * NANOS;
+        (uint256 price18,) = _settle(report, _pythUpdate(PYTH_PRICE, TARGET));
+        assertEq(price18, PRICE_18, "a future last update was not treated as age zero");
+    }
+
+    function test_ANanosecondValueFloorsAcrossASecondBoundary() public {
+        uint64 obs = uint64(TARGET + WINDOW);
+
+        // One nanosecond short of (obs - 60) seconds. The floor drops it to
+        // obs - 61 seconds, so the age is 61 and the report is stale. Were the
+        // division to round up it would read obs - 60 and pass, so this is what
+        // shows the floor is applied.
+        ReportV8 memory report = _report();
+        report.lastUpdateTimestamp = (obs - uint64(PRIMARY_AGE)) * NANOS - 1;
+        vm.expectRevert(
+            abi.encodeWithSelector(SettlementOracle.PrimaryReportStale.selector, PRIMARY_AGE + 1, PRIMARY_AGE)
+        );
+        _settle(report, _pythUpdate(PYTH_PRICE, TARGET));
     }
 
     function _report() private pure returns (ReportV8 memory) {
@@ -322,7 +383,9 @@ contract SettlementOracleTest is Test {
             nativeFee: 0,
             linkFee: 0,
             expiresAt: target + EXPIRY_AHEAD,
-            lastUpdateTimestamp: target,
+            // Nanoseconds, equal to the observation time, so a fresh report has
+            // age zero (D73 rule 2). The staleness tests override this.
+            lastUpdateTimestamp: uint64(target + WINDOW) * NANOS,
             midPrice: STREAM_PRICE,
             marketStatus: OPEN
         });

@@ -96,4 +96,12 @@ abstract contract ProtocolInvariants is ProtocolDeployment {
     function invariant_I29_ManagerEthMatchesFeesAndCredits() public view {
         assertEq(handler.ethMismatches(), NOTHING, "I29: the manager's ETH left the fees and credits it should hold");
     }
+
+    /// @notice D73: a stale primary report makes a settlement wait, never
+    ///         rejects it. No stale report ever settled, and no request the
+    ///         staleness path touched ended Rejected because of it (D73 rule 3).
+    function invariant_D73_StalenessWaitsNeverRejects() public view {
+        assertEq(handler.staleLeaked(), NOTHING, "D73: a stale report settled");
+        assertEq(handler.staleEndedRejected(), NOTHING, "D73: staleness rejected a request instead of making it wait");
+    }
 }

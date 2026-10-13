@@ -65,6 +65,7 @@ contract PositionManagerCloseTest is Test {
     uint8 private constant FEED_DECIMALS = 8;
     uint256 private constant BAND_BPS = 50;
     uint64 private constant PYTH_DELAY = 30;
+    uint256 private constant PRIMARY_AGE = 60;
     uint256 private constant MAX_AGE = 6 hours;
     bytes32 private constant FEED_ID = bytes32(uint256(0x0008abc));
     bytes32 private constant PYTH_ID = bytes32(uint256(0x765d2ba9));
@@ -614,7 +615,7 @@ contract PositionManagerCloseTest is Test {
     function _config() private returns (PositionManager.Config memory) {
         TradingCalendar calendar = new TradingCalendar(makeAddr("calendar proposer"));
         SettlementOracle oracle = new SettlementOracle(
-            address(verifier), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY
+            address(verifier), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY, PRIMARY_AGE
         );
         PushFallbackPrice fallbackPrice =
             new PushFallbackPrice(address(new MockChainlinkOracle(FEED_DECIMALS)), address(calendar), MAX_AGE);
@@ -672,7 +673,7 @@ contract PositionManagerCloseTest is Test {
             nativeFee: 0,
             linkFee: 0,
             expiresAt: uint32(target) + EXPIRY_AHEAD,
-            lastUpdateTimestamp: uint32(target),
+            lastUpdateTimestamp: uint64(uint32(target) + WINDOW) * 1e9,
             midPrice: int192(int256(price18)),
             marketStatus: OPEN_STATUS
         });

@@ -58,6 +58,7 @@ contract PositionManagerTest is Test {
     uint256 private constant MAX_AGE = 6 hours;
     uint256 private constant BAND_BPS = 50;
     uint64 private constant PYTH_DELAY = 30;
+    uint256 private constant PRIMARY_AGE = 60;
     uint8 private constant STREAM_DECIMALS = 18;
     bytes32 private constant FEED_ID = bytes32(uint256(0x0008abc));
     bytes32 private constant PYTH_ID = bytes32(uint256(0x765d2ba9));
@@ -297,7 +298,7 @@ contract PositionManagerTest is Test {
         MockPyth pyth = new MockPyth();
         TradingCalendar calendar = new TradingCalendar(makeAddr("calendar proposer"));
         SettlementOracle oracle = new SettlementOracle(
-            address(verifier), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY
+            address(verifier), address(pyth), FEED_ID, PYTH_ID, STREAM_DECIMALS, BAND_BPS, PYTH_DELAY, PRIMARY_AGE
         );
         PushFallbackPrice fallbackPrice =
             new PushFallbackPrice(address(new MockChainlinkOracle(FEED_DECIMALS)), address(calendar), MAX_AGE);
