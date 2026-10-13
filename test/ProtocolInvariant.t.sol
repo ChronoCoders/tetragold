@@ -1,20 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
 
-import {PositionManager} from "../src/PositionManager.sol";
-import {PushFallbackPrice} from "../src/oracle/PushFallbackPrice.sol";
-import {ReentrancyLock} from "../src/ReentrancyLock.sol";
-import {SettlementOracle} from "../src/oracle/SettlementOracle.sol";
-import {TgauxVault} from "../src/TgauxVault.sol";
-import {TradingCalendar} from "../src/oracle/TradingCalendar.sol";
 import {ProtocolInvariants} from "./ProtocolInvariants.sol";
 import {ProtocolHandler} from "./handlers/ProtocolHandler.sol";
-import {MockChainlinkOracle} from "./mocks/MockChainlinkOracle.sol";
-import {MockERC20} from "./mocks/MockERC20.sol";
-import {MockPaxg} from "./mocks/MockPaxg.sol";
-import {MockPyth} from "./mocks/MockPyth.sol";
-import {MockVerifierProxy} from "./mocks/MockVerifierProxy.sol";
-import {PositionManagerHarness} from "./mocks/PositionManagerHarness.sol";
 
 /// @notice The vault, the pool, the fund and the manager under one campaign,
 ///         with the deep default pool. The invariants it checks are the shared
@@ -23,30 +11,6 @@ import {PositionManagerHarness} from "./mocks/PositionManagerHarness.sol";
 /// forge-config: default.invariant.fail-on-revert = true
 contract ProtocolInvariantTest is ProtocolInvariants {
     uint256 private constant SELECTORS = 10;
-    uint256 private constant EXPIRY = 600;
-    uint256 private constant IF_TARGET = 100 ether;
-    uint256 private constant FEE_FLOOR = 0.0894e18;
-    uint256 private constant FEE_CAP = 0.3e18;
-    uint256 private constant FEE_EXPONENT = 2;
-    uint256 private constant POSITION_FEE_BPS = 10;
-    uint256 private constant TREASURY_SHARE_BPS = 4000;
-    uint256 private constant INSURANCE_SHARE_BPS = 3000;
-    uint256 private constant POOL_SHARE_BPS = 3000;
-    uint256 private constant MIN_NOTIONAL_USD = 1000e18;
-    uint256 private constant MAINTENANCE_MARGIN_BPS = 600;
-    uint256 private constant GAS_OPEN = 400_000;
-    uint256 private constant GAS_ADD = 300_000;
-    uint256 private constant GAS_OVERHEAD = 80_000;
-    uint256 private constant GAS_PRICE = 2 gwei;
-    uint256 private constant PYTH_FEE = 1000 wei;
-    uint256 private constant START = 1_784_116_800;
-    uint256 private constant BAND_BPS = 50;
-    uint64 private constant PYTH_DELAY = 30;
-    uint8 private constant STREAM_DECIMALS = 18;
-    uint8 private constant FEED_DECIMALS = 8;
-    uint256 private constant MAX_AGE = 6 hours;
-    bytes32 private constant FEED_ID = bytes32(uint256(0x0008abc));
-    bytes32 private constant PYTH_ID = bytes32(uint256(0x765d2ba9));
     uint256 private constant DRIVE_DEPOSIT = 40 ether;
     uint256 private constant DRIVE_POST = 5 ether;
     uint256 private constant DRIVE_ADD = 1 ether;
@@ -54,60 +18,7 @@ contract ProtocolInvariantTest is ProtocolInvariants {
     uint256 private constant TARGET_DELAY = 12;
 
     function setUp() public {
-        vm.warp(START);
-        vm.txGasPrice(GAS_PRICE);
-
-        MockPaxg paxgReading = new MockPaxg();
-        MockERC20 paxg = new MockERC20("Paxos Gold", "PAXG", 18);
-        TgauxVault vault = new TgauxVault(address(paxg), makeAddr("treasury"), 0, 0);
-        gold = vault.TOKEN();
-        ReentrancyLock lock = new ReentrancyLock();
-        MockPyth pyth = new MockPyth();
-        pyth.setFee(PYTH_FEE);
-        TradingCalendar calendar = new TradingCalendar(makeAddr("calendar proposer"));
-
-        manager = new PositionManagerHarness(
-            PositionManager.Config({
-                gold: address(gold),
-                paxg: address(paxgReading),
-                settlementOracle: address(
-                    new SettlementOracle(
-                        address(new MockVerifierProxy()),
-                        address(pyth),
-                        FEED_ID,
-                        PYTH_ID,
-                        STREAM_DECIMALS,
-                        BAND_BPS,
-                        PYTH_DELAY
-                    )
-                ),
-                fallbackPrice: address(
-                    new PushFallbackPrice(address(new MockChainlinkOracle(FEED_DECIMALS)), address(calendar), MAX_AGE)
-                ),
-                calendar: address(calendar),
-                lock: address(lock),
-                guardian: makeAddr("guardian"),
-                windDown: makeAddr("wind down"),
-                treasury: makeAddr("treasury"),
-                poolUMaxBps: U_MAX_BPS,
-                requestExpiry: EXPIRY,
-                insuranceTarget: IF_TARGET,
-                feeFloorRate: FEE_FLOOR,
-                feeCapRate: FEE_CAP,
-                feeExponent: FEE_EXPONENT,
-                positionFeeBps: POSITION_FEE_BPS,
-                treasuryShareBps: TREASURY_SHARE_BPS,
-                insuranceShareBps: INSURANCE_SHARE_BPS,
-                poolShareBps: POOL_SHARE_BPS,
-                minNotionalUsd: MIN_NOTIONAL_USD,
-                maintenanceMarginBps: MAINTENANCE_MARGIN_BPS,
-                gasOpen: GAS_OPEN,
-                gasAdd: GAS_ADD,
-                gasOverhead: GAS_OVERHEAD
-            })
-        );
-        pool = manager.POOL();
-        fund = manager.INSURANCE_FUND();
+        _deployProtocol();
         handler = new ProtocolHandler(manager, paxg, paxgReading, FEED_ID, PYTH_ID, PYTH_FEE, 7 days);
 
         bytes4[] memory selectors = new bytes4[](SELECTORS);

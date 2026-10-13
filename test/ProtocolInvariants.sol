@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
 
-import {Test} from "forge-std/Test.sol";
-import {CounterpartyPool} from "../src/CounterpartyPool.sol";
-import {InsuranceFund} from "../src/InsuranceFund.sol";
-import {TGAUX} from "../src/TGAUX.sol";
-import {ProtocolHandler} from "./handlers/ProtocolHandler.sol";
-import {PositionManagerHarness} from "./mocks/PositionManagerHarness.sol";
+import {ProtocolDeployment} from "./ProtocolDeployment.sol";
 
 /// @notice The cross contract invariants every protocol campaign shares. They
 ///         live here, apart from any one campaign's setUp and driver, so a
@@ -15,15 +10,8 @@ import {PositionManagerHarness} from "./mocks/PositionManagerHarness.sol";
 ///         setUp (the handler it targets, the selectors and the LP seed).
 /// @dev The handler swallows nothing: it returns early when a step has nothing
 ///      to act on, so a revert in a sequence is a defect.
-abstract contract ProtocolInvariants is Test {
+abstract contract ProtocolInvariants is ProtocolDeployment {
     uint256 internal constant NOTHING = 0;
-    uint256 internal constant U_MAX_BPS = 8000;
-
-    PositionManagerHarness public manager;
-    CounterpartyPool public pool;
-    InsuranceFund public fund;
-    ProtocolHandler public handler;
-    TGAUX public gold;
 
     /// @notice D66: the manager holds TGAUX for pending requests and nothing
     ///         else, so its balance is its escrow total.
