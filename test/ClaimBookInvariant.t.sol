@@ -12,9 +12,10 @@ import {ClaimBookHarness} from "./mocks/ClaimBookHarness.sol";
 /// forge-config: default.invariant.fail-on-revert = true
 contract ClaimBookInvariantTest is Test {
     uint256 private constant NOTHING = 0;
-    uint256 private constant SELECTORS = 5;
+    uint256 private constant SELECTORS = 6;
     uint256 private constant DRIVE_SIZE = 10 ether;
     uint256 private constant DRIVE_PRICE = 4000e18;
+    uint256 private constant BPS = 10_000;
 
     ClaimBookHarness public harness;
     ClaimBookHandler public handler;
@@ -29,6 +30,7 @@ contract ClaimBookInvariantTest is Test {
         selectors[2] = ClaimBookHandler.addCollateral.selector;
         selectors[3] = ClaimBookHandler.moveIndex.selector;
         selectors[4] = ClaimBookHandler.movePrice.selector;
+        selectors[5] = ClaimBookHandler.moveShares.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
     }
@@ -71,6 +73,15 @@ contract ClaimBookInvariantTest is Test {
 
         handler.movePrice(DRIVE_PRICE);
         assertEq(handler.price(), DRIVE_PRICE, "the price never moved");
+
+        // D74: read both measures at a zero fund share, where the largest share
+        // equals the smallest, and at a zero treasury share, where the largest
+        // share is the whole denominator.
+        handler.moveShares(5000, 0);
+        assertEq(handler.insuranceShareBps(), NOTHING, "the fund share did not reach zero");
+        handler.moveShares(6000, type(uint256).max);
+        assertEq(handler.poolShareBps() + handler.insuranceShareBps(), BPS, "the largest share did not reach the whole");
+        assertGt(handler.shareMoves(), NOTHING, "the share never moved, so this proves nothing");
 
         handler.closePosition(0);
         assertEq(handler.openCount(), 1, "the close path never ran");

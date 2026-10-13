@@ -54,6 +54,13 @@ pragma solidity 0.8.30;
  *      bucket error above, which is zero when the bucket holding the price is
  *      empty or the price sits on its low edge.
  *
+ *      D74: only the pool's share of an accrued fee is a pool loss, since the
+ *      treasury and fund shares leave on collection. Each measure scales its fee
+ *      term by a pool share the caller passes, the deposit measure by the largest
+ *      share rounded up and the withdrawal measure by the smallest rounded down,
+ *      so neither rounding moves a measure the user's way. A share of one
+ *      basis-point denominator leaves a measure unscaled.
+ *
  *      A measure is reported as zero when the sum is negative. For the deposit
  *      measure that is D48's floor; for the withdrawal measure it is reached
  *      only when accrued fees exceed every claim, which is past bankruptcy for
@@ -66,6 +73,10 @@ pragma solidity 0.8.30;
 library ClaimBook {
     /// @notice One unit of the 1e18 scale every figure here carries.
     uint256 internal constant WAD = 1e18;
+
+    /// @notice Basis-point denominator the pool fee share is stated in
+    ///         (D20, D74).
+    uint256 internal constant BPS_DENOMINATOR = 10_000;
 
     /// @notice Bucket width, one USD of entry price (D60 rule 5, O5).
     uint256 internal constant BUCKET_WIDTH = 1e18;
@@ -196,14 +207,26 @@ library ClaimBook {
     /// @dev A library entry point, answered through the position book interface
     ///      the pool holds, so its caller is in another file by design
     ///      (D60 rule 7).
-    // forge-lint: disable-next-line(internal-function-used-once)
-    function depositClaimUsd(Book storage book, uint256 price, uint256 index) internal view returns (uint256) {
+    ///
+    ///      D74: only `poolShareBps` of the accrued holding fee is a pool loss,
+    ///      the rest leaving as treasury and fund shares on collection. The high
+    ///      side takes the largest such share and rounds the scaled fee up, so
+    ///      the fee it carries is never understated and the measure stays on the
+    ///      low side of exact (D29).
+    /// @param poolShareBps The pool's share of the fee, in basis points, which
+    ///        the caller sets to the largest share for this measure.
+    function depositClaimUsd(Book storage book, uint256 price, uint256 index, uint256 poolShareBps)
+        internal
+        view
+        returns (uint256)
+    {
         if (price == 0) {
             revert ZeroPrice();
         }
 
         uint256 gross = _mulDown(price, book.reserved);
-        uint256 owed = book.notionalDebt + _mulUp(price, _depositFeeOunces(book, index));
+        uint256 fee = _mulUpBps(_mulUp(price, _depositFeeOunces(book, index)), poolShareBps);
+        uint256 owed = book.notionalDebt + fee;
 
         return gross > owed ? gross - owed : 0;
     }
@@ -213,8 +236,18 @@ library ClaimBook {
     ///         rounded up, zero if negative.
     /// @dev The other half of that interface, with its caller in another file
     ///      for the same reason.
-    // forge-lint: disable-next-line(internal-function-used-once)
-    function withdrawalClaimUsd(Book storage book, uint256 price, uint256 index) internal view returns (uint256) {
+    ///
+    ///      D74: as above, only `poolShareBps` of the accrued holding fee is a
+    ///      pool loss. The low side takes the smallest such share and rounds the
+    ///      scaled fee down, so the fee it carries is never overstated and the
+    ///      measure stays on the high side of exact (D29).
+    /// @param poolShareBps The pool's share of the fee, in basis points, which
+    ///        the caller sets to the smallest share for this measure.
+    function withdrawalClaimUsd(Book storage book, uint256 price, uint256 index, uint256 poolShareBps)
+        internal
+        view
+        returns (uint256)
+    {
         if (price == 0) {
             revert ZeroPrice();
         }
@@ -226,7 +259,7 @@ library ClaimBook {
         }
 
         uint256 gain = gross - notionalBelow + _mulUp(price - lowEdge, sizeAt);
-        uint256 owed = _mulDown(price, _withdrawalFeeOunces(book, index));
+        uint256 owed = _mulDownBps(_mulDown(price, _withdrawalFeeOunces(book, index)), poolShareBps);
         uint256 total = book.claimTotal + gain;
 
         return total > owed ? total - owed : 0;
@@ -416,5 +449,13 @@ library ClaimBook {
 
     function _mulUp(uint256 a, uint256 b) private pure returns (uint256) {
         return (a * b + WAD - ROUND_UP) / WAD;
+    }
+
+    function _mulDownBps(uint256 amount, uint256 bps) private pure returns (uint256) {
+        return (amount * bps) / BPS_DENOMINATOR;
+    }
+
+    function _mulUpBps(uint256 amount, uint256 bps) private pure returns (uint256) {
+        return (amount * bps + BPS_DENOMINATOR - ROUND_UP) / BPS_DENOMINATOR;
     }
 }

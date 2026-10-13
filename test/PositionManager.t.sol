@@ -174,6 +174,40 @@ contract PositionManagerTest is Test {
         );
     }
 
+    /// @dev D74: the manager reads the deposit measure at the largest pool
+    ///      share, the pool's plus the fund's, and the withdrawal measure at the
+    ///      smallest, the pool alone. Read at the entry price a lone position has
+    ///      no gain and no realised loss, so each measure is the claim less its
+    ///      share of the accrued fee, which pins the share the manager passes. A
+    ///      measure reading the other share would subtract a different amount.
+    function test_D74_EachMeasureReadsItsPoolShareOfTheFee() public {
+        uint256 claim = (SIZE * ENTRY) / WAD / 2;
+        manager.recordPosition(SIZE, claim, ENTRY, NOTHING);
+
+        vm.warp(START + YEAR);
+        uint256 index = manager.indexNow();
+        assertGt(index, NOTHING, "no fee accrued, so the share cannot be read off anything");
+
+        // A lone position opened at a zero index carries a zero fee basis both
+        // ways, so the fee in ounces is the bare accrual rounded each way, the
+        // deposit side up and the withdrawal side down (D60 rule 8).
+        uint256 largest = POOL_SHARE_BPS + INSURANCE_SHARE_BPS;
+        uint256 depositFeeUsd = (ENTRY * ((index * SIZE + WAD - 1) / WAD) + WAD - 1) / WAD;
+        uint256 withdrawalFeeUsd = (ENTRY * ((index * SIZE) / WAD)) / WAD;
+        uint256 depositFee = (depositFeeUsd * largest + BPS - 1) / BPS;
+        uint256 withdrawalFee = (withdrawalFeeUsd * POOL_SHARE_BPS) / BPS;
+
+        assertLt(withdrawalFee, depositFee, "the two shares did not separate, so a swap would be invisible");
+        assertEq(
+            manager.depositClaimUsd(ENTRY), claim - depositFee, "the deposit measure did not read the largest share"
+        );
+        assertEq(
+            manager.withdrawalClaimUsd(ENTRY),
+            claim - withdrawalFee,
+            "the withdrawal measure did not read the pool share"
+        );
+    }
+
     function test_TheClaimBookFollowsRemovals() public {
         uint256 claim = (SIZE * ENTRY) / WAD / 2;
         manager.recordPosition(SIZE, claim, ENTRY, NOTHING);

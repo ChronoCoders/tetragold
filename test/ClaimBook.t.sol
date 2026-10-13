@@ -399,6 +399,52 @@ contract ClaimBookTest is Test {
         book.depositClaimUsd(ROUND_WIDE, NOTHING);
     }
 
+    /// @dev D74: with a fifty fifty treasury and pool split and a zero fund
+    ///      share, the largest share and the smallest are both one half, so an
+    ///      odd accrued fee lands on a wei edge. The deposit measure reserves the
+    ///      pool's half of the fee rounded up and so falls by it from a measure
+    ///      that counts none; the withdrawal measure keeps the other half and so
+    ///      rises by it from a measure that counts the whole fee; and at the same
+    ///      fee and share the deposit side rounds the half up where the
+    ///      withdrawal side rounds it down, one wei apart.
+    function test_SharesMoveTheMeasuresByThePoolHalfOfTheFee() public {
+        uint256 size = SIZE_ONE;
+        uint256 entry = ENTRY;
+        uint256 claim = CLAIM_TWO;
+        uint256 index = ONE_WEI;
+        uint256 readPrice = 4001e18;
+        uint256 poolShare = ClaimBook.BPS_DENOMINATOR / HALF;
+        uint256 fullShare = ClaimBook.BPS_DENOMINATOR;
+        _add(Position({size: size, claim: claim, openPrice: entry, openIndex: NOTHING}));
+
+        uint256 fullFee =
+            book.depositClaimUsd(readPrice, index, NOTHING) - book.depositClaimUsd(readPrice, index, fullShare);
+        assertEq(fullFee, 4001, "the accrued fee was not the wei figure the edge needs");
+        assertEq(fullFee % HALF, ONE_WEI, "the fee is even, so a half cannot sit on a wei edge");
+        assertEq(
+            book.withdrawalClaimUsd(readPrice, index, NOTHING) - book.withdrawalClaimUsd(readPrice, index, fullShare),
+            fullFee,
+            "the two sides did not accrue the same fee"
+        );
+
+        uint256 depositDrop =
+            book.depositClaimUsd(readPrice, index, NOTHING) - book.depositClaimUsd(readPrice, index, poolShare);
+        uint256 withdrawalKeep =
+            book.withdrawalClaimUsd(readPrice, index, poolShare) - book.withdrawalClaimUsd(readPrice, index, fullShare);
+        uint256 withdrawalDrop =
+            book.withdrawalClaimUsd(readPrice, index, NOTHING) - book.withdrawalClaimUsd(readPrice, index, poolShare);
+
+        uint256 poolHalfUp = (fullFee + ONE_WEI) / HALF;
+        assertEq(depositDrop, poolHalfUp, "the deposit measure did not fall by the pool half rounded up");
+        assertEq(withdrawalKeep, poolHalfUp, "the withdrawal measure did not rise by the pool half");
+        assertEq(depositDrop - withdrawalDrop, ONE_WEI, "the two sides did not round the same half opposite ways");
+
+        assertGt(book.depositClaimUsd(readPrice, index, poolShare), NOTHING, "the deposit measure floored to zero");
+        assertGt(
+            book.withdrawalClaimUsd(readPrice, index, poolShare), NOTHING, "the withdrawal measure floored to zero"
+        );
+    }
+
     function testFuzz_BothMeasuresMatchTheBruteForceSum(uint256 seed, uint8 count, uint256 priceSeed, uint256 indexSeed)
         public
     {

@@ -25,11 +25,19 @@ contract ClaimBookHarness {
     }
 
     function depositClaimUsd(uint256 price, uint256 index) external view returns (uint256) {
-        return _book.depositClaimUsd(price, index);
+        return _book.depositClaimUsd(price, index, ClaimBook.BPS_DENOMINATOR);
+    }
+
+    function depositClaimUsd(uint256 price, uint256 index, uint256 poolShareBps) external view returns (uint256) {
+        return _book.depositClaimUsd(price, index, poolShareBps);
     }
 
     function withdrawalClaimUsd(uint256 price, uint256 index) external view returns (uint256) {
-        return _book.withdrawalClaimUsd(price, index);
+        return _book.withdrawalClaimUsd(price, index, ClaimBook.BPS_DENOMINATOR);
+    }
+
+    function withdrawalClaimUsd(uint256 price, uint256 index, uint256 poolShareBps) external view returns (uint256) {
+        return _book.withdrawalClaimUsd(price, index, poolShareBps);
     }
 
     function reserved() external view returns (uint256) {

@@ -16,8 +16,14 @@ contract TightProtocolInvariantTest is ProtocolInvariants {
     uint256 private constant ADD_WEIGHT = 4;
     uint256 private constant TIGHT_SELECTORS = 12 + 2 * ADD_WEIGHT;
 
+    /// @dev A split apart from the house one, so I6 is seen under a second share
+    ///      split where the largest share and the smallest differ (D74).
+    uint256 private constant TIGHT_TREASURY_BPS = 2000;
+    uint256 private constant TIGHT_INSURANCE_BPS = 3000;
+    uint256 private constant TIGHT_POOL_BPS = 5000;
+
     function setUp() public {
-        _deployProtocol();
+        _deployProtocol(TIGHT_TREASURY_BPS, TIGHT_INSURANCE_BPS, TIGHT_POOL_BPS);
         TightProtocolHandler tight = new TightProtocolHandler(manager, paxg, paxgReading, FEED_ID, PYTH_ID, PYTH_FEE);
         handler = tight;
 

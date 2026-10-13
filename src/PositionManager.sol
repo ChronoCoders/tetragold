@@ -876,21 +876,25 @@ contract PositionManager is IPositionBook {
     ///      rounded up, because every open position will pay that much on an
     ///      owner's close. The withdrawal measure does not, because a
     ///      liquidated position pays no close fee (D29 on both sides).
+    ///
+    ///      D74: both fee terms count only the pool's share, and the high side
+    ///      takes the largest share, the pool's plus the fund's.
     function depositClaimUsd(uint256 price18) external view returns (uint256) {
-        uint256 claim = _book.depositClaimUsd(price18, indexNow());
+        uint256 claim = _book.depositClaimUsd(price18, indexNow(), POOL_SHARE_BPS + INSURANCE_SHARE_BPS);
         uint256 closeFee = _closeFeeUsdUp(price18);
         return claim > closeFee ? claim - closeFee : 0;
     }
 
     /// @inheritdoc IPositionBook
     /// @dev No close fee is subtracted here, which is the other half of D71
-    ///      rule 6.
+    ///      rule 6. D74: the holding fee counts only the smallest pool share.
     function withdrawalClaimUsd(uint256 price18) external view returns (uint256) {
-        return _book.withdrawalClaimUsd(price18, indexNow());
+        return _book.withdrawalClaimUsd(price18, indexNow(), POOL_SHARE_BPS);
     }
 
-    /// @notice The close fee every open position will owe at `price18`, rounded
-    ///         up, which is the term D71 rule 6 adds to the deposit measure.
+    /// @notice The close fee every open position will owe at `price18`, as the
+    ///         deposit measure counts it: the pool's largest share of f of
+    ///         notional, rounded up, which is the term D71 rule 6 adds under D74.
     function closeFeeUsd(uint256 price18) external view returns (uint256) {
         return _closeFeeUsdUp(price18);
     }
@@ -1538,11 +1542,15 @@ contract PositionManager is IPositionBook {
         return (size * (indexNow() - openIndex) + WAD - ROUND_UP) / WAD;
     }
 
-    /// @dev The close fee every open position will owe at a price, rounded up
-    ///      (D71 rule 6).
+    /// @dev The close fee every open position will owe at a price, scaled to the
+    ///      pool's largest share and rounded up (D71 rule 6, D74). The product of
+    ///      f of notional and the share rounds up once, so the deposit measure
+    ///      never understates what the pool keeps of that fee (D29).
     function _closeFeeUsdUp(uint256 price18) private view returns (uint256) {
         uint256 notional = POOL.reserved() * price18;
-        return (notional * POSITION_FEE_BPS + BPS_DENOMINATOR * WAD - ROUND_UP) / (BPS_DENOMINATOR * WAD);
+        uint256 largestShareBps = POOL_SHARE_BPS + INSURANCE_SHARE_BPS;
+        uint256 denominator = BPS_DENOMINATOR * BPS_DENOMINATOR * WAD;
+        return (notional * POSITION_FEE_BPS * largestShareBps + denominator - ROUND_UP) / denominator;
     }
 
     /// @dev Ounces at a price, in USD, rounded down.

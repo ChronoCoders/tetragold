@@ -692,19 +692,28 @@ contract PositionManagerOpenTest is Test {
     }
 
     /// @dev D71 rule 6: the deposit measure also carries the close fee every
-    ///      open position will owe, and the withdrawal measure does not.
+    ///      open position will owe, and the withdrawal measure does not. D74:
+    ///      that term counts only the pool's largest share of the fee, not all
+    ///      of it, and is rounded up so the measure never understates it.
     function test_TheDepositMeasureCarriesTheCloseFee() public {
         uint256 id = _requestOpen(trader, POST, LEVERAGE);
         _settleOpen(id);
 
         uint256 closeFee = manager.closeFeeUsd(PRICE_18);
         uint256 raw = manager.withdrawalClaimUsd(PRICE_18);
+        uint256 notional = pool.reserved() * PRICE_18;
+        uint256 largestShareBps = POOL_SHARE_BPS + INSURANCE_SHARE_BPS;
 
         assertGt(closeFee, NOTHING, "the close fee term is zero, so this proves nothing");
         assertEq(
             closeFee,
-            (pool.reserved() * PRICE_18 * POSITION_FEE_BPS + BPS * WAD - 1) / (BPS * WAD),
-            "the close fee term is not f of notional rounded up"
+            (notional * POSITION_FEE_BPS * largestShareBps + BPS * BPS * WAD - 1) / (BPS * BPS * WAD),
+            "the close fee term is not the pool's largest share of f of notional rounded up"
+        );
+        assertLt(
+            closeFee,
+            (notional * POSITION_FEE_BPS + BPS * WAD - 1) / (BPS * WAD),
+            "D74: the close fee term was not scaled below the full fee"
         );
         assertLt(manager.depositClaimUsd(PRICE_18), raw, "the deposit measure did not carry the close fee");
     }

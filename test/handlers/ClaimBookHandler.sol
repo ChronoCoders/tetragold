@@ -17,6 +17,12 @@ import {ClaimBookHarness} from "../mocks/ClaimBookHarness.sol";
 ///      than a slack: the deposit measure never above exact, the withdrawal
 ///      measure never below it (D29, D60 rule 4 and rule 8).
 ///
+///      A move step walks the fee split, and each measure is read at its share
+///      (D74): the deposit measure at the largest, pool plus fund, and the
+///      withdrawal measure at the smallest, the pool alone. The reference scales
+///      its fee term by the same share, so a defect that reads the wrong share,
+///      or none, moves a measure off exact and is caught here.
+///
 ///      The fee index only ever rises, as a cumulative rate index must (D53),
 ///      and a position opens at whatever it is then.
 contract ClaimBookHandler is Test {
@@ -30,6 +36,10 @@ contract ClaimBookHandler is Test {
     /// @dev One unit of the 1e18 scale squared, which clears both divisions in
     ///      the exact reference.
     uint256 private constant SCALE = 1e36;
+    /// @dev The basis-point denominator the pool share is stated in. The exact
+    ///      reference is carried in a domain scaled by it as well, so the fee
+    ///      term can be multiplied by a share without a division rounding (D74).
+    uint256 private constant BPS = 10_000;
     uint256 private constant TIERS = 3;
 
     struct Counters {
@@ -54,10 +64,19 @@ contract ClaimBookHandler is Test {
     uint256 public index;
     uint256 public price = 4000e18;
 
+    /// @dev The fee split the measures are read at (D20, D74). The deposit
+    ///      measure takes the largest pool share, pool plus fund, and the
+    ///      withdrawal measure the smallest, the pool alone. Both start at a
+    ///      split that leaves a treasury cut, so the scaling is on from the
+    ///      first step; a move step walks them, including the two edges.
+    uint256 public poolShareBps = 3000;
+    uint256 public insuranceShareBps = 3000;
+
     uint256 public opens;
     uint256 public closes;
     uint256 public collateralAdds;
     uint256 public indexMoves;
+    uint256 public shareMoves;
 
     uint256 public counterMismatches;
     uint256 public depositMismatches;
@@ -143,6 +162,20 @@ contract ClaimBookHandler is Test {
         _check();
     }
 
+    /// @dev D20: the three shares sum to the denominator, so a pool share and a
+    ///      fund share inside the room the pool left fixes the treasury share as
+    ///      the rest. The bounds reach both edges, a zero fund share and a zero
+    ///      treasury share, where the largest share equals the smallest or the
+    ///      whole.
+    function moveShares(uint256 poolSeed, uint256 fundSeed) external {
+        uint256 pool = bound(poolSeed, 0, BPS);
+        poolShareBps = pool;
+        insuranceShareBps = bound(fundSeed, 0, BPS - pool);
+        shareMoves += 1;
+
+        _check();
+    }
+
     function _check() private {
         Counters memory want = _counters();
         if (
@@ -152,13 +185,21 @@ contract ClaimBookHandler is Test {
             counterMismatches += 1;
         }
 
-        (int256 high, int256 low, uint256 sizeInBucket) = _exact();
-        uint256 count = _open.length;
-        int256 slack = _signed(2 + count + (count + 1) * (price / WAD + 1)) * _signed(SCALE);
-        int256 bucketError = _signed((sizeInBucket * WIDTH) / WAD) * _signed(SCALE);
+        uint256 largest = poolShareBps + insuranceShareBps;
+        uint256 smallest = poolShareBps;
 
-        int256 deposit = _signed(BOOK.depositClaimUsd(price, index)) * _signed(SCALE);
-        int256 withdrawal = _signed(BOOK.withdrawalClaimUsd(price, index)) * _signed(SCALE);
+        (int256 high, int256 low, uint256 sizeInBucket) = _exact(largest, smallest);
+        uint256 count = _open.length;
+        // Four rounding weis a measure is allowed off its exact value: a gross
+        // and a fee rounding on each side, one of the fee ones being the share
+        // multiply D74 adds. The per-position term covers the fee basis kept to
+        // a wei of ounces a position. All of it is carried in the SCALE and BPS
+        // domain the exact reference and both measures sit in.
+        int256 slack = _signed(4 + count + (count + 1) * (price / WAD + 1)) * _signed(SCALE) * _signed(BPS);
+        int256 bucketError = _signed((sizeInBucket * WIDTH) / WAD) * _signed(SCALE) * _signed(BPS);
+
+        int256 deposit = _signed(BOOK.depositClaimUsd(price, index, largest)) * _signed(SCALE) * _signed(BPS);
+        int256 withdrawal = _signed(BOOK.withdrawalClaimUsd(price, index, smallest)) * _signed(SCALE) * _signed(BPS);
 
         if (deposit > (high > 0 ? high : int256(0)) || deposit + slack < high) {
             depositMismatches += 1;
@@ -188,10 +229,17 @@ contract ClaimBookHandler is Test {
         return (a * b + WAD - 1) / WAD;
     }
 
-    /// @dev The exact measures over the shadow list, scaled by SCALE so that no
-    ///      division rounds. Signed, because either sum can be negative before
-    ///      the floor at zero.
-    function _exact() private view returns (int256 high, int256 low, uint256 sizeInBucket) {
+    /// @dev The exact measures over the shadow list, scaled by SCALE and by BPS
+    ///      so that neither a division nor the share multiply rounds. The fee
+    ///      term is the only one a share touches, so it is multiplied by the
+    ///      share and the rest by the denominator (D74). The deposit measure
+    ///      takes `largest`, the withdrawal measure `smallest`. Signed, because
+    ///      either sum can be negative before the floor at zero.
+    function _exact(uint256 largest, uint256 smallest)
+        private
+        view
+        returns (int256 high, int256 low, uint256 sizeInBucket)
+    {
         uint256 bucket = ClaimBook.bucketOf(price);
 
         for (uint256 i = 0; i < _open.length; i++) {
@@ -200,8 +248,8 @@ contract ClaimBookHandler is Test {
             int256 feeTerm = _signed(p.size) * _signed(index - p.openIndex) * _signed(price);
             int256 move = _signed(p.size) * (_signed(price) - _signed(p.openPrice)) * _signed(WAD);
 
-            high += claimTerm + move - feeTerm;
-            low += claimTerm - feeTerm + (move > 0 ? move : int256(0));
+            high += (claimTerm + move) * _signed(BPS) - feeTerm * _signed(largest);
+            low += claimTerm * _signed(BPS) - feeTerm * _signed(smallest) + (move > 0 ? move * _signed(BPS) : int256(0));
 
             if (ClaimBook.bucketOf(p.openPrice) == bucket) {
                 sizeInBucket += p.size;

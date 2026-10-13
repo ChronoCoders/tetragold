@@ -63,8 +63,14 @@ abstract contract ProtocolDeployment is Test {
 
     /// @dev Builds the stack and leaves `paxg`/`paxgReading` for the caller to
     ///      pass into whichever handler it constructs. Does not create a
-    ///      handler or set any fuzz target.
+    ///      handler or set any fuzz target. The split defaults to the house one;
+    ///      a caller passes its own so I6 is seen under more than one share split
+    ///      across campaigns (D74).
     function _deployProtocol() internal {
+        _deployProtocol(TREASURY_SHARE_BPS, INSURANCE_SHARE_BPS, POOL_SHARE_BPS);
+    }
+
+    function _deployProtocol(uint256 treasuryShareBps, uint256 insuranceShareBps, uint256 poolShareBps) internal {
         vm.warp(START);
         vm.txGasPrice(GAS_PRICE);
 
@@ -107,9 +113,9 @@ abstract contract ProtocolDeployment is Test {
                 feeCapRate: FEE_CAP,
                 feeExponent: FEE_EXPONENT,
                 positionFeeBps: POSITION_FEE_BPS,
-                treasuryShareBps: TREASURY_SHARE_BPS,
-                insuranceShareBps: INSURANCE_SHARE_BPS,
-                poolShareBps: POOL_SHARE_BPS,
+                treasuryShareBps: treasuryShareBps,
+                insuranceShareBps: insuranceShareBps,
+                poolShareBps: poolShareBps,
                 minNotionalUsd: MIN_NOTIONAL_USD,
                 maintenanceMarginBps: MAINTENANCE_MARGIN_BPS,
                 gasOpen: GAS_OPEN,
