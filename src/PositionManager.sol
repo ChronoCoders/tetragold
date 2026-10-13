@@ -1264,22 +1264,35 @@ contract PositionManager is IPositionBook {
         // forge-lint: disable-next-line(reentrancy-events)
         emit CloseSettled(id, positionId, owner, price18, close.payout, close.collected, close.badDebt);
 
-        // forge-lint: disable-next-line(reentrancy-no-eth)
         POOL.release(size);
         if (close.payout != 0) {
-            // forge-lint: disable-next-line(reentrancy-no-eth,unused-return)
+            // The pool emits PaidOut with what was requested and what was paid.
+            // D46 guarantees the payout fits the reserve and I14 forbids
+            // reverting a close, so a short payment is recorded in the log
+            // rather than acted on here.
+            // forge-lint: disable-next-line(unused-return)
             POOL.payOut(owner, close.payout);
         }
 
         (uint256 toTreasury, uint256 toFund, uint256 toPool) = _split(close.collected);
         if (toTreasury != 0) {
-            // forge-lint: disable-next-line(reentrancy-no-eth,unused-return)
+            // The pool emits PaidOut with what was requested and what was paid.
+            // D46 guarantees the payout fits the reserve and I14 forbids
+            // reverting a close, so a short payment is recorded in the log
+            // rather than acted on here.
+            // forge-lint: disable-next-line(unused-return)
             POOL.payOut(TREASURY, toTreasury);
         }
         if (toFund != 0) {
-            // forge-lint: disable-next-line(reentrancy-no-eth,unused-return)
+            // The pool emits PaidOut with what was requested and what was paid.
+            // D46 guarantees the payout fits the reserve and I14 forbids
+            // reverting a close, so a short payment is recorded in the log
+            // rather than acted on here.
+            // forge-lint: disable-next-line(unused-return)
             POOL.payOut(address(INSURANCE_FUND), toFund);
-            // forge-lint: disable-next-line(reentrancy-no-eth,unused-return)
+            // The credit is the receiving contract's own figure, which its I1
+            // checks on its side.
+            // forge-lint: disable-next-line(unused-return)
             INSURANCE_FUND.syncCredit();
         }
         // D20 and D56: the three shares go on chain here, where the gold leaves
@@ -1290,13 +1303,13 @@ contract PositionManager is IPositionBook {
         emit FeeRouted(toTreasury, toFund, toPool);
 
         if (close.badDebt != 0) {
-            // The fund pays what it has into the pool and the pool absorbs the
-            // rest, which is the whole of D49's loss order. The fund's Paid log
-            // carries what it covered, so the absorbed part is the bad debt in
-            // CloseSettled less that paid amount.
-            // forge-lint: disable-next-line(reentrancy-no-eth,unused-return)
+            // The fund's Paid event carries the covered amount, and by D49 the
+            // pool absorbs the rest by design.
+            // forge-lint: disable-next-line(unused-return)
             INSURANCE_FUND.payTo(address(POOL), close.badDebt);
-            // forge-lint: disable-next-line(reentrancy-no-eth,unused-return)
+            // The credit is the receiving contract's own figure, which its I1
+            // checks on its side.
+            // forge-lint: disable-next-line(unused-return)
             POOL.syncCredit();
         }
     }
