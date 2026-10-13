@@ -80,4 +80,11 @@ abstract contract ProtocolInvariants is ProtocolDeployment {
     function invariant_I27_CloseMovesTgauxOnlyWhereItMay() public view {
         assertEq(handler.closeLeaks(), NOTHING, "I27: a close moved TGAUX out of the close set");
     }
+
+    /// @notice A position carries a pending exit flag only while a close request
+    ///         for it is still pending: an expired close must clear it, or the
+    ///         position can never be exited (I14, D58).
+    function invariant_ExitFlagFollowsAPendingClose() public view {
+        assertEq(handler.exitFlagStranded(), NOTHING, "a position's exit flag outlived its close request");
+    }
 }

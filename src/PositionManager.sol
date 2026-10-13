@@ -737,6 +737,11 @@ contract PositionManager is IPositionBook {
         // by one, the same as a settled add (D43 rule 3).
         if (request.kind == Kind.Add) {
             pendingAddsFor[request.positionId] -= 1;
+        } else if (request.kind == Kind.Close) {
+            // An expiring close releases the exit flag, or the position is
+            // stranded: requestClose would revert ExitPending and no add could
+            // be made, so it could never be exited (I14, D58).
+            _positions[request.positionId].exitPending = false;
         }
         if (escrowed != 0) {
             escrowedOunces -= escrowed;

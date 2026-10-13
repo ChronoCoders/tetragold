@@ -10,7 +10,7 @@ import {ProtocolHandler} from "./handlers/ProtocolHandler.sol";
 ///         and the hand driver that proves none of them pass vacuously.
 /// forge-config: default.invariant.fail-on-revert = true
 contract ProtocolInvariantTest is ProtocolInvariants {
-    uint256 private constant SELECTORS = 12;
+    uint256 private constant SELECTORS = 13;
     uint256 private constant DRIVE_DEPOSIT = 40 ether;
     uint256 private constant DRIVE_POST = 5 ether;
     uint256 private constant DRIVE_ADD = 1 ether;
@@ -34,6 +34,7 @@ contract ProtocolInvariantTest is ProtocolInvariants {
         selectors[9] = ProtocolHandler.dustTheOracle.selector;
         selectors[10] = ProtocolHandler.requestClose.selector;
         selectors[11] = ProtocolHandler.settleClose.selector;
+        selectors[12] = ProtocolHandler.expireClose.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
         targetContract(address(handler));
     }
@@ -95,6 +96,13 @@ contract ProtocolInvariantTest is ProtocolInvariants {
         handler.passTime(TARGET_DELAY);
         handler.settleClose(0);
         assertEq(handler.closeSettlements(), 1, "the close did not settle");
+
+        // A close that outlives its window expires and clears the exit flag.
+        handler.requestClose(0);
+        handler.passTime(EXPIRY * 2);
+        handler.expireClose(0);
+        assertEq(handler.closeExpiries(), 1, "the close did not expire");
+        assertEq(handler.exitFlagStranded(), NOTHING, "an expired close stranded the exit flag");
 
         assertEq(handler.escrowMismatches(), NOTHING, "D66 broke during the drive");
         assertEq(handler.conservationBreaks(), NOTHING, "I1 broke during the drive");

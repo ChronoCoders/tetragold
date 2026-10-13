@@ -80,6 +80,7 @@ contract ProtocolHandler is Test {
     ///         closes it never made (D71).
     uint256 public closeRequests;
     uint256 public closeSettlements;
+    uint256 public closeExpiries;
 
     /// @notice I2: a close paid an owner more than the position's size in
     ///         ounces, which D46 forbids.
@@ -89,6 +90,10 @@ contract ProtocolHandler is Test {
     ///         treasury and the fund, so it went somewhere D71 rule 5 does not
     ///         send it.
     uint256 public closeLeaks;
+
+    /// @notice A position carried a pending exit flag with no pending close
+    ///         request behind it, so an expired close stranded it (I14, D58).
+    uint256 public exitFlagStranded;
 
     /// @notice Open requests refused while PAXG was unusable, which D50 and
     ///         I26 require, and the ones that went through anyway.
@@ -288,7 +293,6 @@ contract ProtocolHandler is Test {
         uint256 at = idSeed % count;
         uint256 id = _pending[at];
 
-        // forge-lint: disable-next-line(unused-return)
         (address requester,,, uint256 targetTime,,,, PositionManager.State state) = MANAGER.requestAt(id);
         if (state != PositionManager.State.Pending) {
             _drop(at);
@@ -470,6 +474,34 @@ contract ProtocolHandler is Test {
         _check();
     }
 
+    /// @dev A close that outlived its window is expired by its owner (section 7
+    ///      rule 4). The fix under test is that this clears the position's exit
+    ///      flag; the invariant catches it if it does not.
+    function expireClose(uint256 idSeed) external {
+        uint256 count = _pendingCloses.length;
+        if (count == 0) {
+            return;
+        }
+        uint256 at = idSeed % count;
+        uint256 id = _pendingCloses[at];
+
+        (address requester,,, uint256 targetTime,,,, PositionManager.State state) = MANAGER.requestAt(id);
+        if (state != PositionManager.State.Pending) {
+            _dropClose(at);
+            return;
+        }
+        if (vm.getBlockTimestamp() < targetTime + MANAGER.REQUEST_EXPIRY()) {
+            return;
+        }
+
+        vm.prank(requester);
+        MANAGER.expireRequest(id);
+        closeExpiries += 1;
+
+        _dropClose(at);
+        _check();
+    }
+
     /// @dev ETH can be forced into the settlement oracle with SELFDESTRUCT,
     ///      and the oracle has no sweep, so from here on every settlement in
     ///      the sequence runs with a balance sitting in it. No settlement may
@@ -521,6 +553,16 @@ contract ProtocolHandler is Test {
         }
         _lastUtilisation = utilisation;
         _lastRate = rate;
+
+        // An open position may carry a pending exit flag only while a close
+        // request for it is still pending; otherwise an expired close stranded
+        // it (I14, D58).
+        for (uint256 i = 0; i < _open.length; i++) {
+            (bool exitPending,) = MANAGER.positionFlags(_open[i]);
+            if (exitPending && !_hasPendingClose(_open[i])) {
+                exitFlagStranded += 1;
+            }
+        }
     }
 
     function _fund(address to, uint256 ounces) private {
@@ -594,6 +636,18 @@ contract ProtocolHandler is Test {
                 return;
             }
         }
+    }
+
+    /// @dev Whether a close request for `positionId` is still pending, the only
+    ///      state in which that position may carry a pending exit flag.
+    function _hasPendingClose(uint256 positionId) private view returns (bool) {
+        for (uint256 i = 0; i < _pendingCloses.length; i++) {
+            (,,,, uint256 pid,,, PositionManager.State state) = MANAGER.requestAt(_pendingCloses[i]);
+            if (pid == positionId && state == PositionManager.State.Pending) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// @dev The four accounts a close may move TGAUX between: the pool, the

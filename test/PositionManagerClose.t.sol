@@ -325,6 +325,30 @@ contract PositionManagerCloseTest is Test {
         manager.requestClose{value: _feeFloor(GAS_CLOSE)}(id);
     }
 
+    function test_AnExpiredCloseClearsTheExitFlagAndClosesOnTheNextTry() public {
+        uint256 id = _openAPosition();
+
+        vm.prank(trader);
+        uint256 reqId = manager.requestClose{value: _feeFloor(GAS_CLOSE)}(id);
+
+        // The close outlives its window, as it would through an oracle outage,
+        // and the owner expires it (section 7 rule 4).
+        (,,, uint256 target,,,,) = manager.requestAt(reqId);
+        vm.warp(target + EXPIRY);
+        vm.prank(trader);
+        manager.expireRequest(reqId);
+
+        (bool exitPending,) = manager.positionFlags(id);
+        assertFalse(exitPending, "an expired close left the exit flag set");
+
+        // A fresh close now goes through and settles, which it could not if the
+        // flag were still set.
+        CloseOut memory out = _close(id, 5000e18);
+        (,,,,, bool open) = manager.positionAt(id);
+        assertFalse(open, "the position did not close on the second request");
+        assertGt(out.payout, NOTHING, "the second close paid nothing");
+    }
+
     function test_ACloseReleasesTheReserveAndClearsTheExitFlag() public {
         uint256 id = _openAPosition();
         (, uint256 size,,,,) = manager.positionAt(id);
