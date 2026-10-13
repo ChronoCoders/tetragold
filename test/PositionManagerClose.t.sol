@@ -247,6 +247,26 @@ contract PositionManagerCloseTest is Test {
         assertEq(pool.ounces(), poolBefore + fundBefore, "the pool took more or less than the fund held");
     }
 
+    function test_BadDebtRoundsUpAtAWeiEdge() public {
+        uint256 id = _openAPosition();
+        _fillFund(50 ether);
+        (, uint256 size, uint256 claim, uint256 openPrice,,) = manager.positionAt(id);
+
+        // A crash price with a non-round tail, so the loss in ounces is not a
+        // whole number and the round-up shows.
+        uint256 price = 1500000000000000000001;
+        uint256 held = claim + (size * price) / WAD;
+        uint256 owed = (size * openPrice + WAD - 1) / WAD;
+        assertGt(owed, held, "pick a price that puts the position under water");
+        uint256 lossUsd = (owed - held) * WAD;
+        assertTrue(lossUsd % price != 0, "pick a price whose loss leaves a remainder");
+        uint256 ceiling = lossUsd / price + 1;
+
+        CloseOut memory out = _close(id, price);
+        assertEq(out.badDebt, ceiling, "the bad debt did not round up to the ceiling");
+        assertEq(out.ifPaid, ceiling, "the fund did not cover the ceiling into the pool");
+    }
+
     // --- rules at the door --------------------------------------------------
 
     function test_ACloseGoesThroughWhileTheBrakeIsOn() public {
@@ -543,11 +563,22 @@ contract PositionManagerCloseTest is Test {
         want.holdingFee = (size * (iNow - openIndex) + WAD - 1) / WAD;
         want.closeFee = (size * POSITION_FEE_BPS + BPS - 1) / BPS;
 
-        int256 numerator = int256(claim) + int256((size * price18) / WAD) - int256((size * openPrice + WAD - 1) / WAD);
-        int256 gross = (numerator * int256(WAD)) / int256(price18);
+        // D29 written from scratch, not copied from the contract: the position
+        // holds C + floor(s*P) and owes ceil(s*P_open). When it holds at least
+        // what it owes, the equity the owner takes rounds down; when it owes
+        // more, that shortfall is bad debt the fund owes the pool, so it rounds
+        // up, here by adding one whenever the ounce division leaves a remainder.
+        uint256 held = claim + (size * price18) / WAD;
+        uint256 owed = (size * openPrice + WAD - 1) / WAD;
+        uint256 grossPos = 0;
+        if (held >= owed) {
+            grossPos = ((held - owed) * WAD) / price18;
+        } else {
+            uint256 lossUsd = (owed - held) * WAD;
+            uint256 floored = lossUsd / price18;
+            want.badDebt = lossUsd % price18 == 0 ? floored : floored + 1;
+        }
 
-        uint256 grossPos = gross > 0 ? uint256(gross) : 0;
-        want.badDebt = gross < 0 ? uint256(-gross) : 0;
         uint256 fees = want.holdingFee + want.closeFee;
         want.collected = grossPos < fees ? grossPos : fees;
         want.payout = grossPos > fees ? grossPos - fees : 0;

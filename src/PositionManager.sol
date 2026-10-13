@@ -1223,18 +1223,20 @@ contract PositionManager is IPositionBook {
 
         // C + floor(s * P) is what the position holds, ceil(s * P_open) what it
         // owes, both USD. The equity is their signed difference turned back into
-        // 1e18 ounces by the WAD factor, as _usd does the other way. The signed
-        // gross is kept in two unsigned halves so no int cast can truncate: a
-        // positive one in `grossPos`, a negative one in `badDebt`. Each division
-        // floors, which with the sign is a truncation toward zero, so the payout
-        // rounds down and the bad debt rounds down, each in the pool's favour.
+        // 1e18 ounces by the WAD factor, as _usd does the other way. It is kept
+        // in two unsigned halves so no int cast can truncate: a positive one in
+        // `grossPos`, a negative one in `badDebt`. Each rounds in the pool's
+        // favour, which is the two opposite directions of D29: `grossPos` is
+        // equity the owner holds, so it rounds down and pays the owner no more
+        // than the pool owes; `badDebt` is what the position owes the pool, so
+        // it rounds up and the fund covers the pool to the last wei (D49).
         uint256 held = position.claim + _usd(size, price18);
         uint256 owed = _usdUp(size, position.openPrice);
         uint256 grossPos = 0;
         if (held >= owed) {
             grossPos = ((held - owed) * WAD) / price18;
         } else {
-            close.badDebt = ((owed - held) * WAD) / price18;
+            close.badDebt = ((owed - held) * WAD + price18 - 1) / price18;
         }
 
         uint256 fees = close.holdingFee + close.closeFee;
